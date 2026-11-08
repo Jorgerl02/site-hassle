@@ -109,6 +109,28 @@ Qué falla, por orden:
 3. **Materiales**: TRELLIS-2 reproduce bouclé, listones y gres; Hunyuan tiende a cuero liso. Con la luz corregida el color ya no es el problema.
 4. **Geometría inventada** en patas (p04) y bases (p06, p16).
 
+## Quinta ronda: pipeline optimizado sobre 5 piezas
+
+Tres palancas aplicadas a p01, p02, p08, p10 y p14, las que en la ronda 4 se quedaron entre el 3 y el 8 % de error: (1) ajuste a la caja del catálogo por eje con guardia del 10 % (`--fit-box`, nuevo en el harness), (2) dos candidatos de TRELLIS-2 por pieza (7.300 créditos), (3) variante E paramétrica sobre los dos cabeceros finos p11 y p12 (coste cero). Los dos candidatos de TRELLIS-2 son distintos entre sí, así que la selección del mejor funciona.
+
+| Archivo | Qué es |
+|---|---|
+| `27_ronda5_geometria.txt` | Error antes y después del ajuste por candidato; 9 de 10 ajustados, 1 rechazado por la guardia |
+| `contact/r5_<pieza>.jpg` | Hoja de contacto por pieza: foto, candidato de la ronda 4 y los dos de la ronda 5 |
+| `25_juez_claude_p04.csv` | 50 puntuaciones acumuladas |
+
+| Pieza | Ronda 4 | Ronda 5 | Qué cambió |
+|---|---|---|---|
+| p01 mesa redonda | no (3,1 %) | **apta** | Ajuste a la caja |
+| p02 jarrón arcilla | no (4,4 %) | **apta** | Ajuste a la caja |
+| p08 mesita | no | no | Textura rota en ambos candidatos; escala ya no es el problema |
+| p10 butaca verde | no | no | Sale gris; color y tejido, no escala |
+| p14 butaca bouclé | no (7,8 %) | **apta** | Ajuste a la caja |
+| p11 cabecero 3 cm | no | **apta** | Variante E |
+| p12 cabecero 6 cm | no | **apta** | Variante E |
+
+Acumulado del piloto de 16 piezas, mejor candidato por pieza: **macizo 3 de 8, tapizado 4 de 8, 44 % en total** frente al 12 % de la ronda 4 y al 60 % del umbral. Las que siguen fallando lo hacen por material o textura (p08, p10, p09, p13, p15 con Hunyuan) o por geometría inventada (p04, p06, p16, p03), no por escala.
+
 ## Observaciones de la prueba
 
 1. **`validate_input` rechaza 9 de 30 primeras fotos** por "objeto ≤ 10 % del área": lámparas, percheros, mesas auxiliares y piezas altas y finas (p01, p17, p20, p23, p24, p25, p29, p30). El umbral del 10 % de píxeles es demasiado estricto para producto fino; conviene bajarlo o medir por caja envolvente. Hoy las variantes no bloquean por esto, pero el validador de la etapa 1 del pipeline lo haría.
