@@ -16,13 +16,13 @@ sin hablar con comercios, si algún pipeline produce modelos lo bastante buenos 
 | C | Limpieza → 4 vistas sintéticas con Gemini → Tripo multivista (la única variante multivista: sus vistas sí están etiquetadas) | ¿Las vistas inventadas ayudan o perjudican? |
 | D | Limpieza → Meshy | ¿Importa el proveedor? |
 | E | Paramétrico en Blender (cajas con medidas exactas y la foto como textura); solo piezas rectilíneas (`rectilinear=false` → «no aplicable») | ¿La ruta sin IA gana en su categoría? |
-| F | Enrutado: un VLM decide rectilínea → E; orgánica → C (≥ 2 fotos) o B (1 foto) | ¿El híbrido supera a cada ruta sola? |
+| F | Enrutado: rectilínea → E; orgánica → C (≥ 2 fotos) o B (1 foto). Decide por reglas (etiqueta `rectilinear` del CSV, sin coste) o por un VLM (`--router-classifier`) | ¿El híbrido supera a cada ruta sola? |
 
 `FAKE` es una variante de prueba sin llamadas externas (exporta una caja con las medidas).
 
 ## Instalación
 
-Requisitos: [`uv`](https://docs.astral.sh/uv/), Python 3.12 (lo instala `uv`), Blender 4.x y,
+Requisitos: [`uv`](https://docs.astral.sh/uv/), Python 3.12 (lo instala `uv`), Blender (probado con 5.2) y,
 opcionalmente, [`just`](https://just.systems) para los atajos.
 
 ```bash
@@ -38,8 +38,9 @@ Rellena `.env` (el entorno del proceso tiene prioridad sobre `.env`; nunca subas
 | `TRIPO_API_KEY` | Variantes A, B, C y F | [platform.tripo3d.ai](https://platform.tripo3d.ai) → API Keys |
 | `MESHY_API_KEY` | Variante D | [meshy.ai](https://www.meshy.ai) → Settings → API |
 | `GEMINI_API_KEY` | Vistas sintéticas de C (y F cuando enruta a C) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| `ANTHROPIC_API_KEY` | Juez VLM de `eval` y clasificador de F | [platform.claude.com](https://platform.claude.com/settings/keys) → API Keys |
-| `BLENDER_BIN` | Variante E y renders de control de `eval` | Ruta absoluta al ejecutable de [Blender 4.x](https://www.blender.org/download/), p. ej. `/Applications/Blender.app/Contents/MacOS/Blender` |
+| `ANTHROPIC_API_KEY` | Juez VLM de `eval` y clasificador VLM de F (opcional: sin clave, F decide por reglas) | [platform.claude.com](https://platform.claude.com/settings/keys) → API Keys |
+| `BLENDER_BIN` | Variante E, postprocesado, renders de control de `eval`, `refine` y `deliver` | Ruta absoluta al ejecutable de [Blender](https://www.blender.org/download/), p. ej. `/Applications/Blender.app/Contents/MacOS/Blender` |
+| `SCALE_TOLERANCE` | Tolerancia de escala (0.03 = 3 % por defecto); ver [Tolerancia de escala](#tolerancia-de-escala) | — |
 
 Blender solo se usa como subproceso (`BLENDER_BIN --background --python <script> -- <args>`);
 nunca se importa `bpy` en el proceso de Python. Sin `BLENDER_BIN`, `run` se detiene en la
@@ -89,9 +90,13 @@ días 8–9 consolidar puntuaciones e informe; día 10 decisión por escrito.
 | `just run skip_preflight="--skip-preflight"` | `uv run bakeoff run --variants A,B,C,D,E,F --pieces all --candidates 2 --skip-preflight` | Continúa aunque falten claves o Blender (los pasos afectados fallan como infraestructura) |
 | `just eval r1` | `uv run bakeoff eval --run-id r1` | Geometría, renders, juez VLM y hoja ciega |
 | `just report r1` | `uv run bakeoff report --run-id r1` | Escribe `runs/r1/eval/report.md` |
+| `just report-sheets r1 ana.csv,luis.csv` | `uv run bakeoff report --run-id r1 --sheets ana.csv,luis.csv` | Informe con la sección de jueces humanos |
+| `just refine r1 p08` | `uv run bakeoff refine --run-id r1 --piece p08 --max-rounds 2` | Diagnostica y corrige los candidatos de una pieza |
+| `just deliver r1 p05,p15 "--variant B"` | `uv run bakeoff deliver --run-id r1 --pieces p05,p15 --variant B --out-dir outputs/deliver` | GLB ligero, USDZ y visor web por pieza |
+| `just validar p01,p02` | `uv run bakeoff validar --pieces p01,p02` | Comprueba las fotos de entrada (`bakeoff requisitos` lista los requisitos) |
 | `just test` | `uv run pytest -q` | Tests offline (sin red, sin claves, sin Blender) |
-| `just lint` | `uv run ruff check src tests` | Lint |
-| `just blender-test /ruta/a/blender [glb]` | `HARNESS_BLENDER_TEST_BIN=/ruta/a/blender HARNESS_TEXTURED_GLB=glb uv run pytest -q tests/test_post.py tests/test_parametric.py tests/test_eval.py` | Tests con un Blender real (opt-in) |
+| `just lint` | `uv run ruff check . && uv run ruff format --check .` | Lint y formato |
+| `just blender-test /ruta/a/blender [glb]` | `HARNESS_BLENDER_TEST_BIN=/ruta/a/blender HARNESS_TEXTURED_GLB=glb uv run pytest -q tests/test_post.py tests/test_parametric.py tests/test_eval.py tests/test_deliver.py` | Tests con un Blender real (opt-in) |
 
 `blender-test` y la textura en los renders: Workbench pinta la textura del nodo de imagen
 **activo** de cada material, y un GLB PBR trae varios (color base, normales, rugosidad).
@@ -132,7 +137,8 @@ Opciones útiles:
 - `bakeoff eval --no-render` no lanza Blender y reutiliza los renders que ya existan.
 - **Comprobación previa.** Antes de la primera llamada de pago, `run` comprueba las claves que
   necesita cada variante pedida (A/B: `TRIPO_API_KEY`; C: Tripo + `GEMINI_API_KEY`; D:
-  `MESHY_API_KEY`; F: `ANTHROPIC_API_KEY` + Tripo + Gemini) y Blender si se pide E o `--post`.
+  `MESHY_API_KEY`; F: las claves de su ruta orgánica, Tripo + Gemini por defecto, y
+  `ANTHROPIC_API_KEY` solo con `--router-classifier vlm`) y Blender si se pide E o `--post`.
   Si falta algo, imprime el resumen y termina con código 2. `--skip-preflight` continúa de
   todos modos (F sin Blender solo avisa: sus piezas rectilíneas van a la ruta orgánica).
 - **Ejecución reanudable.** El `meta.json` del run se escribe tras **cada** paso (pieza,
@@ -158,7 +164,16 @@ Opciones útiles:
   `unscored` (fuera del denominador, «sin puntuar (infraestructura)»); con `"candidate"` (o sin
   `error_kind`) quedan `candidate_failed` (no aptos). No reciben id ciego.
 - E en una pieza con `rectilinear=false` no genera nada y se registra en `skipped` con
-  `kind: "not_applicable"`; con `rectilinear` vacío, E se ejecuta.
+  `kind: "not_applicable"`; con `rectilinear` vacío, E se ejecuta. Si la descripción menciona
+  «patas» o «zócalo», E genera una caja con patas o zócalo (`box_legs`); los ajustes por pieza
+  están en `data/parametric_overrides.json`.
+- **Enrutado de F (`--router-classifier auto|vlm|rules`, `auto` por defecto).** `rules` usa la
+  etiqueta `rectilinear` del CSV: rectilínea → E; orgánica → C con ≥ 2 fotos o B con 1; sin
+  etiqueta → ruta orgánica (o el VLM, si hay clave). `vlm` pregunta siempre al VLM y exige
+  `ANTHROPIC_API_KEY`. `auto` usa el VLM si hay clave y, si no, las reglas. El motivo queda en
+  `meta.json` → `router.rule` y en las notas. `--organic-variant D` (o cualquier otra variante
+  registrada salvo E y F) sustituye a C/B como ruta orgánica; la comprobación previa pide
+  entonces sus claves.
 
 Salidas:
 
@@ -199,8 +214,8 @@ copia sus cinco renders (`front`, `side`, `back`, `three_quarter`, `top`) a
 3. Las hojas se cierran y se guardan **antes** de abrir `blind_key.csv`. Solo entonces se cruzan
    por `blind_id` con la clave para obtener pieza y variante.
 
-El informe automático usa solo el juez VLM; la consolidación de las hojas humanas (cruce con
-`blind_key.csv` y comparación con el VLM) se hace a mano en una hoja de cálculo.
+Las hojas rellenadas se añaden al informe con `--sheets` (ver
+[Jueces humanos en el informe](#jueces-humanos-en-el-informe)).
 
 ## Cómo leer el informe
 
@@ -234,6 +249,130 @@ El informe automático usa solo el juez VLM; la consolidación de las hojas huma
 - **Ruido.** Con 30 piezas, diferencias < 15 puntos son ruido: no permiten afirmar que una variante
   sea mejor que otra, aunque la tabla muestre un número mayor.
 
+## Jueces humanos en el informe
+
+```bash
+uv run bakeoff report --run-id r1 --sheets ana.csv --sheets luis.csv   # o --sheets ana.csv,luis.csv
+```
+
+Cada hoja es una copia de `runs/<run_id>/eval/blind_sheet.csv` rellenada por un juez; el
+**nombre del archivo** (sin `.csv`) es el nombre del juez, así que dos hojas no pueden llamarse
+igual. `report` las cruza por `blind_id` con `eval/blind_key.csv` y añade la sección «Jueces
+humanos» (tasa de aptos por juez y variante, con la pieza como unidad, igual que el informe
+automático) y «Acuerdo entre jueces» (% de acuerdo y kappa de Cohen por pareja, incluido el juez
+automático cuando hay puntuaciones del VLM).
+
+- Columnas obligatorias: `blind_id` y `apto`; se leen además `parecido`, `geometria`,
+  `materiales`, `escala` (1–5, admite coma decimal: `4,5`) y `comentario`. Las demás columnas de
+  la hoja (`fotos`, `render_*`) se ignoran.
+- `apto`: `sí`, `si`, `s`, `yes`, `1`, `true` o `apto` → apto; `no`, `n`, `0`, `false` o
+  `no apto` → no apto; vacío → sin valorar (la fila no cuenta). Mayúsculas y tildes dan igual.
+- Se acepta la exportación de Excel en español: separador `;` y BOM UTF-8. Los comentarios
+  entrecomillados pueden tener saltos de línea.
+- Errores claros, sin traza: una hoja con un `blind_id` que no está en la clave (por ejemplo, la
+  hoja de otra ejecución), un `blind_id` repetido, un `apto` ilegible o una columna obligatoria
+  ausente terminan con código 1 y el motivo.
+
+## Tolerancia de escala
+
+La tolerancia de escala es el error relativo máximo por eje de la caja envolvente para que el
+eje `escala` valga 5 (y el candidato pueda ser apto). Por defecto es **0,03 (3 %)**; el umbral
+de la nota 3 es 10/3 de la tolerancia (10 % con el 3 %).
+
+- `SCALE_TOLERANCE=0.03` en `.env` la fija para todos los comandos (admite coma decimal).
+- `--scale-tolerance 0.05` la cambia para un comando: `run` (postprocesado), `eval` (nota de
+  escala y apto) y `refine` (diagnóstico de escala).
+- `eval` guarda la tolerancia usada en cada línea de `scores.jsonl` (`scale_tolerance`) y el
+  informe la muestra en la cabecera («Tolerancia de escala: 3 %»; si se mezclan varias, lo
+  avisa). Compara solo informes con la misma tolerancia.
+
+Las piezas finas (alguna medida < 8 cm o proporción ancho/fondo o alto/fondo > 15) son las que
+más sufren con el 3 %: 1–2 mm de error ya bajan la nota.
+
+## Refinado (`refine`)
+
+```bash
+uv run bakeoff refine --run-id r1 --piece p08 --variant A --candidate 1 --dry-run
+uv run bakeoff refine --run-id r1 --piece p08 --max-rounds 0   # solo acciones gratuitas
+uv run bakeoff refine --run-id r1 --piece p08,p10 --max-rounds 2 --no-retexture
+```
+
+Diagnostica cada candidato elegido (`--piece` obligatorio, uno, varios o `all`; `--variant` y
+`--candidate` filtran) y aplica, de una en una, la primera acción pendiente; después vuelve a
+diagnosticar. Usa el bloque `post` de `meta.json` y, si existe, la fila de `scores.jsonl`.
+
+| Problema | Cuándo | Acción |
+|---|---|---|
+| Escala | Error entre la tolerancia y la guarda de `--fit-guard` (10 %) sin ajuste aplicado | Ajuste a la caja (`fit_box`), gratis |
+| Geometría | Error por encima de la guarda, ajuste rechazado por la guarda o > 5.000 componentes | Regenerar un candidato nuevo (de pago) |
+| Sin postprocesado | `post` ausente o fallido y sin evaluación | Repetir el postprocesado, gratis |
+| Material | Nota de `materiales` ≤ 3 en `scores.jsonl` | Retexturizar con Meshy (de pago) |
+
+- **Gasto.** `--max-rounds` (2 por defecto) es el máximo de acciones de pago por candidato; con
+  0 solo se aplican las gratuitas. Regenerar crea `cand_<N+1>` sin tocar los existentes, como
+  mucho 2 veces por pieza y variante (en total, entre llamadas); una variante por API cobra
+  N+1 generaciones para conseguir ese candidato. Retexturizar escribe `model_retex.glb` y
+  conserva `model.glb`; `--no-retexture` lo desactiva.
+- **Comprobación previa.** Si una acción de pago dentro de `--max-rounds` necesita una clave que
+  falta (`MESHY_API_KEY` para retexturizar; las de la variante para regenerar), `refine` termina
+  con código 2 antes de tocar nada. Las variantes importadas (`MG_*`, `HF_*`) no se pueden
+  regenerar: el paso queda como omitido.
+- `--dry-run` imprime problemas y plan sin aplicar nada ni escribir archivos.
+- Historial en `cand_<n>/refine.json` (pasos, coste, problemas antes y después). Su coste se
+  suma a `total_cost_usd` del run y queda aparte en `refine_cost_usd`.
+- Después de retexturizar hay que repetir `eval`: la nota de materiales no se recalcula sola.
+
+## Entrega web (`deliver`)
+
+```bash
+uv run bakeoff deliver --run-id r1 --pieces p05,p15 --variant B --candidate 1 --out-dir outputs/deliver
+```
+
+Parte de `model_post.glb` del candidato y escribe, por pieza, en `<out-dir>/<pieza>/` (sin
+`--out-dir`, en la carpeta del candidato):
+
+- `model_web.glb`: decimado a `--max-tris` (60.000), texturas a `--max-tex` px (2048) y
+  recodificadas a JPEG (PNG solo con transparencia real), compresión Draco. Objetivo:
+  `--size-limit` (5.000.000 bytes). Si lo supera, se reintenta una vez con la mitad de
+  triángulos y texturas de 1024 px.
+- `model.usdz` para AR Quick Look en iPhone (exportado por Blender, texturas JPEG/PNG).
+- `viewer.html` con `<model-viewer>` 4.4.0: botón «Ver en tu espacio», tamaño real fijo en RA
+  y medidas del catálogo.
+- `deliver_meta.json` (tamaños, triángulos, texturas e intentos) y `deliver_blender.log`.
+
+Sin `--variant` o `--candidate`, se usa el único que tenga `model_post.glb`; si hay varios, el
+comando pide elegir. Imprime tamaños, triángulos y la ruta del visor. Termina con código 1 si
+algún GLB supera el límite o falla, y con 2 si no hay Blender.
+
+**Ver el visor.** Abierto como archivo (`file://`) no carga el modelo: hay que servirlo por HTTP.
+
+```bash
+python -m http.server 8000 --directory outputs/deliver
+# abre http://localhost:8000/p05/viewer.html
+```
+
+Desde el móvil en la misma red sirve la IP del ordenador; Quick Look funciona por HTTP en Safari,
+pero WebXR y Scene Viewer (Android) exigen HTTPS, así que para probar la RA en un teléfono real
+hace falta publicarlo con HTTPS. Limitación conocida: el USDZ no admite Draco ni compresión
+(≈ 3,5–4,5 MB con 60.000 triángulos) y el límite de tamaño solo se aplica al GLB.
+
+## Fotos de entrada (`validar`, `requisitos`)
+
+`bakeoff requisitos` lista lo que debe cumplir la foto (vista frontal o de tres cuartos, fondo
+claro o uniforme, pieza completa, ≥ 1.000 px en el lado mayor, pieza ≥ 25 % del lado mayor de la
+foto y medidas en cm). `bakeoff validar foto.jpg …` o `bakeoff validar --pieces p01,p02` los
+comprueba (con rembg: la primera vez carga el modelo) y explica en castellano qué falla; una
+imagen dañada o ilegible se informa como problema. Termina con código 1 si alguna foto no
+cumple. La regla de tamaño mide la caja envolvente del objeto, no la fracción de píxeles: deja
+pasar siluetas finas (percheros, lámparas) bien encuadradas.
+
+## Promesa y proveedores
+
+- [`docs/promesa.md`](docs/promesa.md): qué prometemos al cliente (piezas aceptadas, precisión
+  y foto necesaria), con los datos del piloto.
+- [`docs/proveedores.md`](docs/proveedores.md): proveedores de generación 3D, coste por pieza y
+  qué falta para producción (las cifras en dólares indican su fuente).
+
 ## Costes estimados de una ejecución completa
 
 30 piezas × 6 variantes × 2 candidatos (E siempre genera 1 candidato determinista y no cuesta nada
@@ -243,32 +382,36 @@ VLM de F coincide con el CSV:
 
 | Concepto | Llamadas | Precio en `pricing.py` | Coste (constantes) | Coste con cifras reales conocidas |
 |---|---|---|---|---|
-| Tripo (A 60 + B 60 + C 60 + F 34) | 214 generaciones | 0,25 $/gen | 53,5 $ | 64–86 $ (0,30–0,40 $/gen) |
+| Tripo (A 60 + B 60 + C 60 + F 34) | 214 generaciones | 0,30 $/gen | 64,2 $ | 64–86 $ (0,30–0,40 $/gen) |
 | Meshy (D) | 60 generaciones | 0,65 $/gen | 39,0 $ | 1.800 créditos (30/gen); USD por crédito sin precio público |
 | Gemini (C 120 + F 48 vistas) | 168 imágenes | 0,039 $/img | 6,6 $ | sin verificar para `gemini-nano-banana-2.1` |
 | Claude Sonnet 5.5, juez (≈ 317 candidatos, ~7 imágenes, ~12k tokens entrada / 300 salida) | 317 | 2 / 10 $/MTok | 8,6 $ | igual; hasta ~13 $ con reintentos |
-| Claude Sonnet 5.5, clasificador de F | 30 | 2 / 10 $/MTok | 0,3 $ | igual |
-| **Total** | | | **≈ 108 $** | **≈ 119–145 $** (Meshy y Gemini a la constante) |
+| Claude Sonnet 5.5, clasificador de F (solo con VLM; con reglas, 0) | 30 | 2 / 10 $/MTok | 0,3 $ | igual |
+| **Total** | | | **≈ 119 $** | **≈ 119–145 $** (Meshy y Gemini a la constante) |
 
 Peor caso de F (el VLM marca todo como orgánico o no hay Blender, así que E cae a B/C): 240
-generaciones Tripo (+26), 208 imágenes Gemini (+40) y 13 juicios más: ≈ +8 $ con constantes
-(total ≈ 116 $) y ≈ +10–13 $ con el precio real de Tripo (total hasta ≈ 158 $). Por pieza y variante IA sale ≈ 0,6–0,9 $ con dos candidatos,
+generaciones Tripo (+26), 208 imágenes Gemini (+40) y 13 juicios más: ≈ +10 $ con constantes
+(total ≈ 128 $) y ≈ +12 $ con 0,40 $/gen (total hasta ≈ 157 $). Por pieza y variante IA sale ≈ 0,6–0,9 $ con dos candidatos,
 coherente con los 0,8–1,2 $ de la spec (que incluye postprocesado y reintentos). El control
 manual del día 1 en la web de Tripo va aparte. Cada `meta.json` registra el coste real de cada
-llamada con las constantes de `src/harness/core/pricing.py`; actualízalas antes del run real.
+llamada con las constantes de `src/harness/core/pricing.py` (fuentes en
+[`docs/proveedores.md`](docs/proveedores.md)); revísalas antes del run real.
 
 ## Limitaciones conocidas
 
-- **Precios provisionales.** Las constantes de `src/harness/core/pricing.py` son placeholders
-  (`# TODO verificar`): Tripo real ≈ 0,30–0,40 $/gen (constante 0,25); Meshy cobra 30 créditos por
-  generación sin precio público en USD por crédito (constante 0,65); el precio de Gemini
-  `gemini-nano-banana-2.1` está sin verificar; Sonnet 5.5 está a 2/10 $/MTok. Los costes del
-  informe heredan esas cifras.
+- **Precios en parte provisionales.** `src/harness/core/pricing.py`: Tripo 0,30 $/gen (cota
+  inferior del precio público, 0,30–0,40); Meshy cobra 30 créditos por generación y 10 por
+  retexturizado, sin precio público en USD por crédito (constante provisional 0,65 $/gen, de la
+  que se deriva el retexturizado); Gemini `gemini-nano-banana-2.1` sin verificar; Sonnet 5.5 a
+  2/10 $/MTok. Los costes del informe heredan esas cifras.
 - **Renders Workbench sin reflejos.** Los renders de control no muestran reflejos, lo que deprime
   la nota de `materiales` en metal y vidrio (el prompt del juez lo advierte, pero sesga la
   categoría `metal_vidrio`).
-- **Blender nunca ejecutado de verdad.** `bpy_post.py`, `bpy_parametric.py` y `bpy_render.py` no
-  se han ejecutado aún en un Blender real; ejecuta `just blender-test <bin>` antes del run.
+- **Blender real solo en tests opt-in.** Los scripts `bpy_*.py` se han ejecutado con Blender
+  5.2.3; la suite normal los simula. Con otra versión, ejecuta `just blender-test <bin>` antes
+  del run.
+- **Entrega web.** La RA no se ha probado en un teléfono real (el USDZ pasa el
+  `ComplianceChecker` de ARKit) y el USDZ va sin comprimir.
 - **Postprocesado depende de Blender.** Sin `BLENDER_BIN` (o con `--no-post`) se evalúa el GLB
   crudo de cada proveedor y la comparación deja de cumplir «postprocesado idéntico para todas»;
   revisa que ningún candidato tenga `post.ok = false` antes de dar el informe por bueno.
@@ -283,8 +426,6 @@ llamada con las constantes de `src/harness/core/pricing.py`; actualízalas antes
   sus candidatos correctos, que se vuelven a pagar).
   `total_cost_usd` no incluye lo gastado en pasos que terminaron en error (p. ej. vistas Gemini
   de un C cuyos candidatos fallaron todos): está en los `meta.json` de sus candidatos.
-- **Hojas humanas fuera del informe.** El informe solo agrega el juez VLM; las hojas humanas se
-  consolidan a mano.
 
 ## Estructura del repositorio
 
@@ -292,15 +433,17 @@ llamada con las constantes de `src/harness/core/pricing.py`; actualízalas antes
 data/sample.csv              # muestra fija de 30 piezas (con image_urls)
 data/images/                 # fotos descargadas por ingest (no versionadas)
 reports/                     # spec del test (Test lean 30 días.md) e informes
+docs/                        # promesa al comercio y proveedores
 src/harness/
-  cli.py                     # comando bakeoff: run, eval, report
+  cli.py                     # comando bakeoff: run, eval, report, refine, deliver, validar, requisitos
   core/                      # modelos, almacenamiento, precios, config, registro, lanzador Blender
   clients/                   # Tripo, Meshy, Gemini imagen, VLM (Claude)
   data/ingest.py             # descarga de fotos de la muestra
   prep/                      # limpieza de fotos y vistas sintéticas
-  post/                      # postprocesado Blender y generación paramétrica
+  post/                      # postprocesado Blender, generación paramétrica y entrega web
+  refine/                    # bucle de refinado: diagnóstico, plan y acciones
   variants/                  # A–F (f_router.py es el enrutado)
-  eval/                      # geometría, renders, juez, hoja ciega, informe
+  eval/                      # geometría, renders, juez, hoja ciega, hojas humanas, informe
 tests/                       # tests offline; fixtures en tests/fixtures/
 justfile                     # atajos de los comandos
 ```

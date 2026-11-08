@@ -147,6 +147,7 @@ Acumulado del piloto de 16 piezas, mejor candidato por pieza: **macizo 4 de 8, t
 ## Observaciones de la prueba
 
 1. **`validate_input` rechaza 9 de 30 primeras fotos** por "objeto ≤ 10 % del área": lámparas, percheros, mesas auxiliares y piezas altas y finas (p01, p17, p20, p23, p24, p25, p29, p30). El umbral del 10 % de píxeles es demasiado estricto para producto fino; conviene bajarlo o medir por caja envolvente. Hoy las variantes no bloquean por esto, pero el validador de la etapa 1 del pipeline lo haría.
+   *Nota (pulido pre-GTM):* la regla cambió de «objeto ≥ 10 % de los píxeles» a «lado mayor de la caja envolvente ≥ 25 % del lado mayor de la foto»; con ella las 30 primeras fotos pasan (el log 02 describe la regla antigua). Se comprueba con `bakeoff validar`.
 2. **Las 30 piezas tienen al menos 1.000 px** en el lado mayor; p11 y p29 son las menores (900×1200).
 3. **La limpieza con rembg tarda ~7 s por foto** en CPU y aísla bien incluso con otros muebles en escena (p10).
 4. **Geometría**: la variante FAKE produce cajas exactas a las medidas, y `eval` las mide con error < 1e-7 y `scale_factor` 1, lo que confirma la ruta escala-invariante.

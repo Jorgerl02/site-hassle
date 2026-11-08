@@ -33,15 +33,34 @@ eval run_id:
 report run_id:
     uv run bakeoff report --run-id "{{run_id}}"
 
+# Informe con las hojas de los jueces humanos, p. ej. just report-sheets r1 ana.csv,luis.csv
+report-sheets run_id sheets:
+    uv run bakeoff report --run-id "{{run_id}}" --sheets "{{sheets}}"
+
+# Diagnostica y corrige candidatos de una pieza (max_rounds=0: solo acciones gratuitas;
+# extra="--dry-run" solo muestra el plan), p. ej. just refine r1 p08 0 "--variant A --candidate 1"
+refine run_id piece max_rounds="2" extra="":
+    uv run bakeoff refine --run-id "{{run_id}}" --piece "{{piece}}" --max-rounds {{max_rounds}} {{extra}}
+
+# Entrega web (GLB ligero, USDZ y visor) en outputs/deliver/<pieza>/,
+# p. ej. just deliver mcp-higgsfield p05,p15 "--variant MG_TRELLIS2"
+deliver run_id pieces extra="":
+    uv run bakeoff deliver --run-id "{{run_id}}" --pieces "{{pieces}}" --out-dir outputs/deliver {{extra}}
+
+# Comprueba las fotos de entrada de unas piezas ('all' = toda la muestra)
+validar pieces="all":
+    uv run bakeoff validar --pieces "{{pieces}}"
+
 # Tests offline (sin red, sin Blender, sin claves)
 test:
     uv run pytest -q
 
 # Lint
 lint:
-    uv run ruff check src tests
+    uv run ruff check .
+    uv run ruff format --check .
 
 # Tests que ejecutan un Blender real (opt-in), p. ej. just blender-test /Applications/Blender.app/Contents/MacOS/Blender
 # glb (opcional): GLB PBR texturizado para comprobar que los renders muestran el color base
 blender-test bin glb="":
-    HARNESS_BLENDER_TEST_BIN="{{bin}}" HARNESS_TEXTURED_GLB="{{glb}}" uv run pytest -q tests/test_post.py tests/test_parametric.py tests/test_eval.py
+    HARNESS_BLENDER_TEST_BIN="{{bin}}" HARNESS_TEXTURED_GLB="{{glb}}" uv run pytest -q tests/test_post.py tests/test_parametric.py tests/test_eval.py tests/test_deliver.py

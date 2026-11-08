@@ -234,11 +234,34 @@ def _delta_cell(s: VariantSummary) -> str:
     return f"{sign}{_num(abs(s.delta_pp))} pp"
 
 
+def format_tolerance(tolerance: float) -> str:
+    """Spanish percentage: 0.03 → "3 %", 0.035 → "3,5 %"."""
+    return f"{round(tolerance * 100, 2):g} %".replace(".", ",")
+
+
+def _tolerance_line(tolerances: list[float] | None) -> str | None:
+    if tolerances is None:
+        return None
+    if not tolerances:
+        return "Tolerancia de escala: no registrada (scores.jsonl anterior a la opción)."
+    if len(tolerances) == 1:
+        return f"Tolerancia de escala: {format_tolerance(tolerances[0])}."
+    mixed = ", ".join(format_tolerance(t) for t in tolerances)
+    return f"Tolerancia de escala: mezcla de {mixed}; vuelve a ejecutar `bakeoff eval`."
+
+
 def render_markdown(
-    run_id: str, summaries: dict[str, VariantSummary], human: HumanSummary | None = None
+    run_id: str,
+    summaries: dict[str, VariantSummary],
+    human: HumanSummary | None = None,
+    scale_tolerances: list[float] | None = None,
 ) -> str:
+    """``scale_tolerances``: distinct tolerances found in ``scores.jsonl`` (None → no line)."""
     order = sorted(summaries, key=lambda v: (v != BASELINE, v))
     out = [f"# Informe del bake-off · {run_id}", ""]
+    tolerance_line = _tolerance_line(scale_tolerances)
+    if tolerance_line:
+        out += [tolerance_line, ""]
     out += [
         "Apto = ≥ 4 en los cuatro ejes (parecido, geometría, materiales, escala) sin retoque. "
         "Una pieza es apta si al menos uno de sus candidatos lo es.",

@@ -9,7 +9,14 @@ from harness.core import config
 from harness.core.models import CSV_COLUMNS, Piece
 
 FIXTURES = Path(__file__).parent / "fixtures"
-ENV_KEYS = ("TRIPO_API_KEY", "MESHY_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "BLENDER_BIN")
+ENV_KEYS = (
+    "TRIPO_API_KEY",
+    "MESHY_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "BLENDER_BIN",
+    "SCALE_TOLERANCE",
+)
 
 
 @pytest.fixture(autouse=True)

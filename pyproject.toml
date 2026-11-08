@@ -47,3 +47,7 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.format]
+# ruff ≥ 0.17 also formats code blocks inside Markdown; docs keep their authored snippets.
+exclude = ["*.md"]

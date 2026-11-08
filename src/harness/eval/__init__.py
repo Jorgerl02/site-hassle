@@ -14,7 +14,7 @@ from rich.console import Console
 
 from harness.core import storage
 from harness.core.blender import BlenderNotAvailable
-from harness.core.config import Settings
+from harness.core.config import Settings, resolve_scale_tolerance
 from harness.core.models import DEFAULT_SAMPLE_CSV, Piece, load_pieces
 from harness.eval.blind_sheet import (
     DEFAULT_SEED,
@@ -27,6 +27,7 @@ from harness.eval.geometry import fit_info, measure_candidate, model_for_candida
 from harness.eval.judge import JSONAsker, judge_candidate
 from harness.eval.render import RenderError, existing_renders, render_views
 from harness.eval.report import read_scores, render_markdown, summarize
+from harness.eval.sheets import build_human_summary, load_sheets
 
 __all__ = ["evaluate_run", "build_report"]
 
@@ -126,8 +127,12 @@ def evaluate_run(
     sample: Path = DEFAULT_SAMPLE_CSV,
     seed: int = DEFAULT_SEED,
     blender_bin: Path | None = None,
+    tolerance: float | None = None,
 ) -> Path:
     """Evaluate every candidate of a run; writes ``scores.jsonl`` and the blind sheet.
+
+    ``tolerance`` is the scale tolerance (None → ``SCALE_TOLERANCE`` from ``.env``, 3 % by
+    default); the value in effect is recorded in every ``scores.jsonl`` record.
 
     ``render=False`` skips Blender and reuses renders already on disk, if complete.
     ``judge=None`` builds a ``VLMClient`` from ``ANTHROPIC_API_KEY`` (judging is skipped,
@@ -137,6 +142,7 @@ def evaluate_run(
     if not run_root.is_dir():
         raise FileNotFoundError(f"No existe la ejecución {run_root}")
     by_id = {p.id: p for p in (pieces if pieces is not None else load_pieces(sample))}
+    tolerance = resolve_scale_tolerance(tolerance)
     judge_skip: str | None = None
     if judge is None:
         judge, judge_skip = _default_judge()
@@ -184,7 +190,7 @@ def evaluate_run(
                 record["geometry"] = {
                     **geometry.model_dump(),
                     "max_error": geometry.max_error,
-                    "scale_ok": geometry.scale_ok,
+                    "scale_ok": geometry.is_scale_ok(tolerance),
                     "source": geo.source,
                     "raw_extents_cm": list(geo.raw_extents_cm) if geo.raw_extents_cm else None,
                     "scale_factor": geo.scale_factor,
@@ -234,6 +240,7 @@ def evaluate_run(
                     photos=photos,
                     renders=blind_renders,
                     geometry=geometry,
+                    tolerance=tolerance,
                 )
                 record["judge_model"] = getattr(judge, "last_model", None)
             except Exception as exc:  # one failed judgement must not stop the run
@@ -270,6 +277,8 @@ def evaluate_run(
                 )
             )
 
+    for rec in records:
+        rec["scale_tolerance"] = tolerance
     scores_file = storage.scores_path(run_id, runs_root)
     scores_file.write_text(
         "".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in records),
@@ -285,13 +294,46 @@ def evaluate_run(
     return scores_file
 
 
-def build_report(run_id: str, *, runs_root: Path = storage.RUNS_ROOT) -> Path:
-    """Write ``report.md`` from ``scores.jsonl``; returns its path."""
+def build_report(
+    run_id: str,
+    *,
+    runs_root: Path = storage.RUNS_ROOT,
+    sheets: list[Path] | None = None,
+) -> Path:
+    """Write ``report.md`` from ``scores.jsonl``; returns its path.
+
+    ``sheets`` are human judges' copies of ``blind_sheet.csv`` (judge = file name); they are
+    joined with ``eval/blind_key.csv`` and added as the «Jueces humanos» section. Raises
+    ``ValueError`` (Spanish message) when a sheet cannot be read or does not match the key.
+    """
     scores_file = Path(runs_root) / run_id / "eval" / "scores.jsonl"
     if not scores_file.is_file():
         raise FileNotFoundError(f"No existe {scores_file}; ejecuta antes `bakeoff eval`")
-    summaries = summarize(read_scores(scores_file))
+    records = read_scores(scores_file)
+    human = None
+    if sheets:
+        key_path = storage.blind_key_path(run_id, runs_root)
+        if not key_path.is_file():
+            raise FileNotFoundError(f"No existe {key_path}; ejecuta antes `bakeoff eval`")
+        missing = [str(p) for p in sheets if not Path(p).is_file()]
+        if missing:
+            raise FileNotFoundError(f"No existe la hoja: {', '.join(missing)}")
+        try:
+            judged = load_sheets(key_path, [Path(p) for p in sheets])
+        except ValueError as exc:
+            if "sin entrada en la clave" not in str(exc):
+                raise
+            raise ValueError(
+                f"{exc}. ¿Es una hoja de otra ejecución? Cada juez debe rellenar una copia de "
+                f"{storage.blind_sheet_path(run_id, runs_root)}"
+            ) from exc
+        human = build_human_summary(judged, records)
+    summaries = summarize(records)
+    tolerances = sorted({float(t) for r in records if (t := r.get("scale_tolerance")) is not None})
     path = storage.report_path(run_id, runs_root)
-    path.write_text(render_markdown(run_id, summaries), encoding="utf-8")
+    path.write_text(
+        render_markdown(run_id, summaries, human=human, scale_tolerances=tolerances),
+        encoding="utf-8",
+    )
     console.print(f"Informe → {path}")
     return path

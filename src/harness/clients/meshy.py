@@ -23,7 +23,11 @@ from typing import Any
 
 import httpx
 
-from harness.core.pricing import MESHY_USD_PER_MODEL
+from harness.core.pricing import (
+    MESHY_CREDITS_PER_RETEXTURE,
+    MESHY_USD_PER_MODEL,
+    MESHY_USD_PER_RETEXTURE,
+)
 
 DEFAULT_BASE_URL = "https://api.meshy.ai/openapi/v1"
 SINGLE_ENDPOINT = "image-to-3d"
@@ -40,9 +44,8 @@ NON_IDEMPOTENT_RETRY_STATUS = {429}
 NON_IDEMPOTENT_RETRY_EXC = (httpx.ConnectError, httpx.ConnectTimeout)
 
 RETEXTURE_ENDPOINT = "retexture"
-RETEXTURE_CREDITS = 10  # 2K texture resolution (docs pricing page)
-# Credits → USD derived from the generation price (30 credits = MESHY_USD_PER_MODEL).
-MESHY_USD_PER_RETEXTURE = round(MESHY_USD_PER_MODEL * RETEXTURE_CREDITS / 30, 4)
+RETEXTURE_CREDITS = MESHY_CREDITS_PER_RETEXTURE  # 2K texture resolution (docs pricing page)
+# MESHY_USD_PER_RETEXTURE lives in core/pricing.py; imported above and re-exported here.
 MAX_MODEL_DATA_URI_BYTES = 100 * 1024 * 1024  # API limit for model_url as a data URI
 MAX_STYLE_PROMPT_CHARS = 800
 # Keep the existing UVs (the mesh is already post-processed); PBR maps; GLB only.

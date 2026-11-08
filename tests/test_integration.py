@@ -453,11 +453,13 @@ def test_preflight_aborts_before_any_paid_call(stubs: dict[str, Any], tmp_path: 
         "Variante C: falta TRIPO_API_KEY, GEMINI_API_KEY",
         "Variante D: falta MESHY_API_KEY",
         "Variante E: necesita Blender",
-        "Variante F: falta ANTHROPIC_API_KEY",
+        # F routes by rules without ANTHROPIC_API_KEY: only its organic routes need keys.
+        "Variante F: falta TRIPO_API_KEY, GEMINI_API_KEY",
         "--post",
         "--skip-preflight",
     ):
         assert expected in out
+    assert "ANTHROPIC_API_KEY" not in out
     assert stubs["tripo"].calls == [] and stubs["meshy"].calls == []
     assert not (runs / "pf" / "t01").exists()
 
@@ -746,12 +748,16 @@ def test_run_fit_box_flags_reach_postprocess_and_meta(
         + ["--fit-box", "--fit-guard", "0.08", "--run-id", "fb", "--runs-root", str(runs)],
     )
     assert result.exit_code == 0, result.output
-    assert calls and all(c == {"fit_box": True, "fit_guard": 0.08} for c in calls)
+    assert calls and all(
+        c == {"fit_box": True, "fit_guard": 0.08, "tolerance": 0.03} for c in calls
+    )
     for meta_file in runs.glob("fb/*/*/cand_*/meta.json"):
         post = json.loads(meta_file.read_text())["post"]
         assert post["fit_box_applied"] is True
         assert post["fit_factors"] == {"x": 1.0, "y": 0.97, "z": 1.04}
         assert post["errors_before_fit"]["height"] == -0.04
+        assert post["fit_box_requested"] is True and post["fit_skip_reason"] is None
+        assert post["scale_tolerance"] == 0.03
 
 
 def test_run_fit_box_off_by_default(
@@ -766,7 +772,9 @@ def test_run_fit_box_off_by_default(
         + ["--run-id", "nf", "--runs-root", str(tmp_path / "runs")],
     )
     assert result.exit_code == 0, result.output
-    assert calls and all(c == {"fit_box": False, "fit_guard": 0.10} for c in calls)
+    assert calls and all(
+        c == {"fit_box": False, "fit_guard": 0.10, "tolerance": 0.03} for c in calls
+    )
 
 
 def test_import_glb_fit_box_flags(
