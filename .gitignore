@@ -10,3 +10,4 @@ data/images/
 .DS_Store
 outputs/clean/
 renders/
+outputs/glb/

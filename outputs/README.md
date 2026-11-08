@@ -40,6 +40,32 @@ Hallazgos de esta ronda:
 - Los renders salen más oscuros y desaturados que la foto (iluminación de `bpy_render.py`): el travertino de p07 se ve marrón. Pendiente, afecta por igual a todas las variantes pero puede bajar la nota de materiales.
 - p07 (mesa auxiliar de mármol con paneles laterales) se clasifica como mesa con patas: la heurística de `parametric_spec` no distingue paneles de patas.
 
+## Tercera ronda: generación real vía Higgsfield MCP (sin claves de proveedor)
+
+Higgsfield expone por MCP modelos 3D de Tripo (H3.1), Meshy 7 y Hunyuan3D v3. Se generaron 7 modelos de 4 piezas con los créditos del plan (118 → 43; 9 créditos por Tripo H3.1, 15 por Hunyuan), se importaron con `python -m harness.data.import_glb`, y pasaron por el postprocesado, los renders y el informe del harness. El juez VLM no se ejecutó (sin clave de Anthropic); las puntuaciones las puso Claude desde esta sesión viendo los renders y la foto, sin ciego.
+
+| Archivo | Qué es |
+|---|---|
+| `23_mcp_higgsfield_post.txt` | `post.ok`, errores de escala, triángulos antes y después del postprocesado por candidato |
+| `24_report_mcp-higgsfield.md` | Informe generado por el harness (todo "sin puntuar" por falta de juez; geometría sí calculada) |
+| `25_juez_claude_p04.csv` | Puntuaciones de Claude como juez para las 7 generaciones (todas no aptas) |
+| `26_mcp_higgsfield_geometria.txt` | Tabla de errores de escala por eje, estanqueidad, componentes y caras |
+| `renders/mcp/*.png` | Renders de cada generación (frontal y tres cuartos) |
+| `glb/*.glb` | Los GLB originales descargados (no versionados en git) |
+
+Resultado resumido:
+
+| Pieza | Modelo | Error máx. de escala | Veredicto |
+|---|---|---|---|
+| p04 mesa teca | Tripo H3.1 cruda / limpia | 9,1 % / 8,5 % | Patas inventadas, no apta |
+| p04 mesa teca | Hunyuan3D v3 | 3,1 % | Mejor geometría, tablero sin textura, no apta |
+| p09 butaca bouclé | Tripo H3.1 | 5,2 % | Forma bien, tejido convertido en cuero, no apta |
+| p09 butaca bouclé | Hunyuan3D v3 | 5,8 % | Forma bien, material liso, no apta |
+| p17 lámpara cromada | Tripo H3.1 | 31,5 % | Cromo perdido, arco desproporcionado, no apta |
+| p24 perchero tubo | Tripo H3.1 | 19,5 % | Muy fiel en forma, base más profunda, no apta |
+
+Lo que el harness detectó en esta ronda y se corrigió: cargar los GLB con materiales en trimesh consumía 22 GB y mataba `eval`; ahora se cargan sin materiales (0,2 GB).
+
 ## Observaciones de la prueba
 
 1. **`validate_input` rechaza 9 de 30 primeras fotos** por "objeto ≤ 10 % del área": lámparas, percheros, mesas auxiliares y piezas altas y finas (p01, p17, p20, p23, p24, p25, p29, p30). El umbral del 10 % de píxeles es demasiado estricto para producto fino; conviene bajarlo o medir por caja envolvente. Hoy las variantes no bloquean por esto, pero el validador de la etapa 1 del pipeline lo haría.

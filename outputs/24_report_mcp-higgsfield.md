@@ -16,8 +16,8 @@ Denominador: todas las piezas con algún candidato puntuado o con un fallo atrib
 
 | Variante | Parecido | Geometría | Materiales | Escala | Coste medio por pieza | Tiempo medio por pieza | % mallas cerradas | Media de componentes | Sin puntuar (infraestructura) |
 |---|---|---|---|---|---|---|---|---|---|
-| HF_HUNYUAN | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 2644,0 | 1 |
-| HF_TRIPO_CLEAN | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 386,0 | 1 |
+| HF_HUNYUAN | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 1967,0 | 2 |
+| HF_TRIPO_CLEAN | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 204,2 | 4 |
 | HF_TRIPO_RAW | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 526,0 | 1 |
 
 **Coste total:** 0,00 USD = generación 0,00 USD + enrutado VLM (F) 0,00 USD + juez VLM 0,00 USD.

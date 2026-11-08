@@ -1,0 +1,8 @@
+pieza variante           alto   ancho   fondo    max estanca    comp   caras
+p17   HF_TRIPO_CLEAN    +0.0%  +20.6%  +31.5%  31.5% False        87  147000
+p04   HF_HUNYUAN        +3.1%   +0.0%   +2.2%   3.1% False      2644  146999
+p09   HF_TRIPO_CLEAN    -2.5%   +0.0%   +5.2%   5.2% False       297  147000
+p24   HF_TRIPO_CLEAN    +0.0%   +3.4%  +19.5%  19.5% False        47  147000
+p04   HF_TRIPO_CLEAN    -2.3%   +0.0%   -8.5%   8.5% False       386  147000
+p09   HF_HUNYUAN        +5.8%   -0.0%   -2.6%   5.8% False      1290  146999
+p04   HF_TRIPO_RAW      -1.5%   +0.0%   -9.1%   9.1% False       526  147000
