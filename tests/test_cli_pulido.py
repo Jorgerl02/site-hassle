@@ -504,3 +504,66 @@ def test_validar_explains_problems_and_survives_corrupt_files(
 
     result = _invoke("requisitos")
     assert result.exit_code == 0 and "1.000 px" in result.output
+
+
+# --- polish round ----------------------------------------------------------------------------
+
+
+def test_refine_labels_in_spanish_and_repost(env: dict[str, Any]) -> None:
+    runs = env["runs"]
+    _write_candidate(runs, "rl", "t01", "MG_X", {"ok": False, "reason": "sin Blender"})
+    _write_candidate(runs, "rl", "t02", "A", BAD_POST)
+    common = ["--run-id", "rl", "--runs-root", str(runs), "--sample", str(env["sample"])]
+    result = _invoke("refine", "--piece", "all", "--variant", "mg_x", "--dry-run", *common)
+    assert result.exit_code == 0, result.output
+    assert "problema (geometría): sin postprocesado" in result.output
+    assert "plan: re-postprocesado (gratis)" in result.output
+    assert "ajuste a la caja" not in result.output
+
+    result = _invoke("refine", "--piece", "t02", "--dry-run", *common)
+    assert "problema (geometría)" in result.output and "(geometry)" not in result.output
+
+
+def test_refine_failure_is_reported_and_earlier_cost_kept(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    import harness.refine as refine_module
+    from harness.refine import RefineReport
+
+    runs = env["runs"]
+    for piece in ("t01", "t02"):
+        _write_candidate(runs, "rc", piece, "MG_X", BAD_POST)
+    (runs / "rc/meta.json").write_text(json.dumps({"total_cost_usd": 1.0}), encoding="utf-8")
+
+    def fake_refine(run_id: str, piece_id: str, variant: str, candidate: int, **_: Any):
+        if piece_id == "t02":
+            raise httpx.ConnectError("sin red")
+        return RefineReport(run_id, piece_id, variant, candidate, candidate, [], [], cost_usd=0.4)
+
+    monkeypatch.setattr(refine_module, "refine_candidate", fake_refine)
+    common = ["--run-id", "rc", "--runs-root", str(runs), "--sample", str(env["sample"])]
+    result = _invoke("refine", "--piece", "t01,t02", "--max-rounds", "0", *common)
+    assert result.exit_code == 1
+    assert "error de red con el proveedor: sin red" in result.output
+    assert "Traceback" not in result.output
+    data = json.loads((runs / "rc/meta.json").read_text())
+    assert data["refine_cost_usd"] == pytest.approx(0.4)
+    assert data["total_cost_usd"] == pytest.approx(1.4)
+
+
+def test_run_warns_when_router_options_without_f(env: dict[str, Any]) -> None:
+    result = _invoke(
+        "run", "--variants", "FAKE", "--router-classifier", "rules", "--no-post",
+        "--sample", str(env["sample"]), "--run-id", "w", "--runs-root", str(env["runs"]),
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "--router-classifier solo afecta a la variante F" in result.stderr
+
+
+def test_deliver_upper_cases_variant(env: dict[str, Any]) -> None:
+    common = [*_posted_run(env, "up"), "--sample", str(env["sample"])]
+    result = _invoke("deliver", "--pieces", "t01", "--variant", "fake", "--candidate", "1", *common)
+    assert result.exit_code == 0, result.output
+    assert "t01 · FAKE/cand_1" in result.output
