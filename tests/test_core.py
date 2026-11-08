@@ -20,7 +20,13 @@ from harness.clients.vlm import VLMClient, VLMError, token_cost_usd
 from harness.core import storage
 from harness.core.blender import BlenderNotAvailable, run_blender_script
 from harness.core.config import Settings
-from harness.core.models import CSV_COLUMNS, GeometryMetrics, Scores, load_pieces
+from harness.core.models import (
+    CSV_COLUMNS,
+    OPTIONAL_CSV_COLUMNS,
+    GeometryMetrics,
+    Scores,
+    load_pieces,
+)
 from harness.core.registry import get_variant
 from harness.core.variant import FakeVariant, Variant
 from harness.prep import clean
@@ -53,7 +59,9 @@ def test_header_only_csv_is_empty(tmp_path: Path) -> None:
 
 def test_repo_sample_csv_has_expected_header() -> None:
     header = Path("data/sample.csv").read_text(encoding="utf-8").splitlines()[0]
-    assert tuple(header.split(",")) == CSV_COLUMNS
+    columns = header.split(",")
+    assert set(CSV_COLUMNS) <= set(columns)
+    assert set(columns) - set(CSV_COLUMNS) <= set(OPTIONAL_CSV_COLUMNS)
 
 
 @pytest.mark.parametrize(

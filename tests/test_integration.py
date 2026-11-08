@@ -13,6 +13,7 @@ import pytest
 from PIL import Image, ImageDraw
 from typer.testing import CliRunner
 
+import harness.cli as cli_module
 import harness.eval as eval_module
 from harness.cli import app
 from harness.clients.meshy import GenerationOutcome as MeshyOutcome
@@ -239,6 +240,11 @@ def test_end_to_end_run_eval_report(
     f_meta = json.loads((runs / "it/t02/F/cand_1/meta.json").read_text())
     assert f_meta["variant"] == "F" and f_meta["routed_to"] == "C"
     assert "rectilinear" in f_meta["router"] and "cost_usd" in f_meta["router"]
+    # Post-processing is applied to every candidate; without Blender it is recorded, not fatal.
+    cand_metas = [json.loads(p.read_text()) for p in runs.glob("it/*/*/cand_*/meta.json")]
+    assert len(cand_metas) == 2 * 2 * 6
+    assert all(m["post"] == {"ok": False, "reason": "sin Blender"} for m in cand_metas)
+    assert not list(runs.glob("it/*/*/cand_*/model_post.glb"))
 
     # Renders as a previous Blender pass would have left them (eval runs with --no-render).
     for cand_dir in runs.glob("it/*/*/cand_*"):
@@ -267,3 +273,71 @@ def test_end_to_end_run_eval_report(
     for variant in ("FAKE", "A", "B", "C", "D", "F"):
         assert f"| {variant} |" in report
     assert "Denominador:" in report
+
+
+def test_run_postprocesses_every_candidate_and_eval_uses_model_post(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.post.blender_post import PostResult
+
+    calls: list[Path] = []
+
+    def fake_postprocess(glb_in: Path, glb_out: Path, piece: Any, **_: Any) -> PostResult:
+        calls.append(Path(glb_in))
+        shutil.copyfile(glb_in, glb_out)
+        return PostResult(
+            glb_path=Path(glb_out),
+            meta_path=Path(glb_out).with_name("post_meta.json"),
+            errors={"width": 0.01, "height": 0.0, "depth": -0.01},
+            tris_before=12,
+            tris_after=12,
+            textures=[],
+            seconds=0.5,
+            scale_factor=1.0,
+            errors_axis={"x": 0.01, "y": 0.0, "z": -0.01},
+        )
+
+    monkeypatch.setattr(cli_module, "postprocess", fake_postprocess)
+    sample = _write_sample(tmp_path)
+    runs = tmp_path / "runs"
+    common = ["--run-id", "pp", "--runs-root", str(runs)]
+    cli = CliRunner()
+    result = cli.invoke(app, ["run", "--variants", "FAKE,A", "--sample", str(sample), *common])
+    assert result.exit_code == 0, result.output
+
+    cand_dirs = sorted(runs.glob("pp/*/*/cand_*"))
+    assert len(cand_dirs) == 2 * 2 * 2 and len(calls) == len(cand_dirs)
+    for cand_dir in cand_dirs:
+        post = json.loads((cand_dir / "meta.json").read_text())["post"]
+        assert post["ok"] is True and post["draco"] is False
+        assert post["triangles_before"] == 12 and post["errors"]["width"] == 0.01
+        assert (cand_dir / "model_post.glb").is_file()
+
+    monkeypatch.setattr(eval_module, "_default_judge", lambda: (StubVLM(), None))
+    result = cli.invoke(app, ["eval", "--no-render", "--sample", str(sample), *common])
+    assert result.exit_code == 0, result.output
+    records = [
+        json.loads(line) for line in (runs / "pp/eval/scores.jsonl").read_text().splitlines()
+    ]
+    assert len(records) == len(cand_dirs)
+    assert all(r["glb_path"].endswith("model_post.glb") for r in records)
+    assert all(r["geometry"]["source"] == "trimesh" for r in records)
+
+
+def test_run_no_post_skips_postprocessing(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_: Any, **__: Any) -> None:
+        raise AssertionError("postprocess no debe llamarse con --no-post")
+
+    monkeypatch.setattr(cli_module, "postprocess", boom)
+    sample = _write_sample(tmp_path)
+    runs = tmp_path / "runs"
+    result = CliRunner().invoke(
+        app,
+        ["run", "--variants", "FAKE", "--no-post", "--sample", str(sample)]
+        + ["--run-id", "np", "--runs-root", str(runs)],
+    )
+    assert result.exit_code == 0, result.output
+    metas = [json.loads(p.read_text()) for p in runs.glob("np/*/*/cand_*/meta.json")]
+    assert metas and all("post" not in m for m in metas)

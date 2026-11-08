@@ -28,6 +28,8 @@ CSV_COLUMNS: tuple[str, ...] = (
     "description",
     "rectilinear",
 )
+# Extra columns allowed in the sample CSV and ignored by ``load_pieces``.
+OPTIONAL_CSV_COLUMNS: tuple[str, ...] = ("image_urls",)
 
 
 class Piece(BaseModel):

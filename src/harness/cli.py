@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -10,11 +11,61 @@ import typer
 from rich.console import Console
 
 from harness.core import storage
+from harness.core.blender import BlenderNotAvailable
 from harness.core.models import DEFAULT_SAMPLE_CSV, Piece, load_pieces
 from harness.core.registry import get_variant
+from harness.post.blender_post import BlenderPostError, postprocess
+
+POST_REASON_NO_BLENDER = "sin Blender"
+POST_LOG_TAIL_CHARS = 2000
 
 app = typer.Typer(help="Bake-off de pipelines foto→3D.", no_args_is_help=True)
 console = Console()
+
+
+class _PostStep:
+    """Identical headless-Blender post-processing for every candidate of every variant.
+
+    After the first ``BlenderNotAvailable`` Blender is not launched again in this run.
+    """
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+        self.blender_missing = False
+
+    def __call__(self, cand_dir: Path, piece: Piece) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        # A stale model_post.glb from an earlier run would be picked up by the evaluation.
+        storage.model_post_path(cand_dir).unlink(missing_ok=True)
+        if self.blender_missing:
+            return {"ok": False, "reason": POST_REASON_NO_BLENDER}
+        glb = storage.model_path(cand_dir)
+        if not glb.is_file():
+            return {"ok": False, "reason": f"no existe {glb.name}"}
+        try:
+            result = postprocess(glb, storage.model_post_path(cand_dir), piece)
+        except BlenderNotAvailable:
+            self.blender_missing = True
+            console.print("  [yellow]postprocesado omitido: sin Blender (BLENDER_BIN)[/yellow]")
+            return {"ok": False, "reason": POST_REASON_NO_BLENDER}
+        except BlenderPostError as exc:
+            return {"ok": False, "reason": (exc.log or str(exc))[-POST_LOG_TAIL_CHARS:]}
+        except subprocess.TimeoutExpired as exc:
+            return {"ok": False, "reason": f"timeout de Blender ({exc.timeout} s)"}
+        except OSError as exc:
+            return {"ok": False, "reason": f"no se pudo lanzar Blender: {exc}"}
+        return {
+            "ok": True,
+            "glb_path": str(result.glb_path),
+            "seconds": result.seconds,
+            "errors": result.errors,
+            "errors_axis": result.errors_axis,
+            "scale_factor": result.scale_factor,
+            "draco": result.draco,
+            "triangles_before": result.tris_before,
+            "triangles_after": result.tris_after,
+        }
 
 
 def _select_pieces(pieces: list[Piece], spec: str) -> list[Piece]:
@@ -36,6 +87,13 @@ def run(
     run_id: Annotated[str | None, typer.Option(help="Id de la ejecución")] = None,
     sample: Annotated[Path, typer.Option(help="CSV de la muestra")] = DEFAULT_SAMPLE_CSV,
     runs_root: Annotated[Path, typer.Option(help="Carpeta raíz de salidas")] = storage.RUNS_ROOT,
+    post: Annotated[
+        bool,
+        typer.Option(
+            "--post/--no-post",
+            help="Postprocesado Blender idéntico para todos los candidatos (model_post.glb)",
+        ),
+    ] = True,
 ) -> None:
     """Ejecuta las variantes sobre las piezas y escribe meta.json por candidato y por run."""
     run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -48,6 +106,7 @@ def run(
     except KeyError as exc:
         raise typer.BadParameter(str(exc.args[0])) from exc
 
+    post_step = _PostStep(post)
     results: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     for piece in selected:
@@ -66,6 +125,9 @@ def run(
                 meta.update(
                     piece_id=piece.id, variant=result.variant, **cand.model_dump(mode="json")
                 )
+                post_info = post_step(cand_dir, piece)
+                if post_info is not None:
+                    meta["post"] = post_info
                 storage.write_meta(cand_dir, meta)
             results.append(result.model_dump(mode="json"))
 

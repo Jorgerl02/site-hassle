@@ -53,7 +53,7 @@ y la tabla de etapas en
 [«Pipeline de calidad»](reports/Test%20lean%2030%20d%C3%ADas.md#pipeline-de-calidad-validadores-y-vistas-sintéticas).
 
 1. **Día 1 · Control.** 10 piezas por la web de Tripo tal cual, a mano. Es la referencia que el
-   pipeline debe superar con claridad; la variante A la reproduce por API.
+   pipeline debe superar con claridad; la variante A la aproxima por API.
 2. **Muestra fija.** 30 piezas (7–8 por categoría: `macizo_mate`, `tapizado`, `metal_vidrio`,
    `patas_finas`) con medidas conocidas, fijadas en `data/sample.csv` antes de generar nada. No se
    cambia ninguna pieza después.
@@ -83,6 +83,7 @@ días 8–9 consolidar puntuaciones e informe; día 10 decisión por escrito.
 | `just ingest` | `uv run python -m harness.data.ingest` | Descarga las fotos a `data/images/<id>/<n>.jpg` y escribe un informe de ingesta |
 | `just run` | `uv run bakeoff run --variants A,B,C,D,E,F --pieces all --candidates 2` | Genera los modelos |
 | `just run variants="A,B" run_id="r1"` | `uv run bakeoff run --variants A,B --pieces all --candidates 2 --run-id r1` | Solo algunas variantes, con id fijo |
+| `just run post="--no-post"` | `uv run bakeoff run --variants A,B,C,D,E,F --pieces all --candidates 2 --no-post` | Genera sin postprocesado Blender |
 | `just eval r1` | `uv run bakeoff eval --run-id r1` | Geometría, renders, juez VLM y hoja ciega |
 | `just report r1` | `uv run bakeoff report --run-id r1` | Escribe `runs/r1/eval/report.md` |
 | `just test` | `uv run pytest -q` | Tests offline (sin red, sin claves, sin Blender) |
@@ -93,6 +94,14 @@ Opciones útiles:
 
 - `bakeoff run --pieces p01,p07` limita las piezas; `--sample otro.csv` cambia la muestra;
   `--runs-root otra/carpeta` cambia la raíz de salidas (también en `eval` y `report`).
+- `bakeoff run --post` (por defecto) pasa **todos** los candidatos de todas las variantes
+  (también E y FAKE) por el mismo postprocesado Blender headless (`bpy_post.py`: escala a las
+  medidas, centra, decima) y escribe `model_post.glb`; `eval` lo usa en lugar de `model.glb`
+  cuando existe. El resultado queda en `meta.json` → `post` (`ok`, `seconds`, `errors`,
+  `errors_axis`, `triangles_before/after`, `draco`). Sin Blender se registra
+  `post: {"ok": false, "reason": "sin Blender"}` sin reintentarlo en cada candidato y el run
+  continúa (se evalúa el GLB crudo); un fallo de Blender guarda el final del log en `reason`.
+  `--no-post` omite el paso.
 - `bakeoff eval --no-render` no lanza Blender y reutiliza los renders que ya existan.
 - Sin `--run-id`, `run` usa la marca de tiempo UTC (`20261108T101500Z`). Reutilizar un id
   sobrescribe el `meta.json` del run (ver limitaciones); usa un id nuevo por tanda.
@@ -104,6 +113,8 @@ Salidas:
 ```
 runs/<run_id>/meta.json                                   # run: variantes, piezas, coste total, errores
 runs/<run_id>/<pieza>/<variante>/cand_<n>/model.glb       # modelo generado
+runs/<run_id>/<pieza>/<variante>/cand_<n>/model_post.glb  # modelo postprocesado (Blender)
+runs/<run_id>/<pieza>/<variante>/cand_<n>/post_meta.json  # errores de escala y triángulos del postprocesado
 runs/<run_id>/<pieza>/<variante>/cand_<n>/meta.json       # coste, segundos, parámetros, respuestas
 runs/<run_id>/<pieza>/<variante>/cand_<n>/renders/*.png   # renders de control (eval)
 runs/<run_id>/<pieza>/F/route_<X>/...                     # trabajo interno de la variante delegada por F
@@ -172,11 +183,11 @@ VLM de F coincide con el CSV:
 | Gemini (C 120 + F 48 vistas) | 168 imágenes | 0,039 $/img | 6,6 $ | sin verificar para `gemini-nano-banana-2.1` |
 | Claude Sonnet 5.5, juez (≈ 317 candidatos, ~7 imágenes, ~12k tokens entrada / 300 salida) | 317 | 2 / 10 $/MTok | 8,6 $ | igual; hasta ~13 $ con reintentos |
 | Claude Sonnet 5.5, clasificador de F | 30 | 2 / 10 $/MTok | 0,3 $ | igual |
-| **Total** | | | **≈ 108 $** | **≈ 119–156 $** |
+| **Total** | | | **≈ 108 $** | **≈ 119–145 $** (Meshy y Gemini a la constante) |
 
 Peor caso de F (el VLM marca todo como orgánico o no hay Blender, así que E cae a B/C): 240
-generaciones Tripo y 208 imágenes Gemini, unos +8 $ con constantes y hasta +10 $ con precios
-reales; queda dentro del rango alto. Por pieza y variante IA sale ≈ 0,6–0,9 $ con dos candidatos,
+generaciones Tripo (+26), 208 imágenes Gemini (+40) y 13 juicios más: ≈ +8 $ con constantes
+(total ≈ 116 $) y ≈ +10–13 $ con el precio real de Tripo (total hasta ≈ 158 $). Por pieza y variante IA sale ≈ 0,6–0,9 $ con dos candidatos,
 coherente con los 0,8–1,2 $ de la spec (que incluye postprocesado y reintentos). El control
 manual del día 1 en la web de Tripo va aparte. Cada `meta.json` registra el coste real de cada
 llamada con las constantes de `src/harness/core/pricing.py`; actualízalas antes del run real.
@@ -193,9 +204,9 @@ llamada con las constantes de `src/harness/core/pricing.py`; actualízalas antes
   categoría `metal_vidrio`).
 - **Blender nunca ejecutado de verdad.** `bpy_post.py`, `bpy_parametric.py` y `bpy_render.py` no
   se han ejecutado aún en un Blender real; ejecuta `just blender-test <bin>` antes del run.
-- **Postprocesado no cableado en `run`.** `harness.post.blender_post.postprocess` existe y `eval`
-  usa `model_post.glb` si está presente, pero `bakeoff run` no lo invoca: hoy se evalúa el GLB
-  crudo de cada proveedor (la spec pide postprocesado idéntico para todas).
+- **Postprocesado depende de Blender.** Sin `BLENDER_BIN` (o con `--no-post`) se evalúa el GLB
+  crudo de cada proveedor y la comparación deja de cumplir «postprocesado idéntico para todas»;
+  revisa que ningún candidato tenga `post.ok = false` antes de dar el informe por bueno.
 - **Piezas finas.** Con fondos de 3–6 cm, la tolerancia de escala del 3 % es de 1–2 mm: el eje
   `escala` será casi siempre < 4 en esas piezas.
 - **`scores.jsonl` no es ciego.** Contiene la variante; a los jueces humanos solo se les da

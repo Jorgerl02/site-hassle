@@ -14,12 +14,13 @@ install:
 ingest:
     uv run python -m harness.data.ingest
 
-# Ejecuta las variantes sobre las 30 piezas (run_id vacío = marca de tiempo UTC)
-run variants="A,B,C,D,E,F" run_id="":
+# Ejecuta las variantes sobre las 30 piezas (run_id vacío = marca de tiempo UTC;
+# post="--no-post" omite el postprocesado Blender)
+run variants="A,B,C,D,E,F" run_id="" post="--post":
     if [ -n "{{run_id}}" ]; then \
-        uv run bakeoff run --variants "{{variants}}" --pieces all --candidates 2 --run-id "{{run_id}}"; \
+        uv run bakeoff run --variants "{{variants}}" --pieces all --candidates 2 {{post}} --run-id "{{run_id}}"; \
     else \
-        uv run bakeoff run --variants "{{variants}}" --pieces all --candidates 2; \
+        uv run bakeoff run --variants "{{variants}}" --pieces all --candidates 2 {{post}}; \
     fi
 
 # Evalúa una ejecución: geometría, renders Blender, juez VLM y hoja ciega
