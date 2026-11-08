@@ -8,6 +8,8 @@ Issues:
   (10 %) and the fit-to-box was not applied → fixable for free with ``fit_box``.
 - ``geometry``: residual above the guard, fit rejected by the guard, or a mesh shattered into
   more than ``MAX_COMPONENTS`` connected components → only a new generation helps.
+  With no ``post`` block (or a failed one) and no evaluation row it reports ``geometry``
+  "sin postprocesado", planned as a free re-post (``fit_box``).
 - ``material``: the judge scored ``materiales`` ≤ ``MAX_BAD_MATERIAL_SCORE`` → retexture.
 """
 
@@ -29,11 +31,12 @@ MAX_EXTRA_CANDIDATES = 2  # regenerate asks the variant for at most two more can
 PAID_ACTIONS: frozenset[str] = frozenset({"regenerate", "retexture"})
 # Fixed application order: free scale fix first, then geometry, then material.
 ACTION_ORDER: tuple[str, ...] = ("fit_box", "regenerate", "retexture")
-ISSUE_FOR_ACTION: dict[str, str] = {
-    "fit_box": "scale",
-    "regenerate": "geometry",
-    "retexture": "material",
+DEFAULT_ACTION: dict[str, ActionKind] = {
+    "scale": "fit_box",
+    "geometry": "regenerate",
+    "material": "retexture",
 }
+NO_POST_DETAIL = "sin postprocesado"
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,8 @@ class Issue:
     kind: IssueKind
     detail: str  # Spanish, shown in refine.json / reports
     value: float | None = None
+    # Overrides the default action for ``kind`` (e.g. a missing post → re-post, not regenerate).
+    action: ActionKind | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -112,7 +117,13 @@ def diagnose(
     or ``None`` when it was not evaluated (no material issue can be detected then).
     """
     post = candidate_meta.get("post") or {}
+    if not isinstance(post, Mapping):
+        post = {}
     issues: list[Issue] = []
+    if not post.get("ok") and scores is None:
+        # Nothing measured (e.g. a re-post failed after a regeneration): not a clean result.
+        # The fix is a free re-post (fit_box), never a paid regeneration.
+        return [Issue("geometry", NO_POST_DETAIL, None, action="fit_box")]
     err = _scale_error(post, scores)
     fit_applied = bool(post.get("fit_box_applied"))
     rejected = _rejected_by_guard(post)
@@ -169,11 +180,13 @@ def plan(
     ``retexture`` needs a provider (``can_retexture``); paid actions beyond ``paid_budget``
     (``None`` = unlimited) are dropped.
     """
-    by_kind = {i.kind: i for i in issues}
+    by_action: dict[str, Issue] = {}
+    for issue in issues:
+        by_action.setdefault(issue.action or DEFAULT_ACTION[issue.kind], issue)
     actions: list[Action] = []
     paid = 0
     for kind in ACTION_ORDER:
-        issue = by_kind.get(ISSUE_FOR_ACTION[kind])
+        issue = by_action.get(kind)
         if issue is None:
             continue
         if kind == "regenerate" and regenerations_done >= max_regenerations:

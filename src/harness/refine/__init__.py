@@ -230,7 +230,9 @@ def refine_candidate(
         planned = plan(
             issues,
             # The +2 cap is per piece/variant workdir, whichever candidate started the call.
-            regenerations_done=regenerations_in_workdir(workdir) + ctx.lost_regenerations,
+            regenerations_done=(
+                regenerations_in_workdir(workdir, report.warnings) + ctx.lost_regenerations
+            ),
             max_regenerations=MAX_EXTRA_CANDIDATES,
             can_retexture=providers.retexturer is not None,
             paid_budget=max_rounds - report.paid_actions,

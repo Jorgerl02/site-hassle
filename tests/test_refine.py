@@ -195,7 +195,16 @@ def test_diagnose_falls_back_to_eval_error_without_post():
     assert [i.kind for i in diagnose({"post": {"ok": False}}, score_row(max_error=43.0))] == [
         "geometry"
     ]
-    assert diagnose({}, None) == []
+
+
+def test_diagnose_without_post_or_eval_is_not_clean():
+    for meta in ({}, {"post": {"ok": False, "reason": "sin Blender"}}):
+        issues = diagnose(meta, None)
+        assert [(i.kind, i.detail, i.action) for i in issues] == [
+            ("geometry", "sin postprocesado", "fit_box")
+        ]
+        # planned as a free re-post, never as a paid regeneration
+        assert [a.kind for a in plan(issues, can_retexture=True)] == ["fit_box"]
 
 
 def test_diagnose_zero_pre_fit_error_is_not_missing():
@@ -360,6 +369,23 @@ def test_refine_regeneration_cap_is_per_workdir(tmp_path, piece):
     assert sorted(p.name for p in cand1.parent.glob("cand_*")) == [f"cand_{i}" for i in range(1, 5)]
 
 
+def test_refine_corrupt_sibling_meta_counts_as_regeneration(tmp_path, piece):
+    root = tmp_path / "runs"
+    make_candidate(root, 1, post_block({"width": 0.4, "height": 0.0, "depth": 0.0}))
+    for index in (2, 3):
+        sibling = make_candidate(root, index, None)
+        (sibling / "meta.json").write_text("{roto", encoding="utf-8")
+    variant = FakeVariant()
+
+    report = refine_candidate(
+        RUN, "p01", "B", 1, piece=piece, root=root, max_rounds=5,
+        providers=providers(FakePost({"width": 0.4, "height": 0.0, "depth": 0.0}), variant),
+    )  # fmt: skip
+
+    assert report.steps == [] and variant.calls == []
+    assert sum("ilegible" in w for w in report.warnings) == 2
+
+
 def test_refine_regenerated_meta_carries_attribution(tmp_path, piece):
     root = tmp_path / "runs"
     make_candidate(root, 1, post_block({"width": 0.4, "height": 0.0, "depth": 0.0}))
@@ -390,6 +416,9 @@ def test_refine_keeps_billed_cost_when_post_fails_after_move(tmp_path, piece):
     assert step["new_candidate"] == 2 and step["cost_usd"] == pytest.approx(0.5)
     assert report.paid_actions == 1 and report.cost_usd == pytest.approx(0.5)
     assert report.final_candidate == 2
+    # one free re-post retry on the new candidate, then stop; the result is not "clean"
+    assert [(s["action"], s["status"]) for s in report.steps[1:]] == [("fit_box", "failed")]
+    assert [(i.kind, i.detail) for i in report.issues_after] == [("geometry", "sin postprocesado")]
     cand2 = root / RUN / "p01" / "B" / "cand_2"
     assert "refine_origin" in storage.read_meta(cand2)
     saved = json.loads((root / RUN / "p01" / "B" / "cand_1" / REFINE_FILENAME).read_text())

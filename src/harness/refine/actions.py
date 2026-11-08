@@ -9,6 +9,7 @@ later failure (e.g. post-processing). Handlers raise on failure; the orchestrato
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -22,6 +23,8 @@ from harness.core.models import Piece
 
 if TYPE_CHECKING:
     from harness.refine import RefineProviders
+
+logger = logging.getLogger(__name__)
 
 REGEN_SCRATCH_DIRNAME = "_refine_regen"
 RETEX_FILENAME = "model_retex.glb"
@@ -57,13 +60,27 @@ def candidate_indices(workdir: Path) -> list[int]:
     return sorted(indices)
 
 
-def regenerations_in_workdir(workdir: Path) -> int:
-    """Candidates created by refinement in this piece/variant (cap is per workdir)."""
-    return sum(
-        1
-        for index in candidate_indices(workdir)
-        if REFINE_ORIGIN_KEY in storage.read_meta(Path(workdir) / f"cand_{index}")
-    )
+def regenerations_in_workdir(workdir: Path, warnings: list[str] | None = None) -> int:
+    """Candidates created by refinement in this piece/variant (cap is per workdir).
+
+    A candidate whose ``meta.json`` cannot be read counts as a regeneration (conservative:
+    never grants an extra paid generation); the warning goes to ``warnings`` and the log.
+    """
+    count = 0
+    for index in candidate_indices(workdir):
+        cand_dir = Path(workdir) / f"cand_{index}"
+        try:
+            meta = storage.read_meta(cand_dir)
+        except (OSError, ValueError) as exc:
+            warning = f"{cand_dir.name}/meta.json ilegible ({exc!r}); cuenta como regeneración"
+            logger.warning(warning)
+            if warnings is not None and warning not in warnings:
+                warnings.append(warning)
+            count += 1
+            continue
+        if not isinstance(meta, dict) or REFINE_ORIGIN_KEY in meta:
+            count += 1
+    return count
 
 
 def _post_block(result: Any) -> dict[str, Any]:
@@ -166,27 +183,29 @@ def regenerate(ctx: RefineContext, step: dict[str, Any]) -> None:
             raise StepFailed(
                 f"la variante no produjo cand_{new_index} ({result.notes or 'sin notas'})"
             )
+        # Attribution and refine_origin are written while still in the scratch dir, so the
+        # candidate is counted towards the cap from the moment it appears in the workdir.
+        produced_cand = next((c for c in result.candidates if c.index == new_index), None)
+        meta = storage.read_meta(produced)
+        if produced_cand is not None:
+            meta.update(produced_cand.model_dump(mode="json"))
+        meta.update(
+            piece_id=ctx.piece.id,
+            variant=ctx.variant,
+            index=new_index,
+            glb_path=str(storage.model_path(target)),
+        )
+        meta[REFINE_ORIGIN_KEY] = {
+            "from_candidate": ctx.current,
+            "generated_candidates": new_index,
+            "cost_usd": cost,
+        }
+        storage.write_meta(produced, meta)
         shutil.move(str(produced), str(target))
+        ctx.lost_regenerations -= 1  # now counted through refine_origin in the workdir
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
-    ctx.lost_regenerations -= 1  # now counted through refine_origin in the workdir
 
-    produced_cand = next((c for c in result.candidates if c.index == new_index), None)
-    meta = storage.read_meta(target)
-    if produced_cand is not None:
-        meta.update(produced_cand.model_dump(mode="json"))
-    meta.update(
-        piece_id=ctx.piece.id,
-        variant=ctx.variant,
-        index=new_index,
-        glb_path=str(storage.model_path(target)),
-    )
-    meta[REFINE_ORIGIN_KEY] = {
-        "from_candidate": ctx.current,
-        "generated_candidates": new_index,
-        "cost_usd": cost,
-    }
-    storage.write_meta(target, meta)
     step["new_candidate"] = new_index
     ctx.current = new_index
     step["post"] = repost(ctx, target, storage.model_path(target))
