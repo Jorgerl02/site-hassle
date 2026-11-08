@@ -104,15 +104,29 @@ def _eval_module():
 
 
 @app.command("eval")
-def eval_(run_id: Annotated[str, typer.Option(help="Id de la ejecución")]) -> None:
+def eval_(
+    run_id: Annotated[str, typer.Option(help="Id de la ejecución")],
+    runs_root: Annotated[Path, typer.Option(help="Carpeta raíz de salidas")] = storage.RUNS_ROOT,
+    sample: Annotated[Path, typer.Option(help="CSV de la muestra")] = DEFAULT_SAMPLE_CSV,
+    render: Annotated[
+        bool,
+        typer.Option(
+            "--render/--no-render",
+            help="Renderizar con Blender; --no-render reutiliza los renders ya existentes",
+        ),
+    ] = True,
+) -> None:
     """Evalúa una ejecución (geometría, renders, juez VLM, hoja ciega)."""
-    _eval_module().evaluate_run(run_id)
+    _eval_module().evaluate_run(run_id, runs_root=runs_root, sample=sample, render=render)
 
 
 @app.command()
-def report(run_id: Annotated[str, typer.Option(help="Id de la ejecución")]) -> None:
+def report(
+    run_id: Annotated[str, typer.Option(help="Id de la ejecución")],
+    runs_root: Annotated[Path, typer.Option(help="Carpeta raíz de salidas")] = storage.RUNS_ROOT,
+) -> None:
     """Genera el informe de una ejecución evaluada."""
-    _eval_module().build_report(run_id)
+    _eval_module().build_report(run_id, runs_root=runs_root)
 
 
 if __name__ == "__main__":
