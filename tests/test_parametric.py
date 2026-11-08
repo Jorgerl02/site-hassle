@@ -175,7 +175,10 @@ def test_bpy_parametric_args() -> None:
 def test_build_geometry_metres_and_uvs(piece: Piece) -> None:
     boxes = [b.to_dict() for b in build_spec(piece, "table")]
     verts, faces, uvs = bpy_parametric.build_geometry(boxes)
-    assert len(verts) == 5 * 8 and len(faces) == 5 * 6
+    # 6 quads per box, each with its own 4 vertices.
+    assert len(verts) == 5 * 24 and len(faces) == 5 * 6
+    assert all(len(f) == 4 for f in faces) and all(len(f) == 4 for f in uvs)
+    assert sorted(i for f in faces for i in f) == list(range(len(verts)))
     mins, maxs = bpy_parametric.bounds(verts)
     assert mins == pytest.approx((-0.6, -0.3, 0.0))
     assert maxs == pytest.approx((0.6, 0.3, 0.75))
@@ -184,6 +187,71 @@ def test_build_geometry_metres_and_uvs(piece: Piece) -> None:
     front = uvs[2]
     assert sorted(u for u, _ in front) == pytest.approx([0.0, 0.0, 1.0, 1.0])
     assert sorted(v for _, v in front) == pytest.approx([71 / 75, 71 / 75, 1.0, 1.0])
+    # Front-left leg (box 1) front face: the photo's bottom-left (leg) region, not 0-width.
+    leg_front = uvs[6 + 2]
+    us = sorted(u for u, _ in leg_front)
+    assert us == pytest.approx([5 / 120, 5 / 120, 10 / 120, 10 / 120])
+    assert sorted(v for _, v in leg_front) == pytest.approx([0.0, 0.0, 71 / 75, 71 / 75])
+
+
+def test_every_quad_uv_is_planar(piece: Piece) -> None:
+    """UVs are an affine function of position on each quad (both triangles agree)."""
+    boxes = [b.to_dict() for b in build_spec(piece, "table")]
+    verts, faces, uvs = bpy_parametric.build_geometry(boxes)
+    for face, face_uv in zip(faces, uvs, strict=True):
+        p = [verts[i] for i in face]
+        # Opposite corners of a parallelogram: p0 + p2 == p1 + p3, same for UVs.
+        assert [p[0][k] + p[2][k] for k in range(3)] == pytest.approx(
+            [p[1][k] + p[3][k] for k in range(3)]
+        )
+        assert [face_uv[0][k] + face_uv[2][k] for k in range(2)] == pytest.approx(
+            [face_uv[1][k] + face_uv[3][k] for k in range(2)]
+        )
+        assert len({tuple(round(c, 9) for c in uv) for uv in face_uv}) == 4  # no degenerate
+
+
+BBOX = ((-0.5, -0.25, 0.0), (0.5, 0.25, 0.8))  # 1 m wide, 0.5 m deep, 0.8 m high
+
+
+@pytest.mark.parametrize(
+    ("normal", "point", "expected"),
+    [
+        # front (-Y) and back (+Y): u = X, v = Z over the whole piece bbox
+        ((0, -1, 0), (-0.5, -0.25, 0.0), (0.0, 0.0)),
+        ((0, -1, 0), (0.5, -0.25, 0.8), (1.0, 1.0)),
+        ((0, -1, 0), (0.0, -0.25, 0.2), (0.5, 0.25)),
+        ((0, 1, 0), (0.25, 0.25, 0.4), (0.75, 0.5)),
+        # right (+X): u = 1 - Y (front edge -> u = 1, same column as the front face)
+        ((1, 0, 0), (0.5, -0.25, 0.4), (1.0, 0.5)),
+        ((1, 0, 0), (0.5, 0.25, 0.8), (0.0, 1.0)),
+        # left (-X): u = Y (front edge -> u = 0, same column as the front face)
+        ((-1, 0, 0), (-0.5, -0.25, 0.0), (0.0, 0.0)),
+        ((-1, 0, 0), (-0.5, 0.0, 0.8), (0.5, 1.0)),
+        # top / bottom: u = X, v = top band of the photo, front edge = top row
+        ((0, 0, 1), (-0.5, -0.25, 0.8), (0.0, 1.0)),
+        ((0, 0, 1), (0.5, 0.25, 0.8), (1.0, 1.0 - bpy_parametric.TOP_BAND)),
+        ((0, 0, -1), (0.0, 0.0, 0.0), (0.5, 1.0 - bpy_parametric.TOP_BAND / 2)),
+    ],
+)
+def test_planar_uv(normal, point, expected) -> None:
+    assert bpy_parametric.planar_uv(normal, point, *BBOX) == pytest.approx(expected)
+
+
+def test_planar_uv_front_edges_continuous() -> None:
+    """Points on the front vertical/top edges get the same UV from both adjacent faces."""
+    front = (0, -1, 0)
+    for point, other in [
+        ((0.5, -0.25, 0.3), (1, 0, 0)),
+        ((-0.5, -0.25, 0.3), (-1, 0, 0)),
+        ((0.1, -0.25, 0.8), (0, 0, 1)),
+    ]:
+        assert bpy_parametric.planar_uv(other, point, *BBOX) == pytest.approx(
+            bpy_parametric.planar_uv(front, point, *BBOX)
+        )
+
+
+def test_planar_uv_degenerate_bbox() -> None:
+    assert bpy_parametric.planar_uv((0, -1, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)) == (0.0, 0.0)
 
 
 def test_box_faces_point_outwards() -> None:
@@ -324,6 +392,47 @@ def test_crop_to_content_all_white_unchanged(tmp_path: Path) -> None:
         assert out.size == (30, 20)
 
 
+def test_fill_background_removes_white(tmp_path: Path) -> None:
+    src = tmp_path / "t.png"
+    img = Image.new("RGB", (60, 40), "white")
+    img.paste((120, 80, 40), (0, 0, 60, 10))  # top band (table top)
+    img.paste((30, 20, 10), (0, 10, 10, 40))  # left leg
+    img.paste((200, 0, 0), (50, 10, 60, 40))  # right leg
+    img.save(src)
+    out = e_parametric.fill_background(src, erode=0)
+    with Image.open(out) as filled:
+        px = filled.convert("RGB").load()
+        assert all(px[x, y] != (255, 255, 255) for x in range(60) for y in range(40))
+        assert px[20, 25] == (30, 20, 10)  # nearest object pixel in the row: left leg
+        assert px[40, 25] == (200, 0, 0)  # ... right leg
+        assert px[30, 5] == (120, 80, 40)  # object pixels untouched
+
+
+def test_fill_background_rows_without_object_use_columns(tmp_path: Path) -> None:
+    src = tmp_path / "t.png"
+    img = Image.new("RGB", (20, 20), "white")
+    img.paste((10, 90, 10), (0, 0, 20, 5))
+    img.save(src)
+    with Image.open(e_parametric.fill_background(src, erode=0)) as filled:
+        assert filled.convert("RGB").getpixel((7, 18)) == (10, 90, 10)
+
+
+def test_fill_background_erodes_halo_and_keeps_blank(tmp_path: Path) -> None:
+    src = tmp_path / "t.png"
+    img = Image.new("RGB", (30, 30), "white")
+    img.paste((235, 235, 235), (5, 5, 25, 25))  # light anti-aliased halo
+    img.paste((50, 50, 50), (7, 7, 23, 23))
+    img.save(src)
+    with Image.open(e_parametric.fill_background(src)) as filled:
+        rgb = filled.convert("RGB")
+        assert rgb.getpixel((0, 15)) == (50, 50, 50)
+        assert rgb.getpixel((6, 15)) == (50, 50, 50)
+    blank = tmp_path / "blank.png"
+    Image.new("RGB", (8, 8), "white").save(blank)
+    with Image.open(e_parametric.fill_background(blank)) as out:
+        assert out.getpixel((3, 3)) == (255, 255, 255)
+
+
 def test_variant_real_blender(piece: Piece, tmp_path: Path) -> None:
     value = os.environ.get("HARNESS_BLENDER_TEST_BIN", "").strip()
     if not value or not Path(value).is_file():
@@ -342,10 +451,29 @@ def test_variant_real_blender(piece: Piece, tmp_path: Path) -> None:
         blender_bin=binary,
     )  # fmt: skip
     assert run.ok, run.stderr
+    import numpy as np
     import trimesh
 
-    extents = trimesh.load(out, force="mesh").extents
-    assert sorted(extents) == pytest.approx(sorted([1.2, 0.75, 0.6]), rel=1e-3)
+    mesh = trimesh.load(out, force="mesh", process=False)
+    assert sorted(mesh.extents) == pytest.approx(sorted([1.2, 0.75, 0.6]), rel=1e-3)
+    # 5 boxes x 6 quads -> 12 triangles per box, all textured with the same image.
+    assert len(mesh.faces) == 5 * 12
+    uv = mesh.visual.uv
+    assert uv is not None and len(uv) == len(mesh.vertices)
+    material = mesh.visual.material
+    image = getattr(material, "baseColorTexture", None) or getattr(material, "image", None)
+    assert image is not None and image.size == (1200, 900)
+    # glTF is +Y up: Blender (x, y, z) == glTF (x, -z, y). Every triangle's UVs must be
+    # the planar projection of its own vertices (both triangles of a quad agree).
+    z_up = np.column_stack([mesh.vertices[:, 0], -mesh.vertices[:, 2], mesh.vertices[:, 1]])
+    mins, maxs = tuple(z_up.min(axis=0)), tuple(z_up.max(axis=0))
+    normals = np.column_stack(
+        [mesh.face_normals[:, 0], -mesh.face_normals[:, 2], mesh.face_normals[:, 1]]
+    )
+    for tri, normal in zip(mesh.faces, normals, strict=True):
+        for i in tri:
+            expected = bpy_parametric.planar_uv(tuple(normal), tuple(z_up[i]), mins, maxs)
+            assert tuple(uv[i]) == pytest.approx(expected, abs=1e-4)
 
 
 def test_variant_not_applicable_on_organic_piece(

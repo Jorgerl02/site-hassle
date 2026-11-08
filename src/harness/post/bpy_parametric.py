@@ -1,18 +1,19 @@
-"""Parametric furniture builder executed INSIDE Blender (4.x), variant E:
+"""Parametric furniture builder executed INSIDE Blender (4.x / 5.x), variant E:
 
     BLENDER_BIN --background --python bpy_parametric.py -- --spec SPEC.json --out OUT.glb [--draco]
 
 Reads the box list written by ``harness.post.parametric_spec.write_spec`` (cm, X = width,
 Y = depth with the front at -Y, Z = height, ``pos_cm`` = box centre), builds every box as
-quads in ONE mesh, assigns UVs that project the cleaned photo onto the front (and back)
-faces as seen from the front, the top/bottom faces from above and the sides from the side
-(a box projection baked into UVs, so the glTF exporter keeps it), applies a Principled BSDF
-with the photo as Base Color and exports a GLB (metres, +Y up).
+6 quads (4 own vertices each) in ONE mesh and bakes a planar, per-face projection of the
+cleaned photo into the UVs (see :func:`planar_uv`), applies a Principled BSDF with the
+photo as Base Color on every face and exports a GLB (metres, +Y up).
 
 Only the stdlib is used at import time: the geometry helpers are unit-tested outside
 Blender, ``bpy`` is imported inside :func:`main`.
 Blender docs consulted: https://docs.blender.org/api/4.5/ (Mesh.from_pydata, uv_layers,
-ShaderNodeTexImage, BlendDataImages.load, bpy.ops.export_scene.gltf) on 2026-11-08.
+ShaderNodeTexImage, BlendDataImages.load, bpy.ops.export_scene.gltf) on 2026-11-08;
+verified against Blender 5.2.3 LTS (``Material.use_nodes`` is deprecated in 5.x and new
+materials already carry a Principled BSDF node tree).
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ Vec3 = tuple[float, float, float]
 UV = tuple[float, float]
 
 # Quad faces of a box, CCW seen from outside; vertex order in _box_vertices.
-# (face name, vertex indices, outward axis)
+# (face name, vertex indices)
 BOX_FACES: tuple[tuple[str, tuple[int, int, int, int]], ...] = (
     ("bottom", (0, 3, 2, 1)),
     ("top", (4, 5, 6, 7)),
@@ -36,6 +37,16 @@ BOX_FACES: tuple[tuple[str, tuple[int, int, int, int]], ...] = (
     ("back", (2, 3, 7, 6)),
     ("left", (3, 0, 4, 7)),
 )
+FACE_NORMALS: dict[str, Vec3] = {
+    "bottom": (0.0, 0.0, -1.0),
+    "top": (0.0, 0.0, 1.0),
+    "front": (0.0, -1.0, 0.0),
+    "right": (1.0, 0.0, 0.0),
+    "back": (0.0, 1.0, 0.0),
+    "left": (-1.0, 0.0, 0.0),
+}
+# Top/bottom faces sample this fraction of the photo's rows, starting at the top edge.
+TOP_BAND = 0.15
 
 
 def script_argv(argv: list[str]) -> list[str]:
@@ -67,36 +78,56 @@ def bounds(vertices: list[tuple[float, float, float]]) -> tuple[tuple[float, ...
     return mins, maxs
 
 
-def _uv(face: str, v: tuple[float, float, float], mins, maxs) -> tuple[float, float]:
+def planar_uv(normal: Vec3, v: Vec3, mins: Vec3, maxs: Vec3) -> UV:
+    """Planar UV of point ``v`` on a face with outward ``normal``, relative to the piece
+    bounding box ``(mins, maxs)``. Blender UV convention: (0, 0) = bottom-left of the image.
+
+    The photo is a front view of the whole piece, so every face samples the region of the
+    photo that corresponds to it in that view; the UV is a pure function of the position
+    and the face axis, so both triangles of a quad share one mapping (no diagonal seams):
+
+    - front/back (normal ±Y): u = X, v = Z across the WHOLE piece bbox (a straight
+      projection through the piece; legs sample the photo's leg region).
+    - right/left (normal ±X): the same photo stretched across depth, mirrored so that the
+      edge shared with the front face samples the same photo column as the front face
+      (right: u = 1 - Y, left: u = Y; seamless at the front corners, seam at the back).
+    - top/bottom (normal ±Z): the top ``TOP_BAND`` rows of the photo (the top surface in
+      a front/3-4 view) stretched across X-Y; the front edge samples the top row, so it
+      matches the front face's upper edge.
+    """
+
     def norm(i: int) -> float:
         span = maxs[i] - mins[i]
         return (v[i] - mins[i]) / span if span > 0 else 0.0
 
-    if face in ("front", "back"):
-        return norm(0), norm(2)  # photo seen from the front: u = X, v = Z
-    if face in ("top", "bottom"):
-        return norm(0), 1.0 - norm(1)  # seen from above: front edge at the bottom of the image
-    return norm(1), norm(2)  # sides: u = Y, v = Z
+    axis = max(range(3), key=lambda i: abs(normal[i]))
+    if axis == 1:  # front / back
+        return norm(0), norm(2)
+    if axis == 0:  # right / left
+        return (1.0 - norm(1) if normal[0] > 0 else norm(1)), norm(2)
+    return norm(0), 1.0 - TOP_BAND * norm(1)  # top / bottom
 
 
 def build_geometry(
     boxes: list[dict],
 ) -> tuple[list[Vec3], list[tuple[int, ...]], list[list[UV]]]:
-    """All boxes as one mesh: (vertices in m, quad faces, per-face loop UVs)."""
-    verts: list[tuple[float, float, float]] = []
+    """All boxes as one mesh: (vertices in m, quad faces, per-face loop UVs).
+
+    Every quad gets its own 4 vertices (24 per box) so faces never share UV-split corners;
+    UVs come from :func:`planar_uv` against the bbox of the whole piece.
+    """
+    corners: list[list[Vec3]] = [_box_vertices(box) for box in boxes]
+    mins, maxs = bounds([v for box in corners for v in box])
+    verts: list[Vec3] = []
     faces: list[tuple[int, ...]] = []
-    face_names: list[str] = []
-    for box in boxes:
-        base = len(verts)
-        verts.extend(_box_vertices(box))
+    uvs: list[list[UV]] = []
+    for box in corners:
         for name, idx in BOX_FACES:
-            faces.append(tuple(base + i for i in idx))
-            face_names.append(name)
-    mins, maxs = bounds(verts)
-    uvs = [
-        [_uv(name, verts[i], mins, maxs) for i in face]
-        for name, face in zip(face_names, faces, strict=True)
-    ]
+            base = len(verts)
+            quad = [box[i] for i in idx]
+            verts.extend(quad)
+            faces.append(tuple(range(base, base + 4)))
+            uvs.append([planar_uv(FACE_NORMALS[name], v, mins, maxs) for v in quad])
     return verts, faces, uvs
 
 
@@ -105,7 +136,8 @@ def build_geometry(
 
 def _material(bpy, texture: str | None):
     mat = bpy.data.materials.new("parametric")
-    mat.use_nodes = True
+    if bpy.app.version < (5, 0, 0):
+        mat.use_nodes = True  # deprecated (always on) in 5.x
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
     bsdf = next(n for n in nodes if n.type == "BSDF_PRINCIPLED")
     bsdf.inputs["Roughness"].default_value = 0.7
