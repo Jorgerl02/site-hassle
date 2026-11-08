@@ -23,7 +23,7 @@ from harness.eval.blind_sheet import (
     copy_blind_renders,
     write_blind_sheet,
 )
-from harness.eval.geometry import measure_candidate, model_for_candidate
+from harness.eval.geometry import fit_info, measure_candidate, model_for_candidate
 from harness.eval.judge import JSONAsker, judge_candidate
 from harness.eval.render import RenderError, existing_renders, render_views
 from harness.eval.report import read_scores, render_markdown, summarize
@@ -191,6 +191,10 @@ def evaluate_run(
                 }
             else:
                 reasons.append(f"sin geometría: {candidate_error}")
+        fit = fit_info(glb, meta)
+        if fit is not None:  # measured geometry is post-fit; keep the pre-fit error visible
+            record["fit_box_applied"] = fit["fit_box_applied"]
+            record["errors_before_fit"] = fit["errors_before_fit"]
 
         renders: list[Path] | None = None
         out_dir = storage.renders_dir(cand_dir)

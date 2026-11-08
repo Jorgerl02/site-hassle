@@ -101,6 +101,62 @@ def test_uniform_scale_factor_uses_largest_extents() -> None:
         bpy_post.uniform_scale_factor({"width": 0.0, "depth": 0.0, "height": 0.0}, TARGET)
 
 
+# ---------------------------------------------------------------- fit-to-box (pure)
+
+
+def test_fit_box_factors_match_catalogue_dims() -> None:
+    # 5 % anisotropic residuals after the uniform scale: within the default 10 % guard.
+    measured = {"width": 120.0, "depth": 63.0, "height": 71.25}
+    factors = bpy_post.fit_box_factors(measured, TARGET)
+    assert factors == pytest.approx({"x": 1.0, "y": 60.0 / 63.0, "z": 75.0 / 71.25})
+    fitted = {
+        "width": measured["width"] * factors["x"],
+        "depth": measured["depth"] * factors["y"],
+        "height": measured["height"] * factors["z"],
+    }
+    assert bpy_post.matched_errors(fitted, TARGET) == pytest.approx(
+        {"width": 0.0, "depth": 0.0, "height": 0.0}
+    )
+
+
+def test_fit_box_factors_follow_axis_matching_when_rotated() -> None:
+    # Rotated about the vertical: Blender X carries the depth, Y the width.
+    measured = {"width": 57.0, "depth": 126.0, "height": 75.0}
+    factors = bpy_post.fit_box_factors(measured, TARGET)
+    assert factors == pytest.approx({"x": 60.0 / 57.0, "y": 120.0 / 126.0, "z": 1.0})
+
+
+def test_fit_box_guard_rejects_any_axis_over_guard() -> None:
+    measured = {"width": 120.0, "depth": 60.0, "height": 60.0}  # height −20 %
+    assert bpy_post.fit_box_factors(measured, TARGET) is None
+    errors = bpy_post.matched_errors(measured, TARGET)
+    assert bpy_post.fit_guard_violations(errors, 0.10) == pytest.approx({"height": -0.2})
+    reason = bpy_post.fit_skip_reason(errors, 0.10)
+    assert reason == "error fuera de la guarda (±10 %): height -20,0 %"
+    assert bpy_post.fit_skip_reason({"width": 0.05}, 0.10) is None
+
+
+def test_fit_box_guard_is_inclusive_and_configurable() -> None:
+    measured = {"width": 120.0, "depth": 60.0, "height": 67.5}  # height exactly −10 %
+    assert bpy_post.fit_box_factors(measured, TARGET, 0.10) is not None
+    assert bpy_post.fit_box_factors(measured, TARGET, 0.05) is None
+    assert bpy_post.fit_box_factors(measured, TARGET, 0.25) is not None
+
+
+def test_fit_box_factors_degenerate_box() -> None:
+    assert bpy_post.fit_box_factors({"width": 120.0, "depth": 0.0, "height": 75.0}, TARGET) is None
+
+
+def test_fit_box_args_round_trip(piece: Piece, tmp_path: Path) -> None:
+    paths = (tmp_path / "i.glb", tmp_path / "o.glb", tmp_path / "m.json")
+    off = bpy_post.parse_args(build_args(*paths, piece))
+    assert off.fit_box is False and off.fit_guard == bpy_post.DEFAULT_FIT_GUARD == 0.10
+    on = bpy_post.parse_args(build_args(*paths, piece, fit_box=True, fit_guard=0.07))
+    assert on.fit_box is True and on.fit_guard == 0.07
+    with pytest.raises(SystemExit):
+        bpy_post.parse_args([*build_args(*paths, piece), "--fit-guard", "-0.1"])
+
+
 @pytest.mark.parametrize(
     ("size", "expected"),
     [((1024, 512), (1024, 512)), ((4096, 4096), (2048, 2048)), ((8192, 2048), (2048, 512))],
@@ -125,6 +181,29 @@ def test_parse_post_meta_fixture(tmp_path: Path) -> None:
     assert result.raw["blender_version"] == "4.5.3 LTS"
     assert result.errors_axis == {"width": 0.0, "depth": 0.02, "height": -0.024}
     assert result.draco is False
+    # Fixture predates fit-to-box: not applied, pre-fit errors = final errors.
+    assert result.fit_box_applied is False
+    assert result.fit_factors == {"x": 1.0, "y": 1.0, "z": 1.0}
+    assert result.errors_before_fit == result.errors
+
+
+def test_parse_post_meta_fit_fields(tmp_path: Path) -> None:
+    data = json.loads(FIXTURE_META.read_text())
+    data.update(
+        fit_box_requested=True,
+        fit_box_applied=True,
+        fit_guard=0.1,
+        fit_factors={"x": 1.0, "y": 0.98, "z": 1.024},
+        errors_before_fit={"width": 0.0, "depth": 0.02, "height": -0.024},
+        errors={"width": 0.0, "depth": 0.0, "height": 0.0},
+    )
+    meta = tmp_path / "post_meta.json"
+    meta.write_text(json.dumps(data))
+    result = parse_post_meta(meta, tmp_path / "o.glb")
+    assert result.fit_box_applied is True
+    assert result.fit_factors == {"x": 1.0, "y": 0.98, "z": 1.024}
+    assert result.errors_before_fit["height"] == -0.024
+    assert result.max_abs_error == 0.0
 
 
 def test_scale_ok_false_over_tolerance(tmp_path: Path) -> None:
@@ -181,9 +260,20 @@ def test_postprocess_success(
         out.parent / "post_meta.json"
     )
     assert "--draco" not in calls[0]["args"]
+    assert "--fit-box" not in calls[0]["args"]  # off by default
     assert result.glb_path == out
     assert result.tris_after == 149870
     assert "stdout-text" in (out.parent / "post_blender.log").read_text()
+
+
+def test_postprocess_passes_fit_box(
+    monkeypatch: pytest.MonkeyPatch, piece: Piece, cube_glb: Path, tmp_path: Path
+) -> None:
+    fake, calls = _fake_runner()
+    monkeypatch.setattr(blender_post, "run_blender_script", fake)
+    postprocess(cube_glb, tmp_path / "model_post.glb", piece, fit_box=True, fit_guard=0.08)
+    args = calls[0]["args"]
+    assert "--fit-box" in args and args[args.index("--fit-guard") + 1] == "0.08"
 
 
 def test_postprocess_nonzero_exit_raises_with_log(
@@ -246,3 +336,41 @@ def test_postprocess_real_blender(piece: Piece, tmp_path: Path) -> None:
     assert result.draco is False
     extents = trimesh.load(result.glb_path, force="mesh").extents  # readable without Draco
     assert sorted(extents) == pytest.approx([0.6, 0.75, 1.2], rel=1e-3)
+
+
+def _box_glb(path: Path, width_cm: float, height_cm: float, depth_cm: float) -> Path:
+    """Box GLB with glTF X = width, Y = height (up), Z = depth, centred at the origin."""
+    trimesh.creation.box(extents=(width_cm / 100, height_cm / 100, depth_cm / 100)).export(path)
+    return path
+
+
+def test_fit_box_real_blender_fits_small_anisotropic_error(piece: Piece, tmp_path: Path) -> None:
+    binary = _blender_bin()
+    # Half scale, depth +5 % and height −5 % relative to width (target 120 × 75 × 60).
+    src = _box_glb(tmp_path / "in.glb", 60.0, 37.5 * 0.95, 30.0 * 1.05)
+    result = postprocess(
+        src, tmp_path / "out.glb", piece, blender_bin=binary, fit_box=True, fit_guard=0.10
+    )
+    assert result.fit_box_applied is True
+    assert result.errors_before_fit == pytest.approx(
+        {"width": 0.0, "height": -0.05, "depth": 0.05}, abs=1e-4
+    )
+    assert result.max_abs_error == pytest.approx(0.0, abs=1e-4)
+    assert result.fit_factors == pytest.approx({"x": 1.0, "y": 1 / 1.05, "z": 1 / 0.95}, rel=1e-4)
+    assert result.raw["fit_box_requested"] is True and result.raw["fit_skip_reason"] is None
+    mesh = trimesh.load(result.glb_path, force="mesh")
+    assert list(mesh.extents) == pytest.approx([1.2, 0.75, 0.6], rel=1e-4)  # glTF X, Y, Z
+    assert mesh.bounds[0][1] == pytest.approx(0.0, abs=1e-5)  # feet on the floor
+
+
+def test_fit_box_real_blender_refuses_large_error(piece: Piece, tmp_path: Path) -> None:
+    binary = _blender_bin()
+    src = _box_glb(tmp_path / "in.glb", 120.0, 75.0 * 0.80, 60.0)  # height −20 %
+    result = postprocess(src, tmp_path / "out.glb", piece, blender_bin=binary, fit_box=True)
+    assert result.fit_box_applied is False
+    assert result.fit_factors == {"x": 1.0, "y": 1.0, "z": 1.0}
+    assert result.errors["height"] == pytest.approx(-0.2, abs=1e-4)
+    assert result.errors_before_fit == pytest.approx(result.errors, abs=1e-9)
+    assert "height" in result.raw["fit_skip_reason"]
+    mesh = trimesh.load(result.glb_path, force="mesh")
+    assert list(mesh.extents) == pytest.approx([1.2, 0.6, 0.6], rel=1e-4)

@@ -6,6 +6,8 @@ Writes ``runs/<run_id>/<piece_id>/<variant>/cand_<n>/model.glb`` plus the same
 NOT applied here: run ``bakeoff run --variants <variant> --run-id <run_id>`` is
 not possible for imported variants, so call :func:`postprocess_imported` (or
 ``python -m harness.data.import_glb ... --post``) to apply the shared Blender step.
+``--fit-box``/``--fit-guard`` enable the guarded fit-to-box step of the post-processing
+(off by default); its outcome is recorded in ``meta.json`` → ``post`` like in ``run``.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from harness.core import storage
 from harness.core.blender import BlenderNotAvailable
 from harness.core.models import DEFAULT_SAMPLE_CSV, load_pieces
 from harness.post.blender_post import BlenderPostError, postprocess
+from harness.post.bpy_post import DEFAULT_FIT_GUARD
 
 
 def import_glb(
@@ -37,6 +40,8 @@ def import_glb(
     runs_root: Path = storage.RUNS_ROOT,
     sample_csv: Path = DEFAULT_SAMPLE_CSV,
     post: bool = True,
+    fit_box: bool = False,
+    fit_guard: float = DEFAULT_FIT_GUARD,
 ) -> Path:
     pieces = {p.id: p for p in load_pieces(sample_csv)}
     piece = pieces[piece_id]
@@ -56,7 +61,9 @@ def import_glb(
     if post:
         t0 = time.monotonic()
         try:
-            result = postprocess(dst, storage.model_post_path(cand_dir), piece)
+            result = postprocess(
+                dst, storage.model_post_path(cand_dir), piece, fit_box=fit_box, fit_guard=fit_guard
+            )
             record["post"] = {
                 "ok": True,
                 "seconds": time.monotonic() - t0,
@@ -64,6 +71,9 @@ def import_glb(
                 "errors_axis": result.errors_axis,
                 "scale_factor": result.scale_factor,
                 "draco": result.draco,
+                "fit_box_applied": result.fit_box_applied,
+                "fit_factors": result.fit_factors,
+                "errors_before_fit": result.errors_before_fit,
                 "triangles_before": result.tris_before,
                 "triangles_after": result.tris_after,
             }
@@ -122,6 +132,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seconds", type=float, default=0.0)
     parser.add_argument("--meta-json", type=str, default="{}", help="JSON extra para meta")
     parser.add_argument("--no-post", action="store_true")
+    parser.add_argument(
+        "--fit-box",
+        action="store_true",
+        help="Ajusta la caja a las medidas exactas si el error cabe en --fit-guard",
+    )
+    parser.add_argument("--fit-guard", type=float, default=DEFAULT_FIT_GUARD)
     args = parser.parse_args(argv)
     dst = import_glb(
         run_id=args.run_id,
@@ -133,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
         seconds=args.seconds,
         meta=json.loads(args.meta_json),
         post=not args.no_post,
+        fit_box=args.fit_box,
+        fit_guard=args.fit_guard,
     )
     print(f"importado → {dst}")
     return 0

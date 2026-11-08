@@ -13,6 +13,9 @@ errors with ``kind="infra"`` —, judge error) are left out of the denominator a
 (``not_applicable``: E on an organic piece) are left out of that variant's denominator and
 reported as "N/M piezas aplicables".
 Cost and seconds per piece = sum over that piece's candidates, averaged over pieces.
+"Escala antes del ajuste" = mean over measured candidates of max |error| after the uniform
+scale only (``errors_before_fit``; the measured error when no fit-to-box ran), so a fitted
+model — whose "Escala" is computed on the fitted geometry — never hides its pre-fit error.
 """
 
 from __future__ import annotations
@@ -62,6 +65,9 @@ class VariantSummary:
     generation_cost: float = 0.0  # includes the router share of F
     router_cost: float = 0.0
     judge_cost: float = 0.0
+    pre_fit_error_mean: float | None = None  # mean max |error| before fit-to-box
+    fit_applied: int = 0  # measured candidates with fit-to-box applied
+    fit_measured: int = 0  # measured candidates (denominator of fit_applied)
 
     @property
     def applicable(self) -> int:
@@ -84,8 +90,20 @@ def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
+def pre_fit_max_error(rec: dict[str, Any]) -> float | None:
+    """max |error| after the uniform scale only (before any fit-to-box) of a record."""
+    before = rec.get("errors_before_fit")
+    if isinstance(before, dict) and before:
+        return max(abs(float(v)) for v in before.values())
+    geometry = rec.get("geometry") or {}
+    value = geometry.get("max_error")
+    return float(value) if value is not None else None
+
+
 def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
     pieces: dict[tuple[str, str], dict[str, Any]] = {}
+    pre_fit: dict[str, list[float]] = {}
+    fit_counts: dict[str, list[int]] = {}  # variant → [applied, measured]
     axis_values: dict[str, dict[str, list[float]]] = {}
     topology: dict[str, list[tuple[bool, int]]] = {}
     costs: dict[str, dict[str, float]] = {}
@@ -124,6 +142,12 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
             topology.setdefault(variant, []).append(
                 (bool(geometry.get("watertight")), int(geometry.get("n_components") or 0))
             )
+        if geometry:
+            counts = fit_counts.setdefault(variant, [0, 0])
+            counts[0] += int(bool(rec.get("fit_box_applied")))
+            counts[1] += 1
+            if (value := pre_fit_max_error(rec)) is not None:
+                pre_fit.setdefault(variant, []).append(value)
         piece["has_cand"] = True
         piece["cost"] += float(rec.get("cost_usd") or 0.0)
         piece["seconds"] += float(rec.get("seconds") or 0.0)
@@ -160,6 +184,8 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
         s.generation_cost = c.get("generation", 0.0)
         s.router_cost = c.get("router", 0.0)
         s.judge_cost = c.get("judge", 0.0)
+        s.pre_fit_error_mean = _mean(pre_fit.get(variant, []))
+        s.fit_applied, s.fit_measured = fit_counts.get(variant, [0, 0])
     decide_winners(summaries)
     return summaries
 
@@ -241,22 +267,25 @@ def render_markdown(run_id: str, summaries: dict[str, VariantSummary]) -> str:
         "",
         "## Medias por eje, coste y tiempo",
         "",
-        "| Variante | Parecido | Geometría | Materiales | Escala | Coste medio por pieza "
-        "| Tiempo medio por pieza | % mallas cerradas | Media de componentes "
-        "| Sin puntuar (infraestructura) |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| Variante | Parecido | Geometría | Materiales | Escala | Escala antes del ajuste "
+        "| Coste medio por pieza | Tiempo medio por pieza | % mallas cerradas "
+        "| Media de componentes | Sin puntuar (infraestructura) |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for v in order:
         s = summaries[v]
         means = " | ".join(_num(s.axis_means.get(a), 2) for a in AXES)
+        pre_fit = None if s.pre_fit_error_mean is None else 100.0 * s.pre_fit_error_mean
         out.append(
-            f"| {v} | {means} | {_num(s.cost_per_piece, 2, ' USD')} "
+            f"| {v} | {means} | {_num(pre_fit, 1, ' %')} | {_num(s.cost_per_piece, 2, ' USD')} "
             f"| {_seconds_cell(s.seconds_per_piece)} | {_num(s.watertight_pct, 0, ' %')} "
             f"| {_num(s.components_mean, 1)} | {s.unscored} |"
         )
     generation = sum(s.generation_cost for s in summaries.values())
     router = sum(s.router_cost for s in summaries.values())
     judge = sum(s.judge_cost for s in summaries.values())
+    fit_applied = sum(s.fit_applied for s in summaries.values())
+    fit_measured = sum(s.fit_measured for s in summaries.values())
     out += [
         "",
         f"**Coste total:** {_num(generation + judge, 2, ' USD')} = generación "
@@ -264,6 +293,11 @@ def render_markdown(run_id: str, summaries: dict[str, VariantSummary]) -> str:
         f"+ juez VLM {_num(judge, 2, ' USD')}.",
         "",
         "Mallas cerradas y componentes: solo candidatos medidos con trimesh (GLB legible).",
+        "",
+        f"**Ajuste a la caja del catálogo:** aplicado en {fit_applied} de {fit_measured} "
+        "candidatos medidos. «Escala» se puntúa sobre el modelo final (ajustado, si procede); "
+        "«Escala antes del ajuste» es la media del error máximo |relativo| tras la escala "
+        "uniforme, antes de cualquier ajuste por eje.",
     ]
     winners = [v for v in order if summaries[v].winner]
     out += ["", "## Decisión", ""]

@@ -115,6 +115,20 @@ Opciones útiles:
   `post: {"ok": false, "reason": "sin Blender"}` sin reintentarlo en cada candidato y el run
   continúa (se evalúa el GLB crudo); un fallo de Blender guarda el final del log en `reason`.
   `--no-post` omite el paso.
+- **Postprocesado: ajuste a la caja del catálogo (`--fit-box`, desactivado por defecto).** Tras
+  la escala uniforme, si el error residual de **cada** eje emparejado (alto = vertical; ancho y
+  fondo emparejados por tamaño) es ≤ `--fit-guard` (0,10 por defecto), `bpy_post.py` aplica una
+  escala distinta por eje respecto al centro de la base (las patas siguen en Z = 0) para que la
+  caja envolvente mida exactamente ancho × alto × fondo del catálogo. Si algún eje supera la
+  guarda no se ajusta nada y `post_meta.json` → `fit_skip_reason` dice qué eje y cuánto. Es un
+  paso legítimo para responder «¿cabe?» (el usuario ve en RA la caja real del producto), pero
+  deforma el modelo hasta un 10 % por eje, así que **se informa siempre**: `post_meta.json` y
+  `meta.json` → `post` guardan `fit_box_applied`, `fit_factors` ({x, y, z} en Blender) y
+  `errors_before_fit` (los residuos de la escala uniforme); `eval` los copia a `scores.jsonl` y
+  el informe añade la columna «Escala antes del ajuste» y cuántos candidatos se ajustaron. La
+  nota `escala` se calcula sobre el modelo final, así que con el ajuste sube: compara siempre
+  con el error previo. También en `python -m harness.data.import_glb ... --fit-box
+  --fit-guard 0.10`.
 - `bakeoff eval --no-render` no lanza Blender y reutiliza los renders que ya existan.
 - **Comprobación previa.** Antes de la primera llamada de pago, `run` comprueba las claves que
   necesita cada variante pedida (A/B: `TRIPO_API_KEY`; C: Tripo + `GEMINI_API_KEY`; D:
@@ -204,6 +218,9 @@ El informe automático usa solo el juez VLM; la consolidación de las hojas huma
   GLB crudo y su copia postprocesada dan la misma nota. `scores.jsonl` guarda la caja cruda
   (`raw_extents_cm`), el factor (`scale_factor`) y el origen (`trimesh` o `post_meta`), y el
   modelo que respondió al juez (`judge_model`; el juez nunca usa modelos de respaldo).
+  Con `--fit-box`, «Escala» puntúa el modelo ya ajustado; «Escala antes del ajuste» es la media
+  del error máximo |relativo| tras la escala uniforme, y una línea indica en cuántos candidatos
+  se aplicó el ajuste.
 - **Regla de la ganadora (spec).** Una variante gana si tiene **> 60 % de aptos en al menos 2
   categorías** y **> 15 puntos sobre A** en el total. Sin A en el run no se declara ganadora.
 - **Denominador.** Cuentan todas las piezas con algún candidato puntuado o con un fallo atribuible

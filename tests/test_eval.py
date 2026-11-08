@@ -726,3 +726,65 @@ def test_pick_studio_light_prefers_paint_and_falls_back_to_default() -> None:
     assert pick_studio_light(["Default", "basic.sl", "paint.sl"]) == "paint.sl"
     assert pick_studio_light(iter(["Default", "studio.sl"])) == "Default"
     assert pick_studio_light([], preferred="studio.sl") == "Default"
+
+
+# ---------------------------------------------------------------- fit-to-box bookkeeping
+
+
+def test_evaluate_run_carries_fit_box_info(tmp_path: Path, cube_glb: Path) -> None:
+    piece = _cube_piece(tmp_path)
+    runs = _fake_run(tmp_path, cube_glb, piece)
+    a1 = runs / "run1" / "p01" / "A" / "cand_1"
+    shutil.copyfile(cube_glb, storage.model_post_path(a1))
+    (a1 / "post_meta.json").write_text(
+        json.dumps(
+            {
+                "errors": {"width": 0.0, "height": 0.0, "depth": 0.0},
+                "fit_box_applied": True,
+                "errors_before_fit": {"width": 0.0, "height": -0.06, "depth": 0.04},
+            }
+        ),
+        encoding="utf-8",
+    )
+    # B/cand_1: only the candidate meta carries the fit fields (no post_meta.json).
+    b1 = runs / "run1" / "p01" / "B" / "cand_1"
+    shutil.copyfile(cube_glb, storage.model_post_path(b1))
+    meta = storage.read_meta(b1)
+    meta["post"] = {
+        "ok": True,
+        "fit_box_applied": False,
+        "errors_before_fit": {"width": 0.2, "height": 0.0, "depth": 0.0},
+    }
+    storage.write_meta(b1, meta)
+    vlm = StubVLM({"parecido": 4, "geometria": 4, "materiales": 4, "comentario": ""})
+    scores_file = evaluate_run("run1", runs_root=runs, judge=vlm, render=False, pieces=[piece])
+    by_cand = {
+        (r["variant"], r["candidate"]): r
+        for r in read_scores(scores_file)
+        if r["status"] != "generation_failed"
+    }
+    assert by_cand[("A", 1)]["fit_box_applied"] is True
+    assert by_cand[("A", 1)]["errors_before_fit"]["height"] == -0.06
+    assert by_cand[("B", 1)]["fit_box_applied"] is False
+    assert by_cand[("B", 1)]["errors_before_fit"]["width"] == 0.2
+    assert "fit_box_applied" not in by_cand[("A", 2)]  # raw model.glb, no post step
+
+
+def test_report_shows_scale_before_fit(tmp_path: Path) -> None:
+    records = _records("A", {"tapizado": (1, 3)})
+    for rec in records:
+        rec["geometry"] = {"source": "trimesh", "max_error": 0.0}
+    records[0]["fit_box_applied"] = True
+    records[0]["errors_before_fit"] = {"width": 0.0, "height": -0.06, "depth": 0.03}
+    records[1]["fit_box_applied"] = False
+    records[1]["errors_before_fit"] = {"width": 0.12, "height": 0.0, "depth": 0.0}
+    records[1]["geometry"]["max_error"] = 0.12
+    # records[2]: no fit fields (older run) → its measured max_error (0.0) is the pre-fit one.
+    s = summarize(records)["A"]
+    assert s.fit_applied == 1 and s.fit_measured == 3
+    assert s.pre_fit_error_mean == pytest.approx((0.06 + 0.12 + 0.0) / 3)
+    _write_scores(tmp_path, records)
+    report = build_report("r1", runs_root=tmp_path).read_text(encoding="utf-8")
+    assert "| Escala | Escala antes del ajuste |" in report
+    assert "| 5,00 | 6,0 % |" in report
+    assert "aplicado en 1 de 3 candidatos medidos" in report

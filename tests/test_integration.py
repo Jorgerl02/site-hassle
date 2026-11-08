@@ -704,3 +704,102 @@ def test_resume_reruns_infra_failed_step_and_reuses_candidate_failed_step(
     assert json.loads((runs / "dd/t02/D/cand_2/meta.json").read_text())["error_kind"] == (
         "candidate"
     )
+
+
+# --- fit-to-box flags ----------------------------------------------------------------------------
+
+
+def _fit_postprocess(calls: list[dict[str, Any]]):
+    from harness.post.blender_post import PostResult
+
+    def fake(glb_in: Path, glb_out: Path, piece: Any, **kwargs: Any) -> PostResult:
+        calls.append(kwargs)
+        shutil.copyfile(glb_in, glb_out)
+        applied = bool(kwargs.get("fit_box"))
+        return PostResult(
+            glb_path=Path(glb_out),
+            meta_path=Path(glb_out).with_name("post_meta.json"),
+            errors={"width": 0.0, "height": 0.0, "depth": 0.0},
+            tris_before=12,
+            tris_after=12,
+            textures=[],
+            seconds=0.5,
+            scale_factor=1.0,
+            fit_box_applied=applied,
+            fit_factors={"x": 1.0, "y": 0.97, "z": 1.04} if applied else {"x": 1, "y": 1, "z": 1},
+            errors_before_fit={"width": 0.0, "height": -0.04, "depth": 0.03},
+        )
+
+    return fake
+
+
+def test_run_fit_box_flags_reach_postprocess_and_meta(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli_module, "postprocess", _fit_postprocess(calls))
+    sample = _write_sample(tmp_path)
+    runs = tmp_path / "runs"
+    result = CliRunner().invoke(
+        app,
+        ["run", "--variants", "FAKE", "--sample", str(sample), "--skip-preflight"]
+        + ["--fit-box", "--fit-guard", "0.08", "--run-id", "fb", "--runs-root", str(runs)],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls and all(c == {"fit_box": True, "fit_guard": 0.08} for c in calls)
+    for meta_file in runs.glob("fb/*/*/cand_*/meta.json"):
+        post = json.loads(meta_file.read_text())["post"]
+        assert post["fit_box_applied"] is True
+        assert post["fit_factors"] == {"x": 1.0, "y": 0.97, "z": 1.04}
+        assert post["errors_before_fit"]["height"] == -0.04
+
+
+def test_run_fit_box_off_by_default(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli_module, "postprocess", _fit_postprocess(calls))
+    sample = _write_sample(tmp_path)
+    result = CliRunner().invoke(
+        app,
+        ["run", "--variants", "FAKE", "--sample", str(sample), "--skip-preflight"]
+        + ["--run-id", "nf", "--runs-root", str(tmp_path / "runs")],
+    )
+    assert result.exit_code == 0, result.output
+    assert calls and all(c == {"fit_box": False, "fit_guard": 0.10} for c in calls)
+
+
+def test_import_glb_fit_box_flags(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.data import import_glb as import_module
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(import_module, "postprocess", _fit_postprocess(calls))
+    sample = _write_sample(tmp_path)
+    piece_id = next(csv.DictReader(sample.open(encoding="utf-8")))["id"]
+    runs = tmp_path / "runs"
+    monkeypatch.setattr(import_module.storage, "RUNS_ROOT", runs)
+    dst = import_module.import_glb(
+        run_id="imp",
+        piece_id=piece_id,
+        variant="EXT",
+        glb=CUBE,
+        runs_root=runs,
+        sample_csv=sample,
+        fit_box=True,
+        fit_guard=0.05,
+    )
+    assert calls == [{"fit_box": True, "fit_guard": 0.05}]
+    post = json.loads((dst.parent / "meta.json").read_text())["post"]
+    assert post["fit_box_applied"] is True and post["fit_factors"]["z"] == 1.04
+    assert post["errors_before_fit"] == {"width": 0.0, "height": -0.04, "depth": 0.03}
+
+    # CLI: flags parsed and forwarded (import_glb itself stubbed).
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(import_module, "import_glb", lambda **kw: seen.update(kw) or dst)
+    base = ["--run-id", "imp", "--piece", piece_id, "--variant", "EXT", "--glb", str(CUBE)]
+    assert import_module.main([*base, "--fit-box", "--fit-guard", "0.07"]) == 0
+    assert seen["fit_box"] is True and seen["fit_guard"] == 0.07
+    assert import_module.main(base) == 0
+    assert seen["fit_box"] is False and seen["fit_guard"] == 0.10

@@ -181,3 +181,37 @@ def measure_candidate(glb: Path, piece: Piece) -> GeometryResult:
                 None, None, f"GLB ilegible y {POST_META_FILENAME} inválido: {exc!r}"
             )
     return GeometryResult(None, None, f"GLB ilegible: {load_error}")
+
+
+def fit_info(glb: Path, candidate_meta: dict | None = None) -> dict | None:
+    """Fit-to-box bookkeeping of the post-processed model, for the scores record.
+
+    Geometry is always measured on the actual (possibly fitted) model; this only carries
+    ``fit_box_applied`` and ``errors_before_fit`` (the uniform-scale residuals) so the report
+    can show the pre-fit error. Read from ``post_meta.json`` next to ``model_post.glb``, else
+    from the candidate ``meta.json`` → ``post``. ``None`` when ``glb`` is not the
+    post-processed model or neither source has the fields (runs older than the fit step).
+    """
+    glb = Path(glb)
+    if glb.name != storage.model_post_path(glb.parent).name:
+        return None
+    sources: list[dict] = []
+    meta_path = glb.with_name(POST_META_FILENAME)
+    if meta_path.is_file():
+        try:
+            sources.append(_post_meta(meta_path))
+        except (OSError, ValueError):
+            pass
+    post = (candidate_meta or {}).get("post")
+    if isinstance(post, dict) and post.get("ok"):
+        sources.append(post)
+    for data in sources:
+        before = data.get("errors_before_fit")
+        if "fit_box_applied" in data or before:
+            return {
+                "fit_box_applied": bool(data.get("fit_box_applied", False)),
+                "errors_before_fit": (
+                    {k: float(v) for k, v in before.items()} if isinstance(before, dict) else None
+                ),
+            }
+    return None

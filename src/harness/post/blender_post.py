@@ -10,6 +10,7 @@ from typing import Any
 
 from harness.core.blender import BlenderRun, run_blender_script
 from harness.core.models import SCALE_TOLERANCE, Piece
+from harness.post.bpy_post import DEFAULT_FIT_GUARD
 
 BPY_POST_SCRIPT = Path(__file__).with_name("bpy_post.py")
 POST_META_FILENAME = "post_meta.json"
@@ -42,6 +43,11 @@ class PostResult:
     scale_factor: float | None = None
     errors_axis: dict[str, float] = field(default_factory=dict)  # per named axis
     draco: bool = False
+    # Fit-to-box (see bpy_post): ``errors`` are the final residuals (≈ 0 when applied) and
+    # ``errors_before_fit`` the uniform-scale residuals, which must stay visible.
+    fit_box_applied: bool = False
+    fit_factors: dict[str, float] = field(default_factory=lambda: {"x": 1.0, "y": 1.0, "z": 1.0})
+    errors_before_fit: dict[str, float] = field(default_factory=dict)
     log: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -63,6 +69,8 @@ def build_args(
     max_tris: int = MAX_TRIS,
     max_texture_px: int = MAX_TEXTURE_PX,
     draco: bool = False,
+    fit_box: bool = False,
+    fit_guard: float = DEFAULT_FIT_GUARD,
 ) -> list[str]:
     """Arguments passed to ``bpy_post.py`` after ``--``."""
     args = [
@@ -77,6 +85,8 @@ def build_args(
     ]  # fmt: skip
     if draco:
         args.append("--draco")
+    if fit_box:
+        args += ["--fit-box", "--fit-guard", repr(float(fit_guard))]
     return args
 
 
@@ -99,6 +109,15 @@ def parse_post_meta(meta_path: Path, glb_out: Path, log: str = "") -> PostResult
             ),
             errors_axis={k: float(v) for k, v in (data.get("errors_axis") or {}).items()},
             draco=bool(data.get("draco", False)),
+            fit_box_applied=bool(data.get("fit_box_applied", False)),
+            fit_factors={
+                k: float(v)
+                for k, v in (data.get("fit_factors") or {"x": 1.0, "y": 1.0, "z": 1.0}).items()
+            },
+            # Older post_meta.json files (no fit step) → the final errors are the pre-fit ones.
+            errors_before_fit={
+                k: float(v) for k, v in (data.get("errors_before_fit") or errors).items()
+            },
             log=log,
             raw=data,
         )
@@ -122,11 +141,17 @@ def postprocess(
     max_tris: int = MAX_TRIS,
     max_texture_px: int = MAX_TEXTURE_PX,
     draco: bool = False,
+    fit_box: bool = False,
+    fit_guard: float = DEFAULT_FIT_GUARD,
 ) -> PostResult:
     """Scale/centre/decimate ``glb_in`` into ``glb_out``.
 
     ``draco`` is off by default: trimesh (used by the evaluation) cannot decode
     ``KHR_draco_mesh_compression``.
+
+    ``fit_box`` (off by default) adds the guarded fit-to-box step of ``bpy_post``: when every
+    matched axis is within ``fit_guard`` after the uniform scale, the bounding box is scaled
+    per axis to the catalogue dimensions; ``errors_before_fit`` keeps the pre-fit residuals.
 
     Writes ``post_meta.json`` and ``post_blender.log`` next to ``glb_out``. Raises
     ``BlenderNotAvailable`` without a binary, ``subprocess.TimeoutExpired`` on timeout and
@@ -143,6 +168,7 @@ def postprocess(
     args = build_args(
         glb_in, glb_out, meta_path, piece,
         max_tris=max_tris, max_texture_px=max_texture_px, draco=draco,
+        fit_box=fit_box, fit_guard=fit_guard,
     )  # fmt: skip
     run = run_blender_script(BPY_POST_SCRIPT, args, timeout=timeout, blender_bin=blender_bin)
     log = _log_text(run)
