@@ -10,6 +10,28 @@ compilation and renders each view in well under a second, versus seconds per vie
 sample-dependent noise for Eevee. Cost: no PBR reflections, so metal/glass are shown by
 base colour and texture only; the judge prompt says so.
 
+Lighting (measured 2026-11-08, Blender 5.2.3): the "Default" studio light with shadows,
+cavity and specular left a textured object ~30 % darker than its albedo (Workbench lights
+in view space from above, so the faces seen from the front get little light), which lowered
+the "materiales" score of every variant. Now: ``light="STUDIO"`` with the bundled
+``paint.sl`` studio light (soft, frontal), ``show_shadows``/``show_cavity``/
+``show_specular_highlight`` off, ``view_transform="Standard"``, ``look="None"``,
+``exposure=0.15``, ``gamma=1``; world white, film opaque. FLAT lighting reproduces the
+albedo exactly but loses every shape cue; ``paint.sl`` keeps the shading gradient and lands
+within a few percent of FLAT. Mean luminance (Rec.709 on sRGB values) of the non-white
+pixels, front view at 1024 px, run ``mcp-higgsfield`` vs the cleaned photo (lum / sat):
+
+    piece / variant        photo          before (Default)   after (paint.sl, +0.15 EV)
+    p04 MG_TRELLIS2        0.458 / 0.392  0.302 / 0.462      0.449 (-2 %) / 0.529
+    p09 MG_TRELLIS2        0.241 / 0.241  0.221 / 0.201      0.253 (+5 %) / 0.347
+    p13 HF_TRIPO_CLEAN     0.682 / 0.103  0.477 / 0.076      0.661 (-3 %) / 0.107
+
+Saturation matches on p13 (+4 %). On p04/p09 MG_TRELLIS2 it ends +35 %/+44 % above the
+photo, but their FLAT (unlit albedo) render is already 0.50/0.33: the excess is in the
+generated texture, not in the lighting, and the judge should see it (the old specular
+highlights were washing it out). ``pick_studio_light`` falls back
+to ``Default`` if a Blender build lacks ``paint.sl``.
+
 Orientation: the glTF importer maps glTF +Y up to Blender +Z and the glTF front (+Z) to
 Blender -Y, so "front" looks from -Y towards +Y.
 
@@ -41,6 +63,10 @@ LENS_MM = 50.0
 SENSOR_MM = 36.0
 MARGIN = 1.15
 
+
+STUDIO_LIGHT = "paint.sl"
+FALLBACK_STUDIO_LIGHT = "Default"
+EXPOSURE = 0.15
 
 IMAGE_NODE = "TEX_IMAGE"
 PRINCIPLED_NODE = "BSDF_PRINCIPLED"
@@ -91,6 +117,11 @@ def activate_albedo_textures(materials) -> int:
     return changed
 
 
+def pick_studio_light(available, preferred: str = STUDIO_LIGHT) -> str:
+    """``preferred`` if Blender ships it, else the always-present ``Default`` light."""
+    return preferred if preferred in set(available) else FALLBACK_STUDIO_LIGHT
+
+
 def parse_args() -> tuple[Path, Path, int]:
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     if len(argv) != 3:
@@ -110,9 +141,19 @@ def setup_scene(size: int):
     scene.render.film_transparent = False
     scene.render.image_settings.file_format = "PNG"
     scene.render.image_settings.color_mode = "RGB"
-    scene.view_settings.view_transform = "Standard"  # keep pure white as white
+    view = scene.view_settings
+    view.view_transform = "Standard"  # keep pure white as white, no filmic desaturation
+    view.look = "None"
+    view.exposure = EXPOSURE
+    view.gamma = 1.0
     shading = scene.display.shading
     shading.light = "STUDIO"
+    shading.studio_light = pick_studio_light(
+        sl.name for sl in bpy.context.preferences.studio_lights
+    )
+    shading.show_shadows = False
+    shading.show_cavity = False
+    shading.show_specular_highlight = False
     shading.color_type = "TEXTURE"
     shading.show_backface_culling = False
     world = bpy.data.worlds.new("white")

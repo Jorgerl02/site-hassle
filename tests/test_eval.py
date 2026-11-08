@@ -252,6 +252,10 @@ def test_render_real_blender_textured_pbr_shows_albedo(tmp_path: Path) -> None:
     r, g, b = (sum(c[i] for c in pixels) / len(pixels) for i in range(3))
     # A tangent-space normal map averages ≈ (128, 128, 255): clearly blue-dominant.
     assert not (b > 200 and b - max(r, g) > 60), f"parece un mapa de normales: {(r, g, b)}"
+    # Lighting floor: the old "Default" studio light left a mid-tone texture ~30 % darker
+    # than its albedo (p04 MG_TRELLIS2: 0.30); paint.sl + 0.15 EV gives ≈ albedo (0.45).
+    lum = sum(0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2] for p in pixels) / len(pixels)
+    assert lum / 255 > 0.35, f"render demasiado oscuro: luminancia media {lum / 255:.3f}"
 
 
 # ---------- blind sheet ----------
@@ -713,3 +717,12 @@ def test_albedo_node_through_mix_and_fallbacks() -> None:
         SimpleNamespace(node_tree=None),
     ]
     assert activate_albedo_textures(mats) == 1 and nodes.active is albedo
+
+
+def test_pick_studio_light_prefers_paint_and_falls_back_to_default() -> None:
+    from harness.eval.bpy_render import STUDIO_LIGHT, pick_studio_light
+
+    assert STUDIO_LIGHT == "paint.sl"
+    assert pick_studio_light(["Default", "basic.sl", "paint.sl"]) == "paint.sl"
+    assert pick_studio_light(iter(["Default", "studio.sl"])) == "Default"
+    assert pick_studio_light([], preferred="studio.sl") == "Default"
