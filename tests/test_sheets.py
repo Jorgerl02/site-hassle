@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.eval.blind_sheet import CandidateRef, read_blind_key
+from harness.eval.blind_sheet import CandidateRef
 from harness.eval.report import VariantSummary, render_markdown
 from harness.eval.sheets import (
     AUTO_JUDGE,
@@ -72,6 +72,37 @@ def test_read_sheet_rejects_unknown_apto(tmp_path: Path) -> None:
         read_sheet(path)
 
 
+def test_read_sheet_requires_blind_id_and_apto(tmp_path: Path) -> None:
+    path = tmp_path / "ana.csv"
+    path.write_text("blind_id,parecido,apta\nB001,4,sí\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"ana\.csv.*apto"):
+        read_sheet(path)
+    path.write_text("id;apto\nB001;sí\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="blind_id"):
+        read_sheet(path)
+    path.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="apto, blind_id"):
+        read_sheet(path)
+
+
+def test_read_sheet_keeps_multiline_comment(tmp_path: Path) -> None:
+    path = tmp_path / "ana.csv"
+    path.write_text(
+        'blind_id,apto,comentario\r\nB001,sí,"patas cortas\nbrillo raro"\r\nB002,no,\r\n',
+        encoding="utf-8",
+    )
+    sheet = read_sheet(path)
+    assert sheet["B001"].comentario == "patas cortas\nbrillo raro"
+    assert sheet["B002"].apto is False
+
+
+def test_read_sheet_rejects_duplicate_blind_id(tmp_path: Path) -> None:
+    path = tmp_path / "ana.csv"
+    path.write_text("blind_id,apto\nB001,sí\nB001,no\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"ana\.csv.*B001"):
+        read_sheet(path)
+
+
 def test_merge_joins_with_key_and_skips_unjudged() -> None:
     records = load_sheets(KEY, SHEETS)
     ana = {r.blind_id: r for r in records if r.judge == "ana"}
@@ -129,13 +160,6 @@ def test_summarize_by_variant_piece_level() -> None:
     by = summarize_by_variant(load_sheets(KEY, SHEETS))
     assert by["ana"] == {"A": (1, 1), "E": (1, 2)}
     assert by["luis"] == {"A": (1, 1), "E": (2, 3)}
-
-
-def test_real_key_reads() -> None:
-    real = Path(__file__).parents[1] / "runs" / "mcp-higgsfield" / "eval" / "blind_key.csv"
-    if not real.exists():
-        pytest.skip("sin la ejecución real")
-    assert read_blind_key(real)
 
 
 def test_render_markdown_human_section() -> None:

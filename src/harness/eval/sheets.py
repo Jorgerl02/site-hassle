@@ -10,12 +10,15 @@ if at least one of those candidates is apt.
 
 Agreement is computed per pair of judges over the ``blind_id`` both judged: percentage of
 equal ``apto`` labels and Cohen's kappa over the binary label. The automatic VLM judge
-(``scores.jsonl``) takes part as one more judge when its labels are given.
+(``scores.jsonl``) takes part as one more judge when its labels are given. ``auto_labels``
+only takes ``status == "scored"`` records, so it leaves out ``candidate_failed`` candidates
+(the VLM never judged them), whereas the automatic report counts those as not apt.
 """
 
 from __future__ import annotations
 
 import csv
+import io
 import itertools
 import unicodedata
 from dataclasses import dataclass, field
@@ -26,6 +29,7 @@ from harness.eval.blind_sheet import CandidateRef, read_blind_key
 
 AUTO_JUDGE = "juez automático"
 AXES: tuple[str, ...] = ("parecido", "geometria", "materiales", "escala")
+REQUIRED_COLUMNS = frozenset({"blind_id", "apto"})
 _YES = frozenset({"si", "s", "yes", "y", "1", "true", "apto"})
 _NO = frozenset({"no", "n", "0", "false", "no apto"})
 
@@ -92,18 +96,25 @@ def parse_apto(value: str | None) -> bool | None:
 
 def read_sheet(path: Path) -> dict[str, HumanScore]:
     """Read a filled-in blind sheet; empty cells become ``None``. Accepts ``,`` or ``;``."""
+    name = Path(path).name
     text = Path(path).read_text(encoding="utf-8-sig")
     header = text.splitlines()[0] if text else ""
     delimiter = ";" if header.count(";") > header.count(",") else ","
+    reader = csv.DictReader(io.StringIO(text, newline=""), delimiter=delimiter)
+    missing = sorted(REQUIRED_COLUMNS - set(reader.fieldnames or ()))
+    if missing:
+        raise ValueError(f"{name}: faltan columnas obligatorias: {', '.join(missing)}")
     scores: dict[str, HumanScore] = {}
-    for row in csv.DictReader(text.splitlines(), delimiter=delimiter):
+    for row in reader:
         blind_id = (row.get("blind_id") or "").strip()
         if not blind_id:
             continue
+        if blind_id in scores:
+            raise ValueError(f"{name}: blind_id repetido en la hoja: {blind_id}")
         try:
             apto = parse_apto(row.get("apto"))
         except ValueError as exc:
-            raise ValueError(f"{Path(path).name}, {blind_id}: {exc}") from None
+            raise ValueError(f"{name}, {blind_id}: {exc}") from None
         scores[blind_id] = HumanScore(
             **{axis: _rating(row.get(axis)) for axis in AXES},
             apto=apto,
