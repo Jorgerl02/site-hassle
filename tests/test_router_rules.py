@@ -139,6 +139,7 @@ def test_auto_without_key_uses_rules(tmp_path: Path) -> None:
     assert meta["router"]["source"] == "rules"
     assert meta["router"]["rule"] == {"route": "E", "reason": "rectilínea", "thin": False}
     assert meta["router"]["cost_usd"] == 0.0 and meta["router_cost_usd_share"] == 0.0
+    assert variant.decide(make_piece(tmp_path, True))[1]["classifier"] == "rules"
     assert storage.read_meta(storage.candidate_dir(tmp_path / "F", 1))["routed_to"] == "E"
     assert result.notes.startswith("Reglas: rectilínea → ruta E")
 
@@ -181,9 +182,11 @@ def test_organic_variant_is_configurable(tmp_path: Path) -> None:
     variant, _ = router(organic_variant="TRELLIS", others={"TRELLIS": trellis})
     result = variant.run(make_piece(tmp_path, False), tmp_path / "F")
     assert trellis.calls == 1 and result.candidates[0].meta["routed_to"] == "TRELLIS"
-    missing, _ = router(organic_variant="TRELLIS")
     with pytest.raises(ValueError, match="TRELLIS"):
-        missing.run(make_piece(tmp_path, False), tmp_path / "F2")
+        router(organic_variant="TRELLIS")  # rejected early: no delegate in others
+    fixed, stubs = router(organic_variant="B")
+    assert fixed.run(make_piece(tmp_path, False), tmp_path / "F2").candidates
+    assert stubs["B"].calls == 1
 
 
 def test_unknown_classifier_rejected() -> None:

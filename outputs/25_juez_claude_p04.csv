@@ -53,3 +53,5 @@ p03,macizo_mate,E,local,paramétrico box,4,3,4,5,0%,no,"Frontal del zapatero con
 p04,macizo_mate,E,local,paramétrico panel_table pairs,3,3,3,5,0%,no,"Los pares de paneles en L no reproducen los tablones inclinados del original; veta del tablero estirada; región de foto en los paneles poco creíble"
 p07,macizo_mate,E,local,paramétrico panel_table sides + balda,4,4,4,5,0%,sí,"Dos paneles laterales y balda a 29 cm con el travertino de la foto proyectado: muy cercano a la pieza real y escala exacta"
 p08,macizo_mate,E,local,paramétrico box,4,4,3,5,0%,no,"Caja con los dos cajones de la foto en el frontal; falta el zócalo y la banda superior del tablero muestra un artefacto gris"
+p03,macizo_mate,E2,local,paramétrico box_legs + side_edge + top_crop,4,4,4,5,0%,sí,"Ronda 7: zapatero con patas de 10 cm y laterales/tapa de madera continua; patas cuadradas donde la foto las tiene redondas (menor)"
+p08,macizo_mate,E2,local,paramétrico box_legs zócalo + side_edge + top_crop,4,4,4,5,0%,sí,"Ronda 7: mesita con zócalo retranqueado y veta continua en tapa y laterales; desaparece la franja clara de la tapa"

@@ -5,7 +5,8 @@
     "leg_height_cm": 10,
     "leg_size_cm": 4,
     "leg_inset_cm": 7,
-    "side_edge": 0.012
+    "side_edge": 0.012,
+    "top_crop": 0.02
   },
   "p04": {
     "kind": "panel_table",
@@ -27,6 +28,7 @@
     "kind": "box_legs",
     "plinth_height_cm": 5,
     "plinth_inset_cm": 3,
-    "side_edge": 0.05
+    "side_edge": 0.05,
+    "top_crop": 0.065
   }
 }

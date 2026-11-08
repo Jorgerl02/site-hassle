@@ -17,6 +17,8 @@ from harness.core.blender import BlenderNotAvailable, BlenderRun
 from harness.core.models import Piece
 from harness.post import bpy_parametric
 from harness.post.parametric_spec import (
+    BOX_SIDE_EDGE,
+    BOX_TOP_CROP,
     KINDS,
     Box,
     Spec,
@@ -821,14 +823,48 @@ def test_repo_overrides_p03_legs_p08_plinth() -> None:
     assert overrides["p08"]["plinth_height_cm"] == 5
 
 
-def test_box_legs_side_edge_hints_body(tmp_path: Path) -> None:
+def test_box_legs_texture_hints(tmp_path: Path) -> None:
     piece = make_piece(tmp_path, 52, 50, 36)
-    spec = make_spec(piece, "box_legs", params={"plinth_height_cm": 5, "side_edge": 0.05})
+    spec = make_spec(
+        piece, "box_legs", params={"plinth_height_cm": 5, "side_edge": 0.05, "top_crop": 0.06}
+    )
     boxes = {b.name: b for b in spec.boxes}
     assert spec.extra["side_band"] == [0.0, 0.05]
-    assert boxes["body"].uv_v == pytest.approx((0.1, 1.0))  # = the straight projection
+    assert boxes["body"].uv_v == pytest.approx((0.1, 0.94))  # rim rows skipped
     assert boxes["plinth"].uv_v is None
-    plain = make_spec(piece, "box_legs", params={"plinth_height_cm": 5})
-    assert "side_band" not in plain.extra and all(b.uv_v is None for b in plain.boxes)
-    with pytest.raises(ValueError, match="side_edge"):
-        build_spec(piece, "box_legs", {"side_edge": 0})
+    defaults = make_spec(piece, "box_legs", params={"plinth_height_cm": 5})
+    assert defaults.extra["side_band"] == [0.0, BOX_SIDE_EDGE]
+    body = next(b for b in defaults.boxes if b.name == "body")
+    assert body.uv_v == pytest.approx((0.1, 1.0 - BOX_TOP_CROP))
+    assert bounding_box(defaults.boxes) == bounding_box(
+        build_spec(piece, "box_legs", {"plinth_height_cm": 5})
+    )
+    for bad in ({"side_edge": 0}, {"top_crop": 0.5}):
+        with pytest.raises(ValueError, match="box_legs"):
+            build_spec(piece, "box_legs", bad)
+
+
+def test_box_legs_top_samples_side_band(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 52, 50, 36)
+    spec = make_spec(piece, "box_legs", params={"plinth_height_cm": 5, "side_edge": 0.05})
+    raw = spec.to_dict()
+    _, _, uvs = bpy_parametric.build_geometry(raw["boxes"], tuple(raw["extra"]["side_band"]))
+    body_idx = next(i for i, b in enumerate(raw["boxes"]) if b["name"] == "body")
+    faces = dict(
+        zip(
+            [n for n, _ in bpy_parametric.BOX_FACES],
+            uvs[6 * body_idx : 6 * body_idx + 6],
+            strict=True,
+        )
+    )
+    for name in ("top", "left", "right"):
+        assert all(0.0 <= u <= 0.05 + 1e-9 for u, _ in faces[name]), name
+    assert max(v for _, v in faces["front"]) == pytest.approx(1.0 - BOX_TOP_CROP)
+
+
+def test_base_words_do_not_override_proportions(tmp_path: Path) -> None:
+    # p25: coat stand 35 x 176 x 40 "con patas finas" stays a shelf by proportions
+    p25 = make_piece(tmp_path, 35, 176, 40, "Perchero de pie de aluminio con patas finas.")
+    assert classify_with_params(p25) == ("shelf", {})
+    slab = make_piece(tmp_path, 200, 3, 90, "Tablero sobre patas")
+    assert classify(slab) == "slab"

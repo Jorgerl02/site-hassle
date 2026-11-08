@@ -110,6 +110,10 @@ class RouterVariant:
         self._vlm = vlm
         self._delegates: dict[str, Variant | None] = {"E": e, "C": c, "B": b, **(others or {})}
         self._settings = settings
+        if organic_variant is not None and organic_variant not in ("C", "B", *(others or {})):
+            raise ValueError(
+                f"Variante F: organic_variant {organic_variant!r} necesita su variante en others"
+            )
         self.classifier = classifier
         self.organic_variant = organic_variant
 
@@ -207,6 +211,7 @@ class RouterVariant:
                     "rule": rules,
                     "thin": decision.thin,
                     "cost_usd": 0.0,
+                    "classifier": mode,
                 }
                 return decision.route, info
             info = {**self.classify(piece), "rule": rules, "thin": decision.thin}
@@ -218,7 +223,6 @@ class RouterVariant:
     def run(self, piece: Piece, workdir: Path, candidates: int = 2) -> VariantResult:
         workdir = Path(workdir)
         route, router = self.decide(piece)
-        router.setdefault("classifier", "rules")
         fallback: str | None = None
 
         try:

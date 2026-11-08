@@ -59,16 +59,24 @@ PANEL_TABLE_PARAMS: tuple[str, ...] = (
 )
 # box_legs: a closed body on four square legs (p03 shoe cabinet) and/or on a recessed
 # plinth (p08 bedside table). Legs are used when ``leg_height_cm`` is given or no plinth is;
-# with both, the plinth stands on the legs. ``leg_inset_cm`` = body edge → outer leg face.
+# with both, the plinth stands on the legs. ``leg_inset_cm`` = distance to the outer leg
+# face from the body edge, or from the plinth footprint when there is a plinth (real
+# distance from the body edge = plinth_inset_cm + leg_inset_cm).
 BOX_LEG_HEIGHT = 10.0
 BOX_LEG_SIZE = 5.0
 BOX_LEG_INSET = 3.0
 BOX_PLINTH_HEIGHT = 5.0  # only used when the text says "zócalo" without a height
 BOX_PLINTH_INSET = 2.0
 BOX_BASE_MAX_RATIO = 0.5  # legs + plinth never take more than half the height
-# ``side_edge`` (fraction of the photo width, optional): the body's sides and top sample
-# the photo's left ``side_edge`` columns (the solid frame stile) instead of the whole
-# front, so drawers are not repeated on the sides. Unset = straight projection.
+# Texture hints of the body (always applied for box_legs):
+# - ``side_edge`` (fraction of the photo width, default BOX_SIDE_EDGE): its sides and top
+#   sample the photo's left ``side_edge`` columns (the solid frame stile) instead of the
+#   whole front, so drawers are not repeated on the sides and the top shows no rim;
+# - ``top_crop`` (fraction of the photo height, default BOX_TOP_CROP): its vertical faces
+#   stop that many rows below the photo's top edge, so the rim of the top seen from above
+#   is not mapped onto the upper edge of the front / sides.
+BOX_SIDE_EDGE = 0.03
+BOX_TOP_CROP = 0.03
 BOX_LEGS_PARAMS: tuple[str, ...] = (
     "leg_height_cm",
     "leg_size_cm",
@@ -76,6 +84,7 @@ BOX_LEGS_PARAMS: tuple[str, ...] = (
     "plinth_height_cm",
     "plinth_inset_cm",
     "side_edge",
+    "top_crop",
 )
 # Checked AFTER ``KEYWORDS`` (a "mesa con patas" stays a table): base words → box_legs.
 BOX_LEGS_WORDS: tuple[str, ...] = ("pata",)
@@ -216,22 +225,24 @@ def base_params_from_text(text: str) -> dict[str, Any] | None:
 
 
 def classify_with_params(piece: Piece) -> tuple[Kind, dict[str, Any]]:
-    """Heuristic ``(kind, params)``: description keywords first, then name, then the base
-    words ("patas" / "zócalo" → ``box_legs``), then proportions."""
+    """Heuristic ``(kind, params)``: description keywords first, then name, then
+    proportions (slab / shelf); a remaining ``box`` becomes ``box_legs`` when the text has
+    a base word ("patas" / "zócalo")."""
     texts = (piece.description or "", piece.name or "")
     for text in texts:
         kind = classify_text(text)
         if kind is not None:
             return kind, {}  # type: ignore[return-value]
-    for text in texts:
-        params = base_params_from_text(text)
-        if params is not None:
-            return "box_legs", params
     w, h, d = piece.width_cm, piece.height_cm, piece.depth_cm
     if h <= SLAB_MAX_HEIGHT_RATIO * max(w, d):
         return "slab", {}
     if h >= SHELF_MIN_HEIGHT_RATIO * w and d <= SHELF_MAX_DEPTH:
         return "shelf", {}
+    # The base words only refine a plain box ("perchero con patas" stays a shelf).
+    for text in texts:
+        params = base_params_from_text(text)
+        if params is not None:
+            return "box_legs", params
     return "box", {}
 
 
@@ -372,10 +383,13 @@ def box_legs_params(params: dict[str, Any] | None = None) -> dict[str, Any]:
         "leg_inset_cm": float(params.get("leg_inset_cm", BOX_LEG_INSET)),
         "plinth_height_cm": float(plinth) if plinth is not None else None,
         "plinth_inset_cm": float(params.get("plinth_inset_cm", BOX_PLINTH_INSET)),
-        "side_edge": float(params["side_edge"]) if "side_edge" in params else None,
+        "side_edge": float(params.get("side_edge", BOX_SIDE_EDGE)),
+        "top_crop": float(params.get("top_crop", BOX_TOP_CROP)),
     }
-    if out["side_edge"] is not None and not 0.0 < out["side_edge"] <= 1.0:
+    if not 0.0 < out["side_edge"] <= 1.0:
         raise ValueError(f"box_legs: side_edge debe estar en (0, 1] ({out['side_edge']})")
+    if not 0.0 <= out["top_crop"] < 0.5:
+        raise ValueError(f"box_legs: top_crop debe estar en [0, 0.5) ({out['top_crop']})")
     for key, value in out.items():
         if value is not None and value < 0:
             raise ValueError(f"box_legs: {key} no puede ser negativo ({value})")
@@ -472,10 +486,11 @@ def bounding_box(boxes: list[Box]) -> tuple[tuple[float, ...], tuple[float, ...]
     return mins, maxs
 
 
-def _straight_v(box: Box, h: float) -> tuple[float, float]:
-    """Photo rows of ``box`` under the straight projection (v = z / height)."""
+def _body_v(box: Box, h: float, top_crop: float) -> tuple[float, float]:
+    """Photo rows of ``box``: the straight projection (v = z / height) at its bottom, the
+    photo's top edge minus ``top_crop`` at its top."""
     z0 = box.pos_cm[2] - box.size_cm[2] / 2
-    return (z0 / h, (z0 + box.size_cm[2]) / h)
+    return (z0 / h, 1.0 - top_crop)
 
 
 def make_spec(
@@ -487,8 +502,9 @@ def make_spec(
 ) -> Spec:
     """``photo_regions`` (``{"top_row": f, "side_band": [u0, u1]}``, from the cleaned photo)
     is only used by ``panel_table``: per-box ``uv_v`` and ``extra["side_band"]``.
-    ``box_legs`` with ``side_edge`` hints its body (same rows as the straight projection)
-    and sets ``extra["side_band"] = [0, side_edge]``."""
+    ``box_legs`` hints its body (rows from the straight projection at its bottom up to
+    ``1 - top_crop``) and sets ``extra["side_band"] = [0, side_edge]``, which its sides and
+    top sample."""
     extra: dict[str, Any] = {"piece_id": piece.id}
     if params:
         extra["params"] = dict(params)
@@ -498,14 +514,15 @@ def make_spec(
         if photo_regions.get("side_band") is not None:
             extra["side_band"] = [float(v) for v in photo_regions["side_band"]]
     if kind == "box_legs":
-        edge = box_legs_params(params)["side_edge"]
-        if edge is not None:
-            h = float(piece.height_cm)
-            boxes = [
-                Box(b.name, b.size_cm, b.pos_cm, _straight_v(b, h)) if b.name == "body" else b
-                for b in boxes
-            ]
-            extra["side_band"] = [0.0, edge]
+        p = box_legs_params(params)
+        h = float(piece.height_cm)
+        boxes = [
+            Box(b.name, b.size_cm, b.pos_cm, _body_v(b, h, p["top_crop"]))
+            if b.name == "body"
+            else b
+            for b in boxes
+        ]
+        extra["side_band"] = [0.0, p["side_edge"]]
     return Spec(
         kind=kind,
         boxes=boxes,
