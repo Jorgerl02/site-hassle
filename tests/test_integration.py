@@ -564,3 +564,143 @@ def test_router_falls_back_when_e_declines_an_organic_piece(
     result = registry.get_variant("F").run(pieces["t02"], tmp_path / "runs/r/t02/F", 2)
     assert {c.meta["routed_to"] for c in result.candidates} == {"C"}
     assert "no aplicable" in result.notes
+
+
+# --- per-candidate failures: infra vs candidate (N1) --------------------------------------------
+
+
+def _meshy_network_error() -> Exception:
+    import httpx
+
+    from harness.clients.meshy import MeshyError
+
+    try:
+        raise httpx.ConnectError("sin red")
+    except httpx.ConnectError as exc:
+        try:
+            raise MeshyError("Meshy error de red en POST /multi-image-to-3d") from exc
+        except MeshyError as wrapped:
+            return wrapped
+
+
+def _meshy_task_failed() -> Exception:
+    from harness.clients.meshy import MeshyError
+
+    payload = {"id": "task-x", "status": "FAILED", "task_error": {"message": "malla inválida"}}
+    return MeshyError("Tarea Meshy task-x FAILED: malla inválida", payload)
+
+
+class FailingMeshy(StubGenerator):
+    """Meshy stand-in that raises ``make_error()`` for chosen (piece, seed) pairs."""
+
+    def __init__(self, fail: dict[tuple[str, int | None], Any]) -> None:
+        super().__init__(MeshyOutcome, pricing.MESHY_USD_PER_MODEL)
+        self.fail = fail
+        self.attempts: list[tuple[str, int | None]] = []
+
+    def generate(self, images: list[Path], dst_glb: Path, *, seed: int | None = None) -> Any:
+        piece_id = Path(dst_glb).parent.parent.parent.name  # runs/<run>/<piece>/D/cand_n
+        self.attempts.append((piece_id, seed))
+        for key in ((piece_id, seed), (piece_id, None)):
+            if key in self.fail:
+                raise self.fail[key]()
+        return super().generate(images, dst_glb, seed=seed)
+
+
+def _run_d(sample: Path, runs: Path, meshy: StubGenerator, monkeypatch: pytest.MonkeyPatch) -> Any:
+    monkeypatch.setenv("MESHY_API_KEY", "test-key")
+    monkeypatch.setitem(registry._FACTORIES, "D", lambda: CleanMeshyVariant(meshy))
+    return CliRunner().invoke(
+        app,
+        ["run", "--variants", "D", "--no-post", "--sample", str(sample)]
+        + ["--run-id", "dd", "--runs-root", str(runs)],
+    )
+
+
+def _eval_and_summarize(sample: Path, runs: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    from harness.eval.report import summarize
+
+    for cand_dir in runs.glob("dd/*/*/cand_*"):
+        if (cand_dir / "model.glb").is_file():
+            renders = cand_dir / "renders"
+            renders.mkdir(exist_ok=True)
+            for view in VIEWS:
+                Image.new("RGB", (64, 64), (200, 200, 200)).save(renders / f"{view}.png")
+    monkeypatch.setattr(eval_module, "_default_judge", lambda: (StubVLM(), None))
+    common = ["--run-id", "dd", "--runs-root", str(runs)]
+    result = CliRunner().invoke(app, ["eval", "--no-render", "--sample", str(sample), *common])
+    assert result.exit_code == 0, result.output
+    result = CliRunner().invoke(app, ["report", *common])
+    assert result.exit_code == 0, result.output
+    records = [json.loads(x) for x in (runs / "dd/eval/scores.jsonl").read_text().splitlines()]
+    return records, summarize(records)["D"]
+
+
+def test_d_network_failure_on_every_candidate_is_infra_and_unscored(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample, runs = _write_sample(tmp_path), tmp_path / "runs"
+    meshy = FailingMeshy({("t02", None): _meshy_network_error})
+    result = _run_d(sample, runs, meshy, monkeypatch)
+    assert result.exit_code == 0, result.output
+
+    [error] = json.loads((runs / "dd/meta.json").read_text())["errors"]
+    assert (error["piece_id"], error["kind"]) == ("t02", "infra")
+    for n in (1, 2):
+        cand = json.loads((runs / f"dd/t02/D/cand_{n}/meta.json").read_text())
+        assert cand["error"] and cand["error_kind"] == "infra"
+        assert not (runs / f"dd/t02/D/cand_{n}/model.glb").exists()
+
+    records, summary = _eval_and_summarize(sample, runs, monkeypatch)
+    t02 = [r for r in records if r["piece_id"] == "t02"]
+    assert t02 and all(r["status"] == "unscored" and r["error_kind"] == "infra" for r in t02)
+    assert not any(r["status"] == "candidate_failed" for r in records)
+    assert all(r["blind_id"] is None for r in t02)  # no model: not on the blind sheet
+    assert all(r["status"] == "scored" for r in records if r["piece_id"] == "t01")
+    # t02 is out of D's denominator: only t01 counts.
+    assert summary.apt_total[1] == 1 and summary.unscored == 1
+
+
+def test_d_provider_failure_on_every_candidate_counts_as_not_apt(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample, runs = _write_sample(tmp_path), tmp_path / "runs"
+    meshy = FailingMeshy({("t02", None): _meshy_task_failed})
+    assert _run_d(sample, runs, meshy, monkeypatch).exit_code == 0
+
+    [error] = json.loads((runs / "dd/meta.json").read_text())["errors"]
+    assert (error["piece_id"], error["kind"]) == ("t02", "candidate")
+    cand = json.loads((runs / "dd/t02/D/cand_1/meta.json").read_text())
+    assert cand["error_kind"] == "candidate" and cand["error_payload"]["status"] == "FAILED"
+
+    records, summary = _eval_and_summarize(sample, runs, monkeypatch)
+    t02 = {(r["candidate"], r["status"]) for r in records if r["piece_id"] == "t02"}
+    assert (1, "candidate_failed") in t02 and (2, "candidate_failed") in t02
+    assert (None, "generation_failed") in t02  # the run-meta error of the whole step
+    assert summary.apt_total[1] == 2 and summary.unscored == 0  # t02 is in, as not apt
+    assert summary.apt_by_category["tapizado"] == (0, 1)
+
+
+def test_resume_reruns_infra_failed_step_and_reuses_candidate_failed_step(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample, runs = _write_sample(tmp_path), tmp_path / "runs"
+    first = FailingMeshy({("t01", 2): _meshy_network_error, ("t02", 2): _meshy_task_failed})
+    assert _run_d(sample, runs, first, monkeypatch).exit_code == 0
+    meta = json.loads((runs / "dd/meta.json").read_text())
+    assert meta["errors"] == []  # cand_1 succeeded in both steps
+    assert json.loads((runs / "dd/t01/D/cand_2/meta.json").read_text())["error_kind"] == "infra"
+    assert json.loads((runs / "dd/t02/D/cand_2/meta.json").read_text())["error_kind"] == (
+        "candidate"
+    )
+
+    second = FailingMeshy({})
+    result = _run_d(sample, runs, second, monkeypatch)  # --resume is the default
+    assert result.exit_code == 0, result.output
+    assert second.attempts == [("t01", 1), ("t01", 2)]  # t02 reused, t01 retried
+    assert "reutilizado" in result.output
+    retried = json.loads((runs / "dd/t01/D/cand_2/meta.json").read_text())
+    assert "error" not in retried and (runs / "dd/t01/D/cand_2/model.glb").is_file()
+    assert json.loads((runs / "dd/t02/D/cand_2/meta.json").read_text())["error_kind"] == (
+        "candidate"
+    )

@@ -7,13 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-import httpx
 import typer
 from rich.console import Console
 
 from harness.core import storage
 from harness.core.blender import BlenderNotAvailable
-from harness.core.config import MissingKeyError, Settings
+from harness.core.config import Settings
+from harness.core.errors import error_kind
 from harness.core.models import DEFAULT_SAMPLE_CSV, Piece, VariantResult, load_pieces
 from harness.core.registry import get_variant
 from harness.core.variant import is_not_applicable
@@ -125,33 +125,6 @@ def preflight(
     return problems, warnings
 
 
-def error_kind(exc: BaseException) -> str:
-    """``"infra"`` (missing key, no Blender, network) or ``"candidate"`` (provider failed).
-
-    Looks through the whole cause chain: clients wrap network errors in their own types.
-    """
-    infra: tuple[type[BaseException], ...] = (
-        MissingKeyError,
-        BlenderNotAvailable,
-        httpx.TransportError,
-        ConnectionError,
-    )
-    try:
-        import anthropic
-
-        infra = (*infra, anthropic.APIConnectionError)
-    except ImportError:  # pragma: no cover
-        pass
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        if isinstance(current, infra):
-            return "infra"
-        seen.add(id(current))
-        current = current.__cause__ or current.__context__
-    return "candidate"
-
-
 def _key(entry: dict[str, Any]) -> tuple[str, str]:
     return str(entry.get("piece_id")), str(entry.get("variant"))
 
@@ -238,12 +211,25 @@ class RunMeta:
         storage.write_meta(self.run_root, self.data)
 
 
-def _reusable(meta: RunMeta, key: tuple[str, str]) -> bool:
-    """A finished step: recorded result, no active error, and every candidate's GLB on disk."""
+def _has_infra_candidate_error(workdir: Path) -> bool:
+    """Whether a candidate of this step failed for an infrastructure reason (network...)."""
+    for meta_file in sorted(workdir.glob("cand_*/meta.json")):
+        cand_meta = storage.read_meta(meta_file.parent)
+        if cand_meta.get("error") and cand_meta.get("error_kind") == "infra":
+            return True
+    return False
+
+
+def _reusable(meta: RunMeta, key: tuple[str, str], workdir: Path) -> bool:
+    """A finished step: recorded result, no active error, every candidate's GLB on disk and
+    no candidate that failed for an infrastructure reason (those are retried on resume;
+    candidates that failed on the provider's side are not)."""
     previous = meta.result_for(key)
     if previous is None or meta.has_active_error(key):
         return False
-    return all(Path(c["glb_path"]).is_file() for c in previous.get("candidates", []))
+    if not all(Path(c["glb_path"]).is_file() for c in previous.get("candidates", [])):
+        return False
+    return not _has_infra_candidate_error(workdir)
 
 
 def _select_pieces(pieces: list[Piece], spec: str) -> list[Piece]:
@@ -321,11 +307,11 @@ def run(
     for piece in selected:
         for variant in resolved:
             console.print(f"[bold]{piece.id}[/bold] · variante {variant.name}")
-            if resume and _reusable(run_meta, (piece.id, variant.name)):
+            workdir = storage.variant_dir(run_id, piece.id, variant.name, runs_root)
+            if resume and _reusable(run_meta, (piece.id, variant.name), workdir):
                 console.print("  reutilizado (ya terminado en este run)")
                 reused += 1
                 continue
-            workdir = storage.variant_dir(run_id, piece.id, variant.name, runs_root)
             try:
                 result = variant.run(piece, workdir, candidates)
             except Exception as exc:  # one failing piece/variant must not stop the run

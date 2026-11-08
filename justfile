@@ -15,12 +15,14 @@ ingest:
     uv run python -m harness.data.ingest
 
 # Ejecuta las variantes sobre las 30 piezas (run_id vacío = marca de tiempo UTC;
-# post="--no-post" omite el postprocesado Blender)
-run variants="A,B,C,D,E,F" run_id="" post="--post":
+# post="--no-post" omite el postprocesado Blender, pero E sigue necesitando Blender: sin él la
+# comprobación previa termina con código 2 si se pide E;
+# skip_preflight="--skip-preflight" continúa aunque falten claves o Blender)
+run variants="A,B,C,D,E,F" run_id="" post="--post" skip_preflight="":
     if [ -n "{{run_id}}" ]; then \
-        uv run bakeoff run --variants "{{variants}}" --pieces all --candidates 2 {{post}} --run-id "{{run_id}}"; \
+        uv run bakeoff run --variants "{{variants}}" --pieces all --candidates 2 {{post}} {{skip_preflight}} --run-id "{{run_id}}"; \
     else \
-        uv run bakeoff run --variants "{{variants}}" --pieces all --candidates 2 {{post}}; \
+        uv run bakeoff run --variants "{{variants}}" --pieces all --candidates 2 {{post}} {{skip_preflight}}; \
     fi
 
 # Evalúa una ejecución: geometría, renders Blender, juez VLM y hoja ciega

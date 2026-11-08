@@ -16,6 +16,7 @@ from typing import Any
 
 from harness.core import storage
 from harness.core.config import MissingKeyError, Settings
+from harness.core.errors import error_kind
 from harness.core.models import Candidate, Piece, VariantResult
 from harness.prep.clean import clean_image
 from harness.prep.synth_views import VIEW_NAMES, check_views, generate_views, silhouette_aspect
@@ -118,6 +119,7 @@ class SynthTripoVariant:
                         "index": index,
                         "seed": index,
                         "error": str(exc),
+                        "error_kind": error_kind(exc),
                         "error_payload": getattr(exc, "payload", None),
                         # Spent so far for this candidate: its share of the Gemini views.
                         "cost_usd": cost_share,

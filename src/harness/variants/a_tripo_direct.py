@@ -8,6 +8,7 @@ from typing import Any
 from harness.clients.tripo import TripoClient, TripoError
 from harness.core import storage
 from harness.core.config import MissingKeyError, Settings
+from harness.core.errors import error_kind
 from harness.core.models import Candidate, Piece, VariantResult
 
 DEFAULT_BASE_SEED = 1000
@@ -56,7 +57,15 @@ def run_tripo_candidates(
         except TripoError as exc:
             last_error = exc
             failures.append(f"cand_{index}: {exc}")
-            storage.write_meta(cand_dir, {**base, "error": str(exc), "error_payload": exc.payload})
+            storage.write_meta(
+                cand_dir,
+                {
+                    **base,
+                    "error": str(exc),
+                    "error_kind": error_kind(exc),
+                    "error_payload": exc.payload,
+                },
+            )
             continue
         meta = {**base, **outcome.meta}
         storage.write_meta(cand_dir, meta)

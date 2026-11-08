@@ -74,6 +74,38 @@ def _run_meta_record(
     }
 
 
+def _failed_candidate_record(
+    ref: CandidateRef, meta: dict[str, Any], by_id: dict[str, Piece]
+) -> dict[str, Any]:
+    """Record for a candidate whose generation failed (its ``meta.json`` carries ``error``).
+
+    No GLB is loaded and it gets no blind id. ``error_kind == "infra"`` (network, missing
+    key...) → ``unscored``, outside the denominator; ``"candidate"`` or missing (provider
+    task failed) → ``candidate_failed``, counts as not apt.
+    """
+    piece = by_id.get(ref.piece_id)
+    kind = "infra" if meta.get("error_kind") == "infra" else "candidate"
+    return {
+        "blind_id": None,
+        "piece_id": ref.piece_id,
+        "variant": ref.variant,
+        "candidate": ref.candidate,
+        "category": piece.category if piece else None,
+        "status": "unscored" if kind == "infra" else "candidate_failed",
+        "error_kind": kind,
+        "generation_error": True,
+        "reasons": [f"generación fallida ({kind}): {meta.get('error')}"],
+        "glb_path": None,
+        "geometry": None,
+        "scores": None,
+        "cost_usd": float(meta.get("cost_usd") or 0.0),
+        "seconds": float(meta.get("seconds") or 0.0),
+        "router_cost_usd": float(meta.get("router_cost_usd_share") or 0.0),
+        "judge_cost_usd": 0.0,
+        "judge_model": None,
+    }
+
+
 def _default_judge() -> tuple[JSONAsker | None, str | None]:
     key = Settings.load().anthropic_api_key
     if not key:
@@ -112,6 +144,11 @@ def evaluate_run(
     eval_dir = storage.eval_dir(run_id, runs_root)
     candidates = _discover_candidates(run_root)
     records: list[dict[str, Any]] = []
+    for ref, (_cand_dir, meta) in candidates.items():
+        if meta.get("error"):
+            records.append(_failed_candidate_record(ref, meta, by_id))
+            console.print(f"{ref.piece_id}/{ref.variant}/cand_{ref.candidate}: generación fallida")
+    candidates = {ref: v for ref, v in candidates.items() if not v[1].get("error")}
     sheet_entries: list[tuple[str, CandidateRef, list[Path], list[Path]]] = []
     blender_missing: str | None = None
 

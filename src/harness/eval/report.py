@@ -4,7 +4,9 @@ Unit of the apt rate: the piece. A piece is apt for a variant if at least one of
 candidates is apt (the pipeline generates N candidates and keeps the best one).
 Candidate-attributable failures (``generation_failed``: the provider task failed or no GLB
 came back, run-meta errors with ``kind="candidate"``; ``candidate_failed``: model missing,
-unreadable or empty) count as non-apt pieces. Pieces whose candidates were all skipped for
+unreadable or empty, or a candidate ``meta.json`` with ``error`` and ``error_kind`` other
+than ``"infra"``) count as non-apt pieces. A candidate ``meta.json`` with
+``error_kind="infra"`` is ``unscored``. Pieces whose candidates were all skipped for
 infrastructure reasons (``unscored``: no Blender, no API key, network error — run-meta
 errors with ``kind="infra"`` —, judge error) are left out of the denominator and listed as
 "sin puntuar (infraestructura)". Pieces where the variant does not apply
@@ -110,6 +112,12 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
         if status in NOT_APT_STATUSES and piece["apt"] is None:
             piece["apt"] = False
         if status == "generation_failed" or rec.get("from_run_meta"):
+            continue
+        if rec.get("generation_error"):
+            # Failed candidate: its spend (e.g. C's Gemini share) counts for the piece, but it
+            # does not make the piece "measured" for the per-piece averages on its own.
+            piece["cost"] += float(rec.get("cost_usd") or 0.0)
+            piece["seconds"] += float(rec.get("seconds") or 0.0)
             continue
         geometry = rec.get("geometry")
         if geometry and geometry.get("source") == "trimesh":

@@ -85,7 +85,8 @@ días 8–9 consolidar puntuaciones e informe; día 10 decisión por escrito.
 | `just ingest` | `uv run python -m harness.data.ingest` | Descarga las fotos a `data/images/<id>/<n>.jpg` y escribe un informe de ingesta |
 | `just run` | `uv run bakeoff run --variants A,B,C,D,E,F --pieces all --candidates 2` | Genera los modelos |
 | `just run variants="A,B" run_id="r1"` | `uv run bakeoff run --variants A,B --pieces all --candidates 2 --run-id r1` | Solo algunas variantes, con id fijo |
-| `just run post="--no-post"` | `uv run bakeoff run --variants A,B,C,D,E,F --pieces all --candidates 2 --no-post` | Genera sin postprocesado Blender |
+| `just run post="--no-post"` | `uv run bakeoff run --variants A,B,C,D,E,F --pieces all --candidates 2 --no-post` | Genera sin postprocesado Blender. E sigue necesitando Blender: si se pide E sin `BLENDER_BIN`, la comprobación previa termina con código 2 (quita E de `variants` o añade `--skip-preflight`) |
+| `just run skip_preflight="--skip-preflight"` | `uv run bakeoff run --variants A,B,C,D,E,F --pieces all --candidates 2 --skip-preflight` | Continúa aunque falten claves o Blender (los pasos afectados fallan como infraestructura) |
 | `just eval r1` | `uv run bakeoff eval --run-id r1` | Geometría, renders, juez VLM y hoja ciega |
 | `just report r1` | `uv run bakeoff report --run-id r1` | Escribe `runs/r1/eval/report.md` |
 | `just test` | `uv run pytest -q` | Tests offline (sin red, sin claves, sin Blender) |
@@ -124,15 +125,24 @@ Opciones útiles:
   variante) y se fusiona con el existente: un run interrumpido conserva lo hecho. Sin
   `--run-id`, `run` usa la marca de tiempo UTC (`20261108T101500Z`); con un id ya usado y
   `--resume` (por defecto) se salta, con el aviso «reutilizado», cada paso cuyo resultado está
-  registrado sin error y con todos sus `model.glb` en disco; `--no-resume` lo repite todo.
+  registrado sin error, con todos sus `model.glb` en disco y sin ningún candidato fallido por
+  infraestructura (`meta.json` del candidato con `error` y `error_kind: "infra"`: red, clave);
+  esos pasos se repiten enteros, así que un corte de red se reintenta al reanudar. Un paso con
+  candidatos fallidos solo del lado del proveedor (`error_kind: "candidate"`) se reutiliza tal
+  cual, y un paso que falló entero (error activo en `errors`) siempre se repite.
+  `--no-resume` lo repite todo.
   `results` guarda el último resultado de cada paso, `errors` nunca pierde entradas (un
   reintento marca las anteriores con `superseded: true`) y `total_cost_usd` acumula el coste de
   cada paso ejecutado.
 - Un fallo de una pieza o variante se registra en `errors` con un `kind` y la ejecución
   continúa: `infra` (falta una clave, sin Blender, error de red) queda fuera del denominador
   como «sin puntuar (infraestructura)»; `candidate` (la tarea del proveedor falla, no hay GLB)
-  cuenta como pieza no apta. En C y D un candidato fallido no descarta los ya pagados: se anota
-  en su `meta.json` (`error`) y en las notas; solo si fallan todos se registra el error.
+  cuenta como pieza no apta. En A, B, C y D un candidato fallido no descarta los ya pagados: se
+  anota en su `meta.json` (`error` y `error_kind`, con el mismo clasificador
+  `harness.core.errors.error_kind`) y en las notas; solo si fallan todos se registra el error del
+  paso. `eval` no carga ningún GLB de esos candidatos: con `error_kind: "infra"` quedan
+  `unscored` (fuera del denominador, «sin puntuar (infraestructura)»); con `"candidate"` (o sin
+  `error_kind`) quedan `candidate_failed` (no aptos). No reciben id ciego.
 - E en una pieza con `rectilinear=false` no genera nada y se registra en `skipped` con
   `kind: "not_applicable"`; con `rectilinear` vacío, E se ejecuta.
 
@@ -251,7 +261,9 @@ llamada con las constantes de `src/harness/core/pricing.py`; actualízalas antes
   `blind_sheet.csv` y `eval/blind/`.
 - **Regla de la ganadora.** El delta de > 15 puntos se aplica al total, no por categoría.
 - **Reanudación a nivel de paso.** `--resume` reutiliza un paso (pieza, variante) completo; un
-  paso con algún candidato fallido pero otros correctos cuenta como terminado y no se repite.
+  paso con algún candidato fallido por el proveedor pero otros correctos cuenta como terminado y
+  no se repite. Si algún candidato falló por infraestructura, se repite el paso entero (también
+  sus candidatos correctos, que se vuelven a pagar).
   `total_cost_usd` no incluye lo gastado en pasos que terminaron en error (p. ej. vistas Gemini
   de un C cuyos candidatos fallaron todos): está en los `meta.json` de sus candidatos.
 - **Hojas humanas fuera del informe.** El informe solo agrega el juez VLM; las hojas humanas se

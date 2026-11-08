@@ -11,6 +11,7 @@ from pathlib import Path
 from harness.clients.meshy import MeshyClient
 from harness.core import storage
 from harness.core.config import MissingKeyError, Settings
+from harness.core.errors import error_kind
 from harness.core.models import Candidate, Piece, VariantResult
 from harness.prep.clean import clean_image
 
@@ -64,6 +65,7 @@ class CleanMeshyVariant:
                         **base_meta,
                         "index": index,
                         "error": str(exc),
+                        "error_kind": error_kind(exc),
                         "error_payload": getattr(exc, "payload", None),
                         "cost_usd": 0.0,  # nothing billed is known for a failed Meshy task
                         "seconds": 0.0,
