@@ -20,6 +20,26 @@ Ejecutado en esta máquina sin claves de API ni Blender. Todo lo que depende de 
 | `14_meta_candidato_p01.json` | `meta.json` de un candidato |
 | `15_eval_E.log`, `16_report_prueba-e-sin-blender.md` | Informe de la variante E: "E: 1/4 piezas aplicables", 1 sin puntuar por infraestructura |
 
+## Segunda ronda: con Blender 5.2.3 LTS instalado
+
+| Archivo | Qué es |
+|---|---|
+| `17_tests_blender_real.log` | Tests opt-in con Blender real (`HARNESS_BLENDER_TEST_BIN`): 9 passed (postprocesado, paramétrico, render) |
+| `18_run_fake_E_blender.log` | `run --variants FAKE,E` con postprocesado real sobre las 30 piezas: 60 pasos, 73 candidatos, **73/73 `post.ok`**, errores de escala ~1e-7, 3 min 12 s |
+| `19_eval_blender.log` | `eval` con renders reales: 90 registros, 5 renders por candidato, juez omitido sin clave; E con 13 piezas aplicables y 17 "no aplicable" |
+| `20_report_prueba-blender.md` | Informe del run con Blender |
+| `21_E_clasificacion.txt` | Cómo clasificó E cada pieza rectilínea (mesa, estantería, caja) |
+| `22_test_workbench_albedo.log` | Test de render con GLB texturizado real de E: el nodo activo es el de Base Color (1 passed) |
+| `renders/*_E_*.png` (sin sufijo) | Renders de E ANTES del arreglo de textura: costuras diagonales y patas grises |
+| `renders/*_after.png` | Renders de E DESPUÉS: proyección planar por cara, fondo de la foto rellenado con colores del objeto |
+| `renders/*_FAKE_*.png` | Cajas grises de la variante FAKE a las medidas exactas |
+
+Hallazgos de esta ronda:
+- Los tres scripts `bpy_*` funcionan en Blender 5.2.3 sin cambios de API.
+- La textura de E proyectaba el fondo blanco de la foto sobre las caras y la foto entera sobre el tablero; corregido con `planar_uv` por cara (6 quads por caja) y `fill_background`.
+- Los renders salen más oscuros y desaturados que la foto (iluminación de `bpy_render.py`): el travertino de p07 se ve marrón. Pendiente, afecta por igual a todas las variantes pero puede bajar la nota de materiales.
+- p07 (mesa auxiliar de mármol con paneles laterales) se clasifica como mesa con patas: la heurística de `parametric_spec` no distingue paneles de patas.
+
 ## Observaciones de la prueba
 
 1. **`validate_input` rechaza 9 de 30 primeras fotos** por "objeto ≤ 10 % del área": lámparas, percheros, mesas auxiliares y piezas altas y finas (p01, p17, p20, p23, p24, p25, p29, p30). El umbral del 10 % de píxeles es demasiado estricto para producto fino; conviene bajarlo o medir por caja envolvente. Hoy las variantes no bloquean por esto, pero el validador de la etapa 1 del pipeline lo haría.

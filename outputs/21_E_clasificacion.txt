@@ -1,0 +1,18 @@
+p03 box post.ok= True
+p04 table post.ok= True
+p07 table post.ok= True
+p08 table post.ok= True
+p11 box post.ok= True
+p12 box post.ok= True
+p13 box post.ok= True
+p18 table post.ok= True
+p19 table post.ok= True
+p26 box post.ok= True
+p28 box post.ok= True
+p29 table post.ok= True
+p30 shelf post.ok= True
+p04,Mesa de centro Solid de teca maciza,macizo_mate,135,38,79,true
+p07,Mesa auxiliar cuadrada 35x35 cm en mármol Gabrielle,macizo_mate,35,50,35,true
+p18,Mesa de centro Arch de cristal templado 65 x 65 x 48 cm,metal_vidrio,65,48,65,true
+p20,Mesa auxiliar redonda Ø35 cm en vidrio y acero inoxidable Suvani,metal_vidrio,35,45,35,false
+p26,Silla de director plegable en piel y acero inoxidable Dravena,patas_finas,53,78,50,true
