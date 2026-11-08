@@ -13,7 +13,9 @@ CATEGORIES: tuple[str, ...] = ("macizo_mate", "tapizado", "metal_vidrio", "patas
 
 DEFAULT_SAMPLE_CSV = Path("data/sample.csv")
 MAX_PIECES = 30
-SCALE_TOLERANCE = 0.03  # spec: bounding-box error < 3 % per axis
+# Default bounding-box tolerance per axis (spec: < 3 %). The effective value comes from
+# ``Settings.scale_tolerance`` (``SCALE_TOLERANCE`` in ``.env``); see ``resolve_scale_tolerance``.
+SCALE_TOLERANCE = 0.03
 
 CSV_COLUMNS: tuple[str, ...] = (
     "id",
@@ -100,9 +102,16 @@ class GeometryMetrics(BaseModel):
         """Largest absolute relative error over the three axes."""
         return max(abs(self.err_width), abs(self.err_height), abs(self.err_depth))
 
+    def is_scale_ok(self, tolerance: float | None = None) -> bool:
+        """``max_error`` below ``tolerance`` (default: the configured ``SCALE_TOLERANCE``)."""
+        from harness.core.config import resolve_scale_tolerance  # lazy: config imports models
+
+        return self.max_error < resolve_scale_tolerance(tolerance)
+
     @property
     def scale_ok(self) -> bool:
-        return self.max_error < SCALE_TOLERANCE
+        """``is_scale_ok()`` with the configured tolerance (``.env``, default 3 %)."""
+        return self.is_scale_ok()
 
 
 def _parse_rectilinear(raw: str) -> bool | None:

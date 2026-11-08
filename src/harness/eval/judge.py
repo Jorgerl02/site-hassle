@@ -10,11 +10,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol
 
+from harness.core.config import resolve_scale_tolerance
 from harness.core.models import GeometryMetrics, Scores
 from harness.eval.render import VIEWS
 
 APT_MIN = 4
 VLM_AXES: tuple[str, ...] = ("parecido", "geometria", "materiales")
+# ``escala`` = 3 below this multiple of the tolerance. 10/3 keeps the historical thresholds
+# (3 % → 10 %) at the default tolerance, so earlier scores stay comparable.
+ESCALA_MID_FACTOR = 10 / 3
 
 RUBRIC_PROMPT = """\
 Eres juez de calidad de modelos 3D de muebles generados a partir de fotos de catálogo.
@@ -69,11 +73,20 @@ class JudgeError(ValueError):
     """The VLM answer does not follow the rubric schema."""
 
 
-def escala_from_error(max_error: float) -> int:
-    """5 if < 3 %, 3 if < 10 %, else 1."""
-    if max_error < 0.03:
+def escala_thresholds(tolerance: float | None = None) -> tuple[float, float]:
+    """``(tol, mid)``: 5 below ``tol``, 3 below ``mid`` (= tol · 10/3), else 1."""
+    tol = resolve_scale_tolerance(tolerance)
+    return tol, round(tol * ESCALA_MID_FACTOR, 6)
+
+
+def escala_from_error(max_error: float, *, tolerance: float | None = None) -> int:
+    """5 if < tolerance, 3 if < tolerance · 10/3, else 1 (3 % → 3 %/10 % by default).
+
+    ``tolerance`` None → the configured ``Settings.scale_tolerance``."""
+    tol, mid = escala_thresholds(tolerance)
+    if max_error < tol:
         return 5
-    if max_error < 0.10:
+    if max_error < mid:
         return 3
     return 1
 
@@ -117,14 +130,17 @@ def judge_candidate(
     photos: list[Path],
     renders: list[Path],
     geometry: GeometryMetrics | None,
+    tolerance: float | None = None,
 ) -> dict[str, Any]:
     """Ask the VLM for the three visual axes and combine them with the computed ``escala``.
 
     Returns ``Scores.model_dump()``. Without geometry the visual axes are still recorded,
     with ``escala=None`` and ``apt=False`` (``Scores`` cannot hold a missing axis).
+    ``tolerance`` None → the configured ``Settings.scale_tolerance``.
     """
     prompt = build_prompt(blind_id, len(photos), len(renders))
     answer = vlm.ask_json(prompt, [*photos, *renders], SCHEMA_HINT)
     if geometry is None:
         return {**visual_axes(answer), "escala": None, "apt": False}
-    return scores_from_answer(answer, escala_from_error(geometry.max_error)).model_dump()
+    escala = escala_from_error(geometry.max_error, tolerance=tolerance)
+    return scores_from_answer(answer, escala).model_dump()

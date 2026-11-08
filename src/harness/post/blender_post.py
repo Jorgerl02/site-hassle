@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from harness.core.blender import BlenderRun, run_blender_script
-from harness.core.models import SCALE_TOLERANCE, Piece
+from harness.core.config import resolve_scale_tolerance
+from harness.core.models import Piece
 from harness.post.bpy_post import DEFAULT_FIT_GUARD
 
 BPY_POST_SCRIPT = Path(__file__).with_name("bpy_post.py")
@@ -50,14 +51,21 @@ class PostResult:
     errors_before_fit: dict[str, float] = field(default_factory=dict)
     log: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+    # None → the configured ``Settings.scale_tolerance`` (``SCALE_TOLERANCE`` in ``.env``).
+    tolerance: float | None = None
 
     @property
     def max_abs_error(self) -> float:
         return max(abs(v) for v in self.errors.values())
 
+    def is_scale_ok(self, tolerance: float | None = None) -> bool:
+        """Final residuals below ``tolerance`` (default: ``self.tolerance``, then Settings)."""
+        chosen = tolerance if tolerance is not None else self.tolerance
+        return self.max_abs_error < resolve_scale_tolerance(chosen)
+
     @property
     def scale_ok(self) -> bool:
-        return self.max_abs_error < SCALE_TOLERANCE
+        return self.is_scale_ok()
 
 
 def build_args(
@@ -90,8 +98,12 @@ def build_args(
     return args
 
 
-def parse_post_meta(meta_path: Path, glb_out: Path, log: str = "") -> PostResult:
-    """Parse ``post_meta.json``; raises ``BlenderPostError`` if it is missing or malformed."""
+def parse_post_meta(
+    meta_path: Path, glb_out: Path, log: str = "", *, tolerance: float | None = None
+) -> PostResult:
+    """Parse ``post_meta.json``; raises ``BlenderPostError`` if it is missing or malformed.
+
+    ``tolerance`` is stored on the result for ``scale_ok`` (None → ``Settings``)."""
     meta_path = Path(meta_path)
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -120,6 +132,7 @@ def parse_post_meta(meta_path: Path, glb_out: Path, log: str = "") -> PostResult
             },
             log=log,
             raw=data,
+            tolerance=tolerance,
         )
     except FileNotFoundError as exc:
         raise BlenderPostError(f"Blender no escribió {meta_path}", log) from exc
@@ -143,6 +156,7 @@ def postprocess(
     draco: bool = False,
     fit_box: bool = False,
     fit_guard: float = DEFAULT_FIT_GUARD,
+    tolerance: float | None = None,
 ) -> PostResult:
     """Scale/centre/decimate ``glb_in`` into ``glb_out``.
 
@@ -152,6 +166,8 @@ def postprocess(
     ``fit_box`` (off by default) adds the guarded fit-to-box step of ``bpy_post``: when every
     matched axis is within ``fit_guard`` after the uniform scale, the bounding box is scaled
     per axis to the catalogue dimensions; ``errors_before_fit`` keeps the pre-fit residuals.
+
+    ``tolerance`` sets the result's ``scale_ok`` threshold (None → ``Settings.scale_tolerance``).
 
     Writes ``post_meta.json`` and ``post_blender.log`` next to ``glb_out``. Raises
     ``BlenderNotAvailable`` without a binary, ``subprocess.TimeoutExpired`` on timeout and
@@ -178,4 +194,4 @@ def postprocess(
         raise BlenderPostError(f"bpy_post.py terminó con código {run.returncode}", log)
     if not glb_out.is_file():
         raise BlenderPostError(f"Blender no escribió {glb_out}", log)
-    return parse_post_meta(meta_path, glb_out, log)
+    return parse_post_meta(meta_path, glb_out, log, tolerance=tolerance)
