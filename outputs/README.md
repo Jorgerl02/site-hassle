@@ -66,6 +66,21 @@ Resultado resumido:
 
 Lo que el harness detectó en esta ronda y se corrigió: cargar los GLB con materiales en trimesh consumía 22 GB y mataba `eval`; ahora se cargan sin materiales (0,2 GB).
 
+### Ampliación: 7 modelos más, incluidos 4 de Magnific
+
+Higgsfield (39 créditos más, quedan 4): p07 Hunyuan, p13 Hunyuan y Tripo. Magnific (3.600 créditos de 45.540 del plan Plus): Hunyuan 3.1 Pro con PBR y TRELLIS-2 sobre p04 y p09. Magnific también ofrece Hi3D v3 (4.280 créditos) y Tripo H3.1 (580). Total: 14 generaciones de 6 piezas.
+
+| Pieza | Modelo | Error máx. | Lectura |
+|---|---|---|---|
+| p04 mesa teca | Hunyuan 3.1 Pro (Magnific) | 2,2 % | Mejores proporciones de p04, patas aún inventadas |
+| p04 mesa teca | TRELLIS-2 (Magnific) | 6,8 % | La veta más fiel, patas inventadas |
+| p09 butaca | TRELLIS-2 (Magnific) | 0,5 % | Escala casi exacta; textura con motas, cuero en vez de bouclé |
+| p09 butaca | Hunyuan 3.1 Pro (Magnific) | 6,5 % | Como el Hunyuan de Higgsfield |
+| p07 mesa travertino | Hunyuan v3 (Higgsfield) | 17,9 % | Estructura correcta pero casi cúbica |
+| p13 sofá cama | Hunyuan v3 / Tripo (Higgsfield) | 9,1 % / 5,7 % | Los más cercanos a apto; gris en vez de beige |
+
+Veredicto acumulado: 0 de 14 aptos con el umbral de la spec. Lo que más se repite no es la geometría sino dos cosas: la escala se queda entre el 5 y el 9 % en tapizados y el color o material se pierde. Parte de la pérdida de color es del propio harness: los renders de Workbench salen oscuros y desaturados, lo que penaliza "materiales" a todas las variantes por igual. Conviene arreglar la iluminación de `bpy_render.py` antes de la siguiente ronda de puntuación.
+
 ## Observaciones de la prueba
 
 1. **`validate_input` rechaza 9 de 30 primeras fotos** por "objeto ≤ 10 % del área": lámparas, percheros, mesas auxiliares y piezas altas y finas (p01, p17, p20, p23, p24, p25, p29, p30). El umbral del 10 % de píxeles es demasiado estricto para producto fino; conviene bajarlo o medir por caja envolvente. Hoy las variantes no bloquean por esto, pero el validador de la etapa 1 del pipeline lo haría.

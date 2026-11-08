@@ -11,14 +11,18 @@ Denominador: todas las piezas con algún candidato puntuado o con un fallo atrib
 | HF_HUNYUAN | — | — | — | — | — | — | no |
 | HF_TRIPO_CLEAN | — | — | — | — | — | — | no |
 | HF_TRIPO_RAW | — | — | — | — | — | — | no |
+| MG_HUNYUAN31PRO | — | — | — | — | — | — | no |
+| MG_TRELLIS2 | — | — | — | — | — | — | no |
 
 ## Medias por eje, coste y tiempo
 
 | Variante | Parecido | Geometría | Materiales | Escala | Coste medio por pieza | Tiempo medio por pieza | % mallas cerradas | Media de componentes | Sin puntuar (infraestructura) |
 |---|---|---|---|---|---|---|---|---|---|
-| HF_HUNYUAN | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 1967,0 | 2 |
-| HF_TRIPO_CLEAN | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 204,2 | 4 |
+| HF_HUNYUAN | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 2258,5 | 4 |
+| HF_TRIPO_CLEAN | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 197,4 | 5 |
 | HF_TRIPO_RAW | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 526,0 | 1 |
+| MG_HUNYUAN31PRO | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 1810,5 | 2 |
+| MG_TRELLIS2 | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 5797,5 | 2 |
 
 **Coste total:** 0,00 USD = generación 0,00 USD + enrutado VLM (F) 0,00 USD + juez VLM 0,00 USD.
 

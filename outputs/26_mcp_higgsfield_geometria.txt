@@ -1,8 +1,15 @@
-pieza variante           alto   ancho   fondo    max estanca    comp   caras
-p17   HF_TRIPO_CLEAN    +0.0%  +20.6%  +31.5%  31.5% False        87  147000
-p04   HF_HUNYUAN        +3.1%   +0.0%   +2.2%   3.1% False      2644  146999
-p09   HF_TRIPO_CLEAN    -2.5%   +0.0%   +5.2%   5.2% False       297  147000
-p24   HF_TRIPO_CLEAN    +0.0%   +3.4%  +19.5%  19.5% False        47  147000
-p04   HF_TRIPO_CLEAN    -2.3%   +0.0%   -8.5%   8.5% False       386  147000
-p09   HF_HUNYUAN        +5.8%   -0.0%   -2.6%   5.8% False      1290  146999
-p04   HF_TRIPO_RAW      -1.5%   +0.0%   -9.1%   9.1% False       526  147000
+pieza variante            alto   ancho   fondo    max   comp   caras
+p04   HF_HUNYUAN         +3.1%   +0.0%   +2.2%   3.1%   2644  146999
+p04   HF_TRIPO_CLEAN     -2.3%   +0.0%   -8.5%   8.5%    386  147000
+p04   HF_TRIPO_RAW       -1.5%   +0.0%   -9.1%   9.1%    526  147000
+p04   MG_HUNYUAN31PRO    +2.2%   +0.0%   -0.5%   2.2%   2230  147000
+p04   MG_TRELLIS2        +6.8%   +0.0%   +3.5%   6.8%   7355   94833
+p07   HF_HUNYUAN         +0.0%  +17.9%   +2.9%  17.9%   1258  146999
+p09   HF_HUNYUAN         +5.8%   -0.0%   -2.6%   5.8%   1290  146999
+p09   HF_TRIPO_CLEAN     -2.5%   +0.0%   +5.2%   5.2%    297  147000
+p09   MG_HUNYUAN31PRO    +5.8%   -0.1%   -6.5%   6.5%   1391  147000
+p09   MG_TRELLIS2        +0.2%   -0.0%   +0.5%   0.5%   4240   99287
+p13   HF_HUNYUAN         +5.9%   +0.0%   +9.1%   9.1%   3842  147000
+p13   HF_TRIPO_CLEAN     +4.9%   +0.0%   +5.7%   5.7%    170  146999
+p17   HF_TRIPO_CLEAN     +0.0%  +20.6%  +31.5%  31.5%     87  147000
+p24   HF_TRIPO_CLEAN     +0.0%   +3.4%  +19.5%  19.5%     47  147000
