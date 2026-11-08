@@ -1,5 +1,8 @@
-"""Variant C: clean the first photo → synthetic orthographic views (Gemini) → silhouette
-check → Tripo (multiview with the views that pass, or single image if degraded).
+"""Variant C: clean the first photo → synthetic orthographic views (Gemini, green key) →
+silhouette check → Tripo multiview with the longest passing slot prefix of
+``front, left, back, right``, or the cleaned real photo alone if degraded.
+
+A view whose Gemini call fails is skipped (cost still recorded) and the slot rule decides.
 
 Views are generated once per piece and shared by every candidate; candidates differ only in
 the Tripo seed (= candidate index). The Gemini cost is split evenly across candidates so the
@@ -15,7 +18,7 @@ from harness.core import storage
 from harness.core.config import Settings
 from harness.core.models import Candidate, Piece, VariantResult
 from harness.prep.clean import clean_image
-from harness.prep.synth_views import check_views, generate_views
+from harness.prep.synth_views import VIEW_NAMES, check_views, generate_views, silhouette_aspect
 
 CLEAN_DIRNAME = "clean"
 
@@ -72,7 +75,10 @@ class SynthTripoVariant:
         views_cost = sum(float(c.get("cost_usd", 0.0)) for c in image_calls)
         views_seconds = sum(float(c.get("seconds", 0.0)) for c in image_calls)
 
-        check = check_views(views, piece)
+        failed_views = [v for v in VIEW_NAMES if v not in views]
+        check = check_views(views, piece, fallback_front=clean)
+        clean_check = {"path": str(clean), "silhouette_method": "white"}
+        clean_check["aspect"] = silhouette_aspect(clean, "white")
         images = list(check.passed.values())
         cost_share = views_cost / candidates if candidates else 0.0
         seconds_share = views_seconds / candidates if candidates else 0.0
@@ -90,7 +96,9 @@ class SynthTripoVariant:
                 "seed": index,
                 "source_image": str(piece.images[0]),
                 "clean_image": str(clean),
+                "clean_image_check": clean_check,
                 "views": {k: str(v) for k, v in views.items()},
+                "views_failed_generation": failed_views,
                 "views_passed": list(check.passed),
                 "views_degraded": check.degraded,
                 "view_checks": check.checks,
@@ -117,11 +125,12 @@ class SynthTripoVariant:
             )
 
         if check.degraded:
-            mode = "degradada a solo frontal (" + "; ".join(check.reasons) + ")"
+            mode = "degradada a solo la foto limpia (" + "; ".join(check.reasons) + ")"
         else:
             mode = f"multivista con {', '.join(check.passed)}"
         notes = (
-            f"Vistas sintéticas Gemini ({len(image_calls)} llamada(s), {views_cost:.3f} USD) → "
+            f"Vistas sintéticas Gemini ({len(image_calls)} llamada(s), "
+            f"{len(failed_views)} fallida(s), {views_cost:.3f} USD) → "
             f"Tripo {mode}; candidatos con semillas 1..{candidates}"
         )
         return VariantResult(variant=self.name, piece_id=piece.id, candidates=result, notes=notes)

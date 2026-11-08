@@ -1,25 +1,36 @@
 """Synthetic orthographic views from one cleaned photo, plus a silhouette sanity check.
 
-Front view choice: the cleaned photo is the only real evidence of the piece, so it is used as
-``front`` when its silhouette already matches width/height within tolerance (i.e. it looks
-frontal). Otherwise (typically a 3/4 product shot) Gemini also synthesises the front view.
+The view set mirrors Tripo's multiview slots: ``front, left, back, right`` (in that order).
+Every view, front included, is synthesised by the image model from the cleaned photo on a flat
+pure green (#00FF00) background, so the silhouette can be keyed on green and light/white/chrome
+furniture keeps its edges. The cleaned real photo (white background) is the front-only fallback.
+
+Slot rule: only slot-correct prefixes go downstream — ``[front, left]``, ``[front, left, back]``
+or ``[front, left, back, right]``. A view that is missing or fails its check is dropped together
+with every later slot. Fewer than 2 surviving views → degrade to the cleaned photo alone.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
+import numpy as np
 from PIL import Image
 
+from harness.clients.gemini_image import GeminiImageError
 from harness.core.models import Piece
 
-VIEW_NAMES = ("front", "side", "back", "three_quarter")
+VIEW_NAMES = ("front", "left", "back", "right")  # == Tripo MULTIVIEW_SLOTS
 ASPECT_TOLERANCE = 0.10
-WHITE_THRESHOLD = 240  # a pixel with every RGB channel above this counts as background
 MIN_VIEWS = 2
 VIEWS_DIRNAME = "views"
+
+SilhouetteMethod = Literal["green", "white"]
+GREEN_KEY = (0, 255, 0)
+GREEN_DISTANCE = 120.0  # RGB Euclidean distance to pure green below which a pixel is background
+WHITE_THRESHOLD = 240  # "white" method: every channel above this counts as background
 
 _VIEW_DESCRIPTIONS = {
     "front": (
@@ -27,9 +38,9 @@ _VIEW_DESCRIPTIONS = {
         "no perspective)",
         "width {w:g} cm × height {h:g} cm",
     ),
-    "side": (
-        "a straight-on orthographic SIDE view from the left (camera perpendicular to the "
-        "side face, no perspective)",
+    "left": (
+        "a straight-on orthographic LEFT side view (camera on the object's left, perpendicular "
+        "to the side face, no perspective)",
         "depth {d:g} cm × height {h:g} cm",
     ),
     "back": (
@@ -37,9 +48,10 @@ _VIEW_DESCRIPTIONS = {
         "no perspective)",
         "width {w:g} cm × height {h:g} cm",
     ),
-    "three_quarter": (
-        "an orthographic THREE-QUARTER view from the front-left at 45° and slightly above",
-        "width {w:g} cm, depth {d:g} cm and height {h:g} cm",
+    "right": (
+        "a straight-on orthographic RIGHT side view (camera on the object's right, "
+        "perpendicular to the side face, no perspective)",
+        "depth {d:g} cm × height {h:g} cm",
     ),
 }
 
@@ -58,46 +70,55 @@ def view_prompt(view: str, piece: Piece) -> str:
         f"The real piece measures {piece.width_cm:g} cm wide, {piece.height_cm:g} cm high and "
         f"{piece.depth_cm:g} cm deep; in this view the visible silhouette must keep the "
         f"proportions {visible.format(**dims)}. "
-        "Pure white background (#FFFFFF), no shadows, no reflections, no floor, no additional "
-        "objects, props or text. Neutral, even studio lighting. Centre the whole object in the "
-        "frame with a small margin, nothing cropped."
+        "Flat, uniform pure green background (#00FF00, chroma key) filling the whole frame, "
+        "no gradient, no shadows, no reflections, no floor, no additional objects, props or "
+        "text. Neutral, even studio lighting. Centre the whole object in the frame with a "
+        "small margin, nothing cropped."
         + (f" Object: {piece.description}." if piece.description else "")
     )
 
 
-def silhouette_aspect(image: Path, white_threshold: int = WHITE_THRESHOLD) -> float | None:
-    """Width/height of the bounding box of non-white pixels; ``None`` if the image is blank."""
+def _object_mask(image: Path, method: SilhouetteMethod) -> np.ndarray:
     with Image.open(image) as img:
-        rgb = img.convert("RGB")
-    # Per channel: 255 where the channel is darker than the threshold, then OR the channels.
-    mask = rgb.point(lambda v: 255 if v <= white_threshold else 0).convert("L")
-    mask = mask.point(lambda v: 255 if v > 0 else 0)
-    bbox = mask.getbbox()
-    if bbox is None:
+        rgb = np.asarray(img.convert("RGB"), dtype=np.float32)
+    if method == "green":
+        distance = np.sqrt(((rgb - np.array(GREEN_KEY, dtype=np.float32)) ** 2).sum(axis=-1))
+        return distance > GREEN_DISTANCE
+    return (rgb <= WHITE_THRESHOLD).any(axis=-1)
+
+
+def silhouette_aspect(image: Path, method: SilhouetteMethod = "green") -> float | None:
+    """Width/height of the object's bounding box; ``None`` if no object pixels.
+
+    ``green``: background keyed on #00FF00 (synthesised views). ``white``: background is any
+    pixel with every channel > 240 (the cleaned real photo)."""
+    mask = _object_mask(image, method)
+    rows, cols = np.flatnonzero(mask.any(axis=1)), np.flatnonzero(mask.any(axis=0))
+    if rows.size == 0:
         return None
-    left, top, right, bottom = bbox
-    return (right - left) / (bottom - top)
+    return float((cols[-1] - cols[0] + 1) / (rows[-1] - rows[0] + 1))
 
 
-def expected_aspect(view: str, piece: Piece) -> float | None:
-    """Expected silhouette width/height per view; ``None`` when not checkable (3/4 view)."""
+def expected_aspect(view: str, piece: Piece) -> float:
+    """Expected silhouette width/height: front/back = width/height, left/right = depth/height."""
     if view in ("front", "back"):
         return piece.width_cm / piece.height_cm
-    if view == "side":
-        return piece.depth_cm / piece.height_cm
-    return None
+    return piece.depth_cm / piece.height_cm
 
 
-def _check_one(view: str, path: Path, piece: Piece) -> dict[str, Any]:
+def _check_one(view: str, path: Path, piece: Piece, method: SilhouetteMethod) -> dict[str, Any]:
     expected = expected_aspect(view, piece)
-    aspect = silhouette_aspect(path)
-    result: dict[str, Any] = {"path": str(path), "aspect": aspect, "expected": expected}
+    aspect = silhouette_aspect(path, method)
+    result: dict[str, Any] = {
+        "path": str(path),
+        "silhouette_method": method,
+        "aspect": aspect,
+        "expected": expected,
+    }
     if aspect is None:
         return {**result, "ok": False, "error": None, "reason": f"{view}: imagen sin objeto"}
-    if expected is None:
-        return {**result, "ok": True, "error": None, "reason": f"{view}: sin medida que comprobar"}
-    error = abs(aspect / expected - 1)
-    ok = error <= ASPECT_TOLERANCE
+    error = float(abs(aspect / expected - 1))
+    ok = bool(error <= ASPECT_TOLERANCE)
     reason = (
         f"{view}: proporción {aspect:.3f} vs {expected:.3f} esperada "
         f"(desviación {error:.1%}, tolerancia {ASPECT_TOLERANCE:.0%})"
@@ -107,9 +128,9 @@ def _check_one(view: str, path: Path, piece: Piece) -> dict[str, Any]:
 
 @dataclass
 class ViewCheck:
-    passed: dict[str, Path]  # views to feed downstream, in VIEW_NAMES order
-    checks: dict[str, dict[str, Any]]  # per view: path, aspect, expected, error, ok, reason
-    degraded: bool = False  # True → multiview abandoned, front only
+    passed: dict[str, Path]  # images to feed Tripo, in slot order (front, left, back, right)
+    checks: dict[str, dict[str, Any]]  # per view: path, silhouette_method, aspect, ok, reason…
+    degraded: bool = False  # True → multiview abandoned, cleaned photo only
     reasons: list[str] = field(default_factory=list)  # why views were dropped / degraded
 
     def to_dict(self) -> dict[str, Any]:
@@ -121,31 +142,41 @@ class ViewCheck:
         }
 
 
-def check_views(views: dict[str, Path], piece: Piece) -> ViewCheck:
-    """Drop views whose silhouette aspect deviates > 10 % from the piece's measurements
-    (front/back vs width/height, side vs depth/height; 3/4 only needs a visible object).
-    With fewer than 2 survivors, or without a passing front, degrade to the front view only."""
-    ordered = [v for v in VIEW_NAMES if v in views] + [v for v in views if v not in VIEW_NAMES]
-    checks = {v: _check_one(v, Path(views[v]), piece) for v in ordered}
-    passed = {v: Path(views[v]) for v in ordered if checks[v]["ok"]}
+def check_views(
+    views: dict[str, Path],
+    piece: Piece,
+    *,
+    fallback_front: Path | None = None,
+    method: SilhouetteMethod = "green",
+) -> ViewCheck:
+    """Check every synthesised view (aspect within 10 % of the measurements) and keep the
+    longest slot-correct prefix of ``front, left, back, right`` that passes. With fewer than
+    2 views kept, degrade to ``{"front": fallback_front}`` (the cleaned real photo; empty if
+    not given) — never to a synthesised front that failed its check."""
+    checks = {v: _check_one(v, Path(views[v]), piece, method) for v in VIEW_NAMES if v in views}
     reasons = [c["reason"] for c in checks.values() if not c["ok"]]
 
-    degraded = False
-    if "front" not in passed:
-        degraded = True
-        reasons.append("la vista frontal no pasa la comprobación: se degrada a solo frontal")
-    elif len(passed) < MIN_VIEWS:
-        degraded = True
-        reasons.append(
-            f"solo {len(passed)} vista(s) válida(s) (< {MIN_VIEWS}): se degrada a solo frontal"
-        )
+    passed: dict[str, Path] = {}
+    for slot_index, view in enumerate(VIEW_NAMES):
+        if view in checks and checks[view]["ok"]:
+            passed[view] = Path(views[view])
+            continue
+        if view not in views:
+            reasons.append(f"{view}: no se generó")
+        for later in VIEW_NAMES[slot_index + 1 :]:
+            if later in checks and checks[later]["ok"]:
+                checks[later]["dropped_by_prefix"] = True
+                reasons.append(f"{later}: descartada porque falla una vista anterior ({view})")
+        break
+
+    degraded = len(passed) < MIN_VIEWS
     if degraded:
-        passed = {"front": Path(views["front"])} if "front" in views else {}
+        reasons.append(
+            f"solo {len(passed)} vista(s) en orden de slots (< {MIN_VIEWS}): "
+            "se degrada a solo la foto limpia"
+        )
+        passed = {"front": Path(fallback_front)} if fallback_front is not None else {}
     return ViewCheck(passed=passed, checks=checks, degraded=degraded, reasons=reasons)
-
-
-def front_is_frontal(clean_front: Path, piece: Piece) -> bool:
-    return bool(_check_one("front", Path(clean_front), piece)["ok"])
 
 
 def generate_views(
@@ -155,12 +186,10 @@ def generate_views(
     *,
     client: ImageEditor | None = None,
 ) -> dict[str, Path]:
-    """Write ``front``, ``side``, ``back`` and ``three_quarter`` PNGs under ``workdir/views``.
-
-    ``front`` is a copy of the cleaned photo when it already looks frontal (see module doc);
-    every other view is one ``client.edit`` call on the cleaned photo. ``client`` defaults to a
-    ``GeminiImageClient`` built from settings; read its ``calls`` for costs.
-    """
+    """Synthesise ``front``, ``left``, ``back`` and ``right`` PNGs under ``workdir/views`` with
+    one ``client.edit`` call each on the cleaned photo. A view whose call fails
+    (``GeminiImageError``, which wraps SDK errors) is skipped; the client still records the
+    call and its cost in ``client.calls``. ``client`` defaults to a ``GeminiImageClient``."""
     if client is None:
         from harness.clients.gemini_image import GeminiImageClient
         from harness.core.config import Settings
@@ -172,11 +201,10 @@ def generate_views(
     views: dict[str, Path] = {}
     for view in VIEW_NAMES:
         dst = out / f"{view}.png"
-        if view == "front" and front_is_frontal(clean_front, piece):
-            with Image.open(clean_front) as img:
-                img.convert("RGB").save(dst)
-        else:
+        try:
             client.edit(Path(clean_front), view_prompt(view, piece), dst)
+        except GeminiImageError:
+            continue
         views[view] = dst
     return views
 
@@ -187,7 +215,6 @@ __all__ = [
     "ViewCheck",
     "check_views",
     "expected_aspect",
-    "front_is_frontal",
     "generate_views",
     "silhouette_aspect",
     "view_prompt",

@@ -83,23 +83,38 @@ class GeminiImageClient:
     def edit(self, image: Path, prompt: str, dst: Path) -> Path:
         image, dst = Path(image), Path(dst)
         start = time.monotonic()
-        interaction = self._client.interactions.create(
-            model=self.model,
-            input=[
-                {"type": "text", "text": prompt},
-                {
+        try:
+            interaction = self._client.interactions.create(
+                model=self.model,
+                input=[
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image",
+                        "data": base64.b64encode(image.read_bytes()).decode("ascii"),
+                        "mime_type": _mime_type(image),
+                    },
+                ],
+                response_format={
                     "type": "image",
-                    "data": base64.b64encode(image.read_bytes()).decode("ascii"),
-                    "mime_type": _mime_type(image),
+                    "mime_type": "image/png",
+                    "aspect_ratio": self.aspect_ratio,
+                    "image_size": self.image_size,
                 },
-            ],
-            response_format={
-                "type": "image",
-                "mime_type": "image/png",
-                "aspect_ratio": self.aspect_ratio,
-                "image_size": self.image_size,
-            },
-        )
+            )
+        except Exception as exc:  # SDK/HTTP errors: request rejected, not billed
+            self.calls.append(
+                {
+                    "model": self.model,
+                    "src": str(image),
+                    "dst": str(dst),
+                    "interaction_id": None,
+                    "cost_usd": 0.0,
+                    "seconds": time.monotonic() - start,
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            raise GeminiImageError(f"Error de Gemini para {image.name}: {exc}") from exc
         output = getattr(interaction, "output_image", None)
         data = getattr(output, "data", None) if output is not None else None
         # A call that returns no image is still billed (tokens); record it before failing.
@@ -112,6 +127,7 @@ class GeminiImageClient:
                 "cost_usd": pricing.GEMINI_IMAGE_USD,
                 "seconds": time.monotonic() - start,
                 "ok": bool(data),
+                "error": None if data else "sin imagen en la respuesta",
             }
         )
         if not data:
@@ -119,6 +135,13 @@ class GeminiImageClient:
             raise GeminiImageError(f"Gemini no devolvió imagen para {image.name}: {text[:200]}")
 
         dst.parent.mkdir(parents=True, exist_ok=True)
-        with Image.open(io.BytesIO(_decode(data))) as img:
-            img.convert("RGB").save(dst)
+        try:
+            with Image.open(io.BytesIO(_decode(data))) as img:
+                img.convert("RGB").save(dst)
+        except (OSError, ValueError) as exc:  # undecodable payload
+            self.calls[-1]["ok"] = False
+            self.calls[-1]["error"] = f"imagen ilegible: {exc}"
+            raise GeminiImageError(
+                f"Gemini devolvió una imagen ilegible para {image.name}"
+            ) from exc
         return dst
