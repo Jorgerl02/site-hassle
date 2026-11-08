@@ -1,0 +1,6 @@
+HF_HUNYUAN post.ok= True errors= {'width': 0.0, 'height': 0.031, 'depth': 0.022} tris 500000 -> 146999 factor 1.3459796025857698 
+HF_TRIPO_CLEAN post.ok= True errors= {'width': 0.0, 'height': -0.023, 'depth': -0.085} tris 1449887 -> 147000 factor 1.35 
+HF_TRIPO_RAW post.ok= True errors= {'width': 0.0, 'height': -0.015, 'depth': -0.091} tris 1471833 -> 147000 factor 1.35 
+HF_HUNYUAN unscored {'err_width': 0.0, 'err_height': 0.031, 'err_depth': 0.022, 'max_error': 0.031, 'scale_factor': 1.0, 'source': 'trimesh', 'watertight': False, 'n_components': 2644, 'n_faces': 146999} escala= None ['juez VLM omitido: ANTHROPIC_API_KEY no definido']
+HF_TRIPO_RAW unscored {'err_width': 0.0, 'err_height': -0.015, 'err_depth': -0.091, 'max_error': 0.091, 'scale_factor': 1.0, 'source': 'trimesh', 'watertight': False, 'n_components': 526, 'n_faces': 147000} escala= None ['juez VLM omitido: ANTHROPIC_API_KEY no definido']
+HF_TRIPO_CLEAN unscored {'err_width': 0.0, 'err_height': -0.023, 'err_depth': -0.085, 'max_error': 0.085, 'scale_factor': 1.0, 'source': 'trimesh', 'watertight': False, 'n_components': 386, 'n_faces': 147000} escala= None ['juez VLM omitido: ANTHROPIC_API_KEY no definido']

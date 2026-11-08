@@ -1,0 +1,4 @@
+blind_id,piece_id,variant,parecido,geometria,materiales,escala,apto,comentario
+B?,p04,HF_TRIPO_RAW,3,2,3,3,no,"Tablero y veta plausibles pero más oscuros que la foto; patas: un panel por lado en vez de dos perpendiculares y una pata cilíndrica inventada; fondo −9,1 %; 526 componentes, no estanca"
+B?,p04,HF_TRIPO_CLEAN,3,2,3,3,no,"Igual que la cruda: la limpieza no cambia el resultado; patas inventadas, fondo −8,5 %; 386 componentes"
+B?,p04,HF_HUNYUAN,3,4,2,3,no,"Mejor geometría: dos paneles perpendiculares por lado como la pieza real y proporciones casi exactas (alto +3,1 %, fondo +2,2 %); pero el tablero se renderiza gris (textura superior ausente o material sin color base) y la malla tiene 2.644 componentes"

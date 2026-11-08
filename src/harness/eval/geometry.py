@@ -59,7 +59,9 @@ def model_for_candidate(cand_dir: Path) -> Path:
 
 def load_mesh(path: Path) -> trimesh.Trimesh:
     """Load a GLB as a single mesh (scene graph transforms applied, geometries concatenated)."""
-    loaded = trimesh.load(Path(path))
+    # Materials are irrelevant for geometry and decoding PBR textures of a generator
+    # output (4K maps, 1M+ triangles before post) was measured at >20 GB RSS.
+    loaded = trimesh.load(Path(path), skip_materials=True)
     if isinstance(loaded, trimesh.Scene):
         if not loaded.geometry:
             raise CandidateGeometryError(f"{Path(path).name}: la escena no contiene geometría")
