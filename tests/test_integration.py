@@ -229,7 +229,9 @@ def test_end_to_end_run_eval_report(
     common = ["--run-id", "it", "--runs-root", str(runs)]
 
     result = cli.invoke(
-        app, ["run", "--variants", "FAKE,A,B,C,D,F", "--sample", str(sample), *common]
+        app,
+        ["run", "--variants", "FAKE,A,B,C,D,F", "--sample", str(sample), "--skip-preflight"]
+        + common,
     )
     assert result.exit_code == 0, result.output
     run_meta = json.loads((runs / "it/meta.json").read_text())
@@ -302,7 +304,9 @@ def test_run_postprocesses_every_candidate_and_eval_uses_model_post(
     runs = tmp_path / "runs"
     common = ["--run-id", "pp", "--runs-root", str(runs)]
     cli = CliRunner()
-    result = cli.invoke(app, ["run", "--variants", "FAKE,A", "--sample", str(sample), *common])
+    result = cli.invoke(
+        app, ["run", "--variants", "FAKE,A", "--sample", str(sample), "--skip-preflight", *common]
+    )
     assert result.exit_code == 0, result.output
 
     cand_dirs = sorted(runs.glob("pp/*/*/cand_*"))
@@ -341,3 +345,222 @@ def test_run_no_post_skips_postprocessing(
     assert result.exit_code == 0, result.output
     metas = [json.loads(p.read_text()) for p in runs.glob("np/*/*/cand_*/meta.json")]
     assert metas and all("post" not in m for m in metas)
+
+
+# --- run bookkeeping, preflight and error kinds ------------------------------------------------
+
+
+class CountingVariant:
+    """FAKE-like variant that records its calls and can fail on chosen pieces."""
+
+    def __init__(self, fail: dict[str, BaseException] | None = None) -> None:
+        from harness.core.variant import FakeVariant
+
+        self.name = "FAKE"
+        self._inner = FakeVariant()
+        self.fail = fail or {}
+        self.calls: list[str] = []
+
+    def run(self, piece: Any, workdir: Path, candidates: int = 2) -> Any:
+        self.calls.append(piece.id)
+        if piece.id in self.fail:
+            raise self.fail[piece.id]
+        return self._inner.run(piece, workdir, candidates)
+
+
+def _run(sample: Path, runs: Path, *extra: str) -> Any:
+    return CliRunner().invoke(
+        app,
+        ["run", "--variants", "FAKE", "--no-post", "--sample", str(sample)]
+        + ["--run-id", "rr", "--runs-root", str(runs), *extra],
+    )
+
+
+def test_interrupted_run_keeps_first_piece_in_run_meta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    sample, runs = _write_sample(tmp_path), tmp_path / "runs"
+    variant = CountingVariant({"t02": KeyboardInterrupt()})
+    monkeypatch.setitem(registry._FACTORIES, "FAKE", lambda: variant)
+    result = _run(sample, runs)
+    assert result.exit_code != 0  # interrupted
+    meta = json.loads((runs / "rr/meta.json").read_text())
+    assert [(r["piece_id"], r["variant"]) for r in meta["results"]] == [("t01", "FAKE")]
+    assert meta["pieces"] == ["t01", "t02"]
+
+
+def test_resume_skips_finished_steps_and_preserves_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    sample, runs = _write_sample(tmp_path), tmp_path / "runs"
+    first = CountingVariant({"t02": RuntimeError("tarea fallida")})
+    monkeypatch.setitem(registry._FACTORIES, "FAKE", lambda: first)
+    assert _run(sample, runs).exit_code == 0
+    meta = json.loads((runs / "rr/meta.json").read_text())
+    assert [e["piece_id"] for e in meta["errors"]] == ["t02"]
+    assert meta["errors"][0]["kind"] == "candidate"
+    created_at = meta["created_at"]
+
+    second = CountingVariant()
+    monkeypatch.setitem(registry._FACTORIES, "FAKE", lambda: second)
+    result = _run(sample, runs, "--resume")
+    assert result.exit_code == 0, result.output
+    assert second.calls == ["t02"]  # t01 was finished: not called again
+    assert "reutilizado" in result.output
+    meta = json.loads((runs / "rr/meta.json").read_text())
+    assert meta["created_at"] == created_at
+    assert {(r["piece_id"], r["variant"]) for r in meta["results"]} == {
+        ("t01", "FAKE"),
+        ("t02", "FAKE"),
+    }
+    [error] = meta["errors"]  # earlier error kept, marked as superseded by the retry
+    assert error["piece_id"] == "t02" and error["superseded"] is True
+
+    third = CountingVariant()
+    monkeypatch.setitem(registry._FACTORIES, "FAKE", lambda: third)
+    assert _run(sample, runs, "--no-resume").exit_code == 0
+    assert third.calls == ["t01", "t02"]
+    assert len(json.loads((runs / "rr/meta.json").read_text())["errors"]) == 1
+
+
+def test_resume_reruns_step_whose_glb_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    sample, runs = _write_sample(tmp_path), tmp_path / "runs"
+    monkeypatch.setitem(registry._FACTORIES, "FAKE", CountingVariant)
+    assert _run(sample, runs).exit_code == 0
+    (runs / "rr/t01/FAKE/cand_2/model.glb").unlink()
+    again = CountingVariant()
+    monkeypatch.setitem(registry._FACTORIES, "FAKE", lambda: again)
+    assert _run(sample, runs).exit_code == 0
+    assert again.calls == ["t01"]
+
+
+def test_preflight_aborts_before_any_paid_call(stubs: dict[str, Any], tmp_path: Path) -> None:
+    sample, runs = _write_sample(tmp_path), tmp_path / "runs"
+    result = CliRunner().invoke(
+        app,
+        ["run", "--variants", "A,C,D,E,F", "--sample", str(sample)]
+        + ["--run-id", "pf", "--runs-root", str(runs)],
+    )
+    assert result.exit_code == 2
+    out = result.output
+    for expected in (
+        "Variante A: falta TRIPO_API_KEY",
+        "Variante C: falta TRIPO_API_KEY, GEMINI_API_KEY",
+        "Variante D: falta MESHY_API_KEY",
+        "Variante E: necesita Blender",
+        "Variante F: falta ANTHROPIC_API_KEY",
+        "--post",
+        "--skip-preflight",
+    ):
+        assert expected in out
+    assert stubs["tripo"].calls == [] and stubs["meshy"].calls == []
+    assert not (runs / "pf" / "t01").exists()
+
+
+def test_preflight_passes_with_keys_and_no_post(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key in ("TRIPO_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.setenv(key, "x")
+    sample, runs = _write_sample(tmp_path), tmp_path / "runs"
+    result = CliRunner().invoke(
+        app,
+        ["run", "--variants", "A,C", "--no-post", "--sample", str(sample)]
+        + ["--run-id", "ok", "--runs-root", str(runs)],
+    )
+    assert result.exit_code == 0, result.output
+    assert len(stubs["tripo"].calls) == 2 * 2 * 2
+
+
+def test_error_kinds_infra_unscored_and_candidate_not_apt(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    from harness.clients.tripo import TripoError
+    from harness.core.config import MissingKeyError
+
+    def network_error() -> TripoError:
+        try:
+            raise httpx.ConnectError("sin red")
+        except httpx.ConnectError as exc:
+            try:
+                raise TripoError("Error de red con Tripo") from exc
+            except TripoError as wrapped:
+                return wrapped
+
+    variant = CountingVariant(
+        {"t01": MissingKeyError("falta TRIPO_API_KEY"), "t02": TripoError("tarea fallida")}
+    )
+    monkeypatch.setitem(registry._FACTORIES, "FAKE", lambda: variant)
+    sample, runs = _write_sample(tmp_path), tmp_path / "runs"
+    assert _run(sample, runs).exit_code == 0
+    errors = json.loads((runs / "rr/meta.json").read_text())["errors"]
+    assert {e["piece_id"]: e["kind"] for e in errors} == {"t01": "infra", "t02": "candidate"}
+    assert cli_module.error_kind(network_error()) == "infra"
+
+    monkeypatch.setattr(eval_module, "_default_judge", lambda: (StubVLM(), None))
+    CliRunner().invoke(
+        app,
+        ["eval", "--no-render", "--sample", str(sample), "--run-id", "rr"]
+        + ["--runs-root", str(runs)],
+    )
+    records = [json.loads(x) for x in (runs / "rr/eval/scores.jsonl").read_text().splitlines()]
+    status = {r["piece_id"]: (r["status"], r["error_kind"]) for r in records}
+    assert status == {"t01": ("unscored", "infra"), "t02": ("generation_failed", "candidate")}
+    from harness.eval.report import summarize
+
+    s = summarize(records)["FAKE"]
+    assert s.unscored == 1 and s.apt_total == (0, 1)  # infra outside, candidate not apt
+
+
+def test_e_not_applicable_on_organic_pieces_end_to_end(
+    stubs: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sample, runs = _write_sample(tmp_path), tmp_path / "runs"
+    common = ["--run-id", "na", "--runs-root", str(runs)]
+    result = CliRunner().invoke(
+        app,
+        ["run", "--variants", "E", "--no-post", "--skip-preflight", "--sample", str(sample)]
+        + common,
+    )
+    assert result.exit_code == 0, result.output
+    meta = json.loads((runs / "na/meta.json").read_text())
+    assert meta["skipped"] == [
+        {
+            "piece_id": "t02",
+            "variant": "E",
+            "kind": "not_applicable",
+            "reason": "no aplicable: pieza orgánica",
+        }
+    ]
+    # t01 is rectilinear: E runs and fails for lack of Blender → infrastructure.
+    assert [(e["piece_id"], e["kind"]) for e in meta["errors"]] == [("t01", "infra")]
+
+    monkeypatch.setattr(eval_module, "_default_judge", lambda: (StubVLM(), None))
+    CliRunner().invoke(app, ["eval", "--no-render", "--sample", str(sample), *common])
+    records = [json.loads(x) for x in (runs / "na/eval/scores.jsonl").read_text().splitlines()]
+    assert {r["piece_id"]: r["status"] for r in records} == {
+        "t01": "unscored",
+        "t02": "not_applicable",
+    }
+    CliRunner().invoke(app, ["report", *common])
+    report = (runs / "na/eval/report.md").read_text(encoding="utf-8")
+    assert "- E: 1/2 piezas aplicables" in report
+
+
+def test_router_falls_back_when_e_declines_an_organic_piece(
+    stubs: dict[str, Any], tmp_path: Path
+) -> None:
+    from harness.core.models import load_pieces
+
+    pieces = {p.id: p for p in load_pieces(_write_sample(tmp_path))}
+    stubs["router_vlm"].rectilinear_ids = {"t02"}  # VLM: rectilinear; CSV: organic
+    result = registry.get_variant("F").run(pieces["t02"], tmp_path / "runs/r/t02/F", 2)
+    assert {c.meta["routed_to"] for c in result.candidates} == {"C"}
+    assert "no aplicable" in result.notes

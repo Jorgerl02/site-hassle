@@ -68,6 +68,10 @@ class VLMClient:
     Retries (exponential backoff) on transient API errors and on unparsable JSON.
     Every attempt's token cost is recorded in ``calls`` and ``total_cost_usd``.
     Pass ``client`` to inject a preconfigured ``anthropic.Anthropic`` (e.g. in tests).
+
+    ``allow_fallback`` (default False) opts in to server-side fallback models. The judge must
+    keep it off so every score comes from the requested model; the router may enable it.
+    The model that actually answered is in ``calls[i]["model"]`` / ``last_model``.
     """
 
     def __init__(
@@ -79,6 +83,7 @@ class VLMClient:
         backoff_s: float = 2.0,
         max_tokens: int = 16000,
         sleep: Callable[[float], None] = time.sleep,
+        allow_fallback: bool = False,
     ) -> None:
         # SDK retries disabled: retry/backoff is owned here so JSON failures are retried too.
         self._client = client or anthropic.Anthropic(api_key=api_key, max_retries=0)
@@ -86,9 +91,14 @@ class VLMClient:
         self.max_attempts = max_attempts
         self.backoff_s = backoff_s
         self.max_tokens = max_tokens
+        self.allow_fallback = allow_fallback
         self._sleep = sleep
         self.calls: list[dict[str, Any]] = []
         self.total_cost_usd = 0.0
+
+    @property
+    def last_model(self) -> str | None:
+        return self.calls[-1]["model"] if self.calls else None
 
     @property
     def last_cost_usd(self) -> float:
@@ -109,12 +119,16 @@ class VLMClient:
             if attempt:
                 self._sleep(self.backoff_s * 2 ** (attempt - 1))
             try:
+                extra: dict[str, Any] = (
+                    {"betas": [FALLBACK_BETA], "fallbacks": "default"}
+                    if self.allow_fallback
+                    else {}
+                )
                 response = self._client.beta.messages.create(
                     model=self.model,
                     max_tokens=self.max_tokens,
                     messages=[{"role": "user", "content": content}],
-                    betas=[FALLBACK_BETA],
-                    fallbacks="default",
+                    **extra,
                 )
             except anthropic.APIError as exc:
                 if not _is_retryable(exc):

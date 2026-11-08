@@ -40,5 +40,6 @@ lint:
     uv run ruff check src tests
 
 # Tests que ejecutan un Blender real (opt-in), p. ej. just blender-test /Applications/Blender.app/Contents/MacOS/Blender
-blender-test bin:
-    HARNESS_BLENDER_TEST_BIN="{{bin}}" uv run pytest -q tests/test_post.py tests/test_parametric.py tests/test_eval.py
+# glb (opcional): GLB PBR texturizado para comprobar que los renders muestran el color base
+blender-test bin glb="":
+    HARNESS_BLENDER_TEST_BIN="{{bin}}" HARNESS_TEXTURED_GLB="{{glb}}" uv run pytest -q tests/test_post.py tests/test_parametric.py tests/test_eval.py

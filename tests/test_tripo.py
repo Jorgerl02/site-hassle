@@ -378,32 +378,31 @@ def fake_rembg(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
     return calls
 
 
-def test_variant_b_cleans_and_uses_multiview(
+def test_variant_b_cleans_first_photo_only_and_never_uses_multiview(
     httpx_mock: HTTPXMock, tmp_path: Path, fake_rembg: list
 ) -> None:
     mock_success_cycle(httpx_mock, reusable=True)
-    piece = make_piece(tmp_path, 2)
+    piece = make_piece(tmp_path, 3)  # several photos: still only the first one
     workdir = tmp_path / "work"
 
     result = CleanTripoVariant(make_client(), base_seed=0).run(piece, workdir, candidates=2)
 
-    assert len(fake_rembg) == 2  # every photo cleaned once, shared by candidates
+    assert len(fake_rembg) == 1  # first photo cleaned once, shared by candidates
     cleaned = sorted((workdir / "clean").glob("*.png"))
-    assert len(cleaned) == 2
+    assert len(cleaned) == 1 and cleaned[0].name == "01_1.png"
     with Image.open(cleaned[0]) as img:
         assert img.size == (1024, 1024)
     requests = task_requests(httpx_mock)
-    assert [r["type"] for r in requests] == ["multiview_to_model"] * 2
+    assert [r["type"] for r in requests] == ["image_to_model"] * 2
     assert [r["model_seed"] for r in requests] == [1, 2]
-    assert all(sum(1 for f in r["files"] if f) == 2 for r in requests)
     uploads = httpx_mock.get_requests(method="POST", url=UPLOAD_URL)
-    assert len(uploads) == 4 and all(b"image/png" in u.content for u in uploads)
+    assert len(uploads) == 2 and all(b"image/png" in u.content for u in uploads)
     for cand in result.candidates:
         assert cand.glb_path.read_bytes() == GLB_BYTES
         meta = storage.read_meta(workdir / f"cand_{cand.index}")
         assert meta["variant"] == "B"
-        assert meta["clean_images"] == [str(p) for p in cleaned]
-        assert meta["task_type"] == "multiview_to_model"
+        assert meta["clean_images"] == [str(cleaned[0])]
+        assert meta["source_image"] == str(piece.images[0])
 
 
 def test_variant_b_single_photo_uses_image_to_model(

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from harness.clients.meshy import MeshyClient
 from harness.core import storage
-from harness.core.config import Settings
+from harness.core.config import MissingKeyError, Settings
 from harness.core.models import Candidate, Piece, VariantResult
 from harness.prep.clean import clean_image
 
@@ -30,7 +30,7 @@ class CleanMeshyVariant:
         if self._client is None:
             settings = self._settings or Settings.load()
             if not settings.meshy_api_key:
-                raise RuntimeError("Variante D: falta MESHY_API_KEY en .env o en el entorno")
+                raise MissingKeyError("Variante D: falta MESHY_API_KEY en .env o en el entorno")
             self._client = MeshyClient(settings.meshy_api_key)
         return self._client
 
@@ -41,16 +41,38 @@ class CleanMeshyVariant:
             clean_image(src, clean_dir / f"{i}.png") for i, src in enumerate(piece.images, start=1)
         ]
 
+        client = self.client  # resolved before the loop: a missing key is not a candidate failure
+        base_meta = {
+            "variant": self.name,
+            "piece_id": piece.id,
+            "source_images": [str(p) for p in piece.images],
+            "clean_images": [str(p) for p in cleaned],
+        }
         result: list[Candidate] = []
+        failures: list[str] = []
+        last_error: Exception | None = None
         for index in range(1, candidates + 1):
             cand = storage.candidate_dir(workdir, index)
-            outcome = self.client.generate(cleaned, storage.model_path(cand), seed=index)
+            try:
+                outcome = client.generate(cleaned, storage.model_path(cand), seed=index)
+            except Exception as exc:  # one failed candidate must not drop the paid ones
+                last_error = exc
+                failures.append(f"cand_{index}: {exc}")
+                storage.write_meta(
+                    cand,
+                    {
+                        **base_meta,
+                        "index": index,
+                        "error": str(exc),
+                        "error_payload": getattr(exc, "payload", None),
+                        "cost_usd": 0.0,  # nothing billed is known for a failed Meshy task
+                        "seconds": 0.0,
+                    },
+                )
+                continue
             meta = {
-                "variant": self.name,
-                "piece_id": piece.id,
+                **base_meta,
                 "index": index,
-                "source_images": [str(p) for p in piece.images],
-                "clean_images": [str(p) for p in cleaned],
                 "cost_usd": outcome.cost_usd,
                 "seconds": outcome.seconds,
                 **outcome.meta,
@@ -65,10 +87,14 @@ class CleanMeshyVariant:
                     meta=meta,
                 )
             )
+        if not result and last_error is not None:
+            raise last_error
 
         mode = "multi-imagen" if len(cleaned) >= 2 else "imagen única"
         notes = (
             f"clean_image en {len(cleaned)} foto(s) → Meshy {mode}; "
             "Meshy no admite semilla: candidatos = repeticiones independientes"
         )
+        if failures:
+            notes += "; candidatos fallidos: " + "; ".join(failures)
         return VariantResult(variant=self.name, piece_id=piece.id, candidates=result, notes=notes)

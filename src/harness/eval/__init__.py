@@ -49,13 +49,39 @@ def _discover_candidates(run_root: Path) -> dict[CandidateRef, tuple[Path, dict[
     return found
 
 
+def _run_meta_record(
+    entry: dict[str, Any], by_id: dict[str, Piece], status: str, kind: str, reason: str
+) -> dict[str, Any]:
+    """Piece-level record for a (piece, variant) step that produced no candidate."""
+    piece = by_id.get(entry.get("piece_id", ""))
+    return {
+        "blind_id": None,
+        "piece_id": entry.get("piece_id"),
+        "variant": entry.get("variant"),
+        "candidate": None,
+        "category": piece.category if piece else None,
+        "status": status,
+        "error_kind": kind,
+        "from_run_meta": True,
+        "reasons": [reason],
+        "geometry": None,
+        "scores": None,
+        "cost_usd": 0.0,
+        "seconds": 0.0,
+        "router_cost_usd": 0.0,
+        "judge_cost_usd": 0.0,
+        "judge_model": None,
+    }
+
+
 def _default_judge() -> tuple[JSONAsker | None, str | None]:
     key = Settings.load().anthropic_api_key
     if not key:
         return None, "juez VLM omitido: ANTHROPIC_API_KEY no definido"
     from harness.clients.vlm import VLMClient
 
-    return VLMClient(api_key=key), None
+    # No server-side fallback: every score must come from the requested judge model.
+    return VLMClient(api_key=key, allow_fallback=False), None
 
 
 def evaluate_run(
@@ -103,9 +129,11 @@ def evaluate_run(
             "glb_path": str(glb),
             "cost_usd": float(meta.get("cost_usd") or 0.0),
             "seconds": float(meta.get("seconds") or 0.0),
+            "router_cost_usd": float(meta.get("router_cost_usd_share") or 0.0),
             "geometry": None,
             "scores": None,
             "judge_cost_usd": 0.0,
+            "judge_model": None,
         }
 
         geometry = None
@@ -121,6 +149,8 @@ def evaluate_run(
                     "max_error": geometry.max_error,
                     "scale_ok": geometry.scale_ok,
                     "source": geo.source,
+                    "raw_extents_cm": list(geo.raw_extents_cm) if geo.raw_extents_cm else None,
+                    "scale_factor": geo.scale_factor,
                 }
             else:
                 reasons.append(f"sin geometría: {candidate_error}")
@@ -164,6 +194,7 @@ def evaluate_run(
                     renders=blind_renders,
                     geometry=geometry,
                 )
+                record["judge_model"] = getattr(judge, "last_model", None)
             except Exception as exc:  # one failed judgement must not stop the run
                 reasons.append(f"juez VLM: {exc}")
             cost_after = float(getattr(judge, "total_cost_usd", 0.0) or 0.0)
@@ -181,24 +212,22 @@ def evaluate_run(
         records.append(record)
         console.print(f"{blind_id}: {record['status']}")
 
-    for error in storage.read_meta(run_root).get("errors", []):
-        piece = by_id.get(error.get("piece_id", ""))
-        records.append(
-            {
-                "blind_id": None,
-                "piece_id": error.get("piece_id"),
-                "variant": error.get("variant"),
-                "candidate": None,
-                "category": piece.category if piece else None,
-                "status": "generation_failed",
-                "reasons": [str(error.get("error", ""))],
-                "geometry": None,
-                "scores": None,
-                "cost_usd": 0.0,
-                "seconds": 0.0,
-                "judge_cost_usd": 0.0,
-            }
-        )
+    run_meta = storage.read_meta(run_root)
+    for error in run_meta.get("errors", []):
+        if error.get("superseded"):
+            continue  # a later attempt of the same (piece, variant) replaced it
+        kind = error.get("kind") or "candidate"
+        # infra: missing key, no Blender, network → outside the denominator.
+        # candidate: the provider task failed / no GLB → counts as not apt.
+        status = "unscored" if kind == "infra" else "generation_failed"
+        records.append(_run_meta_record(error, by_id, status, kind, str(error.get("error", ""))))
+    for skipped in run_meta.get("skipped", []):
+        if skipped.get("kind") == "not_applicable":
+            records.append(
+                _run_meta_record(
+                    skipped, by_id, "not_applicable", "not_applicable", str(skipped.get("reason"))
+                )
+            )
 
     scores_file = storage.scores_path(run_id, runs_root)
     scores_file.write_text(

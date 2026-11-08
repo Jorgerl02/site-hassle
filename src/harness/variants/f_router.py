@@ -18,9 +18,9 @@ from typing import Any
 
 from harness.core import storage
 from harness.core.blender import BlenderNotAvailable
-from harness.core.config import Settings
+from harness.core.config import MissingKeyError, Settings
 from harness.core.models import Candidate, Piece, VariantResult
-from harness.core.variant import Variant
+from harness.core.variant import Variant, is_not_applicable
 
 ROUTER_PROMPT = (
     "Mira las fotos de este mueble. ¿La pieza es rectilínea (cajas, tableros, patas rectas) "
@@ -58,8 +58,8 @@ class RouterVariant:
 
             key = (self._settings or Settings.load()).anthropic_api_key
             if not key:
-                raise RuntimeError("Variante F: falta ANTHROPIC_API_KEY en .env o en el entorno")
-            self._vlm = VLMClient(api_key=key)
+                raise MissingKeyError("Variante F: falta ANTHROPIC_API_KEY en .env o en el entorno")
+            self._vlm = VLMClient(api_key=key, allow_fallback=True)  # routing only
         return self._vlm
 
     def delegate(self, route: str) -> Variant:
@@ -121,6 +121,11 @@ class RouterVariant:
             if route != "E":
                 raise
             fallback = f"E no disponible ({exc}); se usa la ruta orgánica"
+            route = self.organic_route(piece)
+            result = self._run_delegate(route, piece, workdir, candidates)
+        if route == "E" and is_not_applicable(result):
+            # The VLM says rectilinear but the CSV label says organic: E declines.
+            fallback = f"E {result.notes}; se usa la ruta orgánica"
             route = self.organic_route(piece)
             result = self._run_delegate(route, piece, workdir, candidates)
 

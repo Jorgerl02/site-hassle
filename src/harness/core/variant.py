@@ -12,6 +12,15 @@ import trimesh
 from harness.core import storage
 from harness.core.models import Candidate, Piece, VariantResult
 
+# A VariantResult with no candidates whose ``notes`` start with this prefix means the variant
+# does not apply to the piece (e.g. E on an organic piece): recorded as ``not_applicable``,
+# outside that variant's denominator.
+NOT_APPLICABLE_PREFIX = "no aplicable"
+
+
+def is_not_applicable(result: VariantResult) -> bool:
+    return not result.candidates and result.notes.startswith(NOT_APPLICABLE_PREFIX)
+
 
 @runtime_checkable
 class Variant(Protocol):

@@ -6,6 +6,12 @@ with ``width_cm``/``depth_cm`` by sorted size (largest with largest), which forg
 rotation about the vertical axis. Consequence: a model lying on its side gets a large
 ``err_height``; a model turned 90° on the floor is not penalised.
 
+Scale rule (also the same as ``harness.post``): generators output models at an arbitrary
+native scale, so before comparing, the mesh is rescaled uniformly by
+``max(target_cm) / max(raw_extents_cm)``. The metric therefore measures PROPORTIONS, and a
+raw GLB and its post-processed (pre-scaled) copy get identical metrics. The raw extents and
+the factor are kept in ``Measurement``/``GeometryResult`` for the record.
+
 If trimesh cannot read the GLB (e.g. Draco-compressed output of the post-processing), the
 errors written by Blender in ``post_meta.json`` next to it are used instead.
 """
@@ -30,10 +36,19 @@ class CandidateGeometryError(ValueError):
 
 
 @dataclass(frozen=True)
+class Measurement:
+    metrics: GeometryMetrics  # after the uniform rescale
+    raw_extents_cm: tuple[float, float, float]  # glTF X, Y, Z before rescaling
+    scale_factor: float
+
+
+@dataclass(frozen=True)
 class GeometryResult:
     metrics: GeometryMetrics | None
     source: str | None  # "trimesh" | "post_meta" | None
     error: str | None  # candidate-attributable failure, if metrics is None
+    raw_extents_cm: tuple[float, float, float] | None = None
+    scale_factor: float | None = None
 
 
 def model_for_candidate(cand_dir: Path) -> Path:
@@ -67,10 +82,20 @@ def match_extents(
     return small, y, large
 
 
-def measure(mesh: trimesh.Trimesh, piece: Piece) -> GeometryMetrics:
+def uniform_scale_factor(raw_extents_cm: tuple[float, float, float], piece: Piece) -> float:
+    """``max(target_cm) / max(raw_extents_cm)``, the rule of ``bpy_post``."""
+    longest = max(raw_extents_cm)
+    if longest <= 0:
+        raise CandidateGeometryError("caja envolvente degenerada (extensión nula)")
+    return max(piece.width_cm, piece.height_cm, piece.depth_cm) / longest
+
+
+def measure_details(mesh: trimesh.Trimesh, piece: Piece) -> Measurement:
     ex, ey, ez = (float(e) * GLB_UNITS_TO_CM for e in mesh.extents)
-    width, height, depth = match_extents((ex, ey, ez), piece)
-    return GeometryMetrics(
+    raw = (ex, ey, ez)
+    factor = uniform_scale_factor(raw, piece)
+    width, height, depth = match_extents((ex * factor, ey * factor, ez * factor), piece)
+    metrics = GeometryMetrics(
         width_cm=width,
         height_cm=height,
         depth_cm=depth,
@@ -81,19 +106,30 @@ def measure(mesh: trimesh.Trimesh, piece: Piece) -> GeometryMetrics:
         n_components=len(mesh.split(only_watertight=False)),
         n_faces=len(mesh.faces),
     )
+    return Measurement(metrics, raw, factor)
+
+
+def measure(mesh: trimesh.Trimesh, piece: Piece) -> GeometryMetrics:
+    """Metrics after the uniform rescale (scale-invariant)."""
+    return measure_details(mesh, piece).metrics
 
 
 def measure_glb(path: Path, piece: Piece) -> GeometryMetrics:
     return measure(load_mesh(path), piece)
 
 
+def _post_meta(meta_path: Path) -> dict:
+    return json.loads(Path(meta_path).read_text(encoding="utf-8"))
+
+
 def metrics_from_post_meta(meta_path: Path, piece: Piece) -> GeometryMetrics:
-    """Build metrics from Blender's ``post_meta.json`` (signed errors width/height/depth).
+    """Build metrics from Blender's ``post_meta.json`` (signed errors width/height/depth,
+    already measured after the same uniform rescale).
 
     Topology is unknown there: ``watertight=False``, ``n_components=0`` and
     ``n_faces = tris_after``. Raises ``ValueError``/``KeyError`` if malformed.
     """
-    data = json.loads(Path(meta_path).read_text(encoding="utf-8"))
+    data = _post_meta(meta_path)
     errors = {axis: float(data["errors"][axis]) for axis in ("width", "height", "depth")}
     return GeometryMetrics(
         width_cm=piece.width_cm * (1 + errors["width"]),
@@ -114,13 +150,30 @@ def measure_candidate(glb: Path, piece: Piece) -> GeometryResult:
     if not glb.is_file():
         return GeometryResult(None, None, f"no existe el modelo {glb.name}")
     try:
-        return GeometryResult(measure_glb(glb, piece), "trimesh", None)
+        mesh = load_mesh(glb)
+        m = measure_details(mesh, piece)
+        return GeometryResult(m.metrics, "trimesh", None, m.raw_extents_cm, m.scale_factor)
     except Exception as exc:  # trimesh raises many types on unreadable files (e.g. Draco)
         load_error = str(exc) or type(exc).__name__
     meta_path = glb.with_name(POST_META_FILENAME)
     if meta_path.is_file():
         try:
-            return GeometryResult(metrics_from_post_meta(meta_path, piece), "post_meta", None)
+            metrics = metrics_from_post_meta(meta_path, piece)
+            data = _post_meta(meta_path)
+            raw = data.get("raw_cm") or {}
+            raw_xyz = (
+                (float(raw["width"]), float(raw["height"]), float(raw["depth"]))
+                if all(k in raw for k in ("width", "height", "depth"))
+                else None
+            )
+            factor = data.get("scale_factor")
+            return GeometryResult(
+                metrics,
+                "post_meta",
+                None,
+                raw_xyz,
+                float(factor) if factor is not None else None,
+            )
         except (KeyError, TypeError, ValueError) as exc:
             return GeometryResult(
                 None, None, f"GLB ilegible y {POST_META_FILENAME} inválido: {exc!r}"

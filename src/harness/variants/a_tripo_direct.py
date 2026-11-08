@@ -7,7 +7,7 @@ from typing import Any
 
 from harness.clients.tripo import TripoClient, TripoError
 from harness.core import storage
-from harness.core.config import Settings
+from harness.core.config import MissingKeyError, Settings
 from harness.core.models import Candidate, Piece, VariantResult
 
 DEFAULT_BASE_SEED = 1000
@@ -19,7 +19,7 @@ def resolve_client(client: TripoClient | None, settings: Settings | None) -> Tri
         return client
     settings = settings or Settings.load()
     if not settings.tripo_api_key:
-        raise RuntimeError("Falta TRIPO_API_KEY en el entorno o en .env")
+        raise MissingKeyError("Falta TRIPO_API_KEY en el entorno o en .env")
     return TripoClient(settings.tripo_api_key)
 
 

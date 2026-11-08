@@ -258,3 +258,45 @@ def test_variant_d_without_key_fails_at_run(piece, tmp_path):
     variant = CleanMeshyVariant(settings=Settings())
     with pytest.raises(RuntimeError, match="MESHY_API_KEY"):
         _ = variant.client
+
+
+def test_variant_d_keeps_paid_candidates_when_a_later_one_fails(
+    monkeypatch, images, piece, tmp_path
+):
+    monkeypatch.setattr(clean, "_remove_background", lambda img: img.convert("RGBA"))
+
+    class FlakyMeshy:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, imgs, dst_glb, *, seed=None):
+            self.calls += 1
+            if self.calls == 2:
+                raise MeshyError("Tarea Meshy t2 FAILED: boom", {"status": "FAILED"})
+            Path(dst_glb).parent.mkdir(parents=True, exist_ok=True)
+            Path(dst_glb).write_bytes(GLB_BYTES)
+            return GenerationOutcome(
+                glb_path=Path(dst_glb), cost_usd=MESHY_USD_PER_MODEL, seconds=1.0, meta={}
+            )
+
+    workdir = tmp_path / "D"
+    piece = piece.model_copy(update={"images": images[:1]})
+    result = CleanMeshyVariant(client=FlakyMeshy()).run(piece, workdir, candidates=3)
+
+    assert [c.index for c in result.candidates] == [1, 3]
+    assert "cand_2" in result.notes and "boom" in result.notes
+    meta = storage.read_meta(workdir / "cand_2")
+    assert "boom" in meta["error"] and meta["error_payload"] == {"status": "FAILED"}
+    assert meta["cost_usd"] == 0.0
+
+
+def test_variant_d_raises_when_every_candidate_fails(monkeypatch, images, piece, tmp_path):
+    monkeypatch.setattr(clean, "_remove_background", lambda img: img.convert("RGBA"))
+
+    class Broken:
+        def generate(self, imgs, dst_glb, *, seed=None):
+            raise MeshyError("caída", None)
+
+    piece = piece.model_copy(update={"images": images[:1]})
+    with pytest.raises(MeshyError, match="caída"):
+        CleanMeshyVariant(client=Broken()).run(piece, tmp_path / "D", candidates=2)

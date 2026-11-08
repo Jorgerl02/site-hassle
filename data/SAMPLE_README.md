@@ -40,6 +40,9 @@ generación) · **Estado:** congelada.
 - **Variedad:** dentro de cada categoría se mezclan formas rectilíneas y orgánicas
   (`rectilinear`, a ojo), tamaños (de un jarrón de 20 cm a un sofá de 205 cm) y materiales.
 - **Descripción:** una línea en español redactada a partir de la ficha.
+- **Orden de las fotos:** el orden de `images` no tiene semántica de vista (la primera no es
+  necesariamente frontal ni la segunda lateral); por eso ninguna variante las envía a slots
+  multivista con nombre.
 
 ## Recuento por categoría
 

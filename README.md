@@ -12,10 +12,10 @@ sin hablar con comercios, si algún pipeline produce modelos lo bastante buenos 
 | Variante | Enfoque | Pregunta que responde |
 |---|---|---|
 | A | Tripo directo, primera foto tal cual | Línea base |
-| B | Limpieza de fotos (rembg, recorte, fondo blanco) → Tripo | ¿Cuánto aporta el preprocesado? |
-| C | Limpieza → 4 vistas sintéticas con Gemini → Tripo multivista | ¿Las vistas inventadas ayudan o perjudican? |
+| B | Limpieza de la primera foto (rembg, recorte, fondo blanco) → Tripo `image_to_model`; nunca multivista, porque las fotos de catálogo no llevan etiqueta de vista | ¿Cuánto aporta el preprocesado? |
+| C | Limpieza → 4 vistas sintéticas con Gemini → Tripo multivista (la única variante multivista: sus vistas sí están etiquetadas) | ¿Las vistas inventadas ayudan o perjudican? |
 | D | Limpieza → Meshy | ¿Importa el proveedor? |
-| E | Paramétrico en Blender (cajas con medidas exactas y la foto como textura) | ¿La ruta sin IA gana en su categoría? |
+| E | Paramétrico en Blender (cajas con medidas exactas y la foto como textura); solo piezas rectilíneas (`rectilinear=false` → «no aplicable») | ¿La ruta sin IA gana en su categoría? |
 | F | Enrutado: un VLM decide rectilínea → E; orgánica → C (≥ 2 fotos) o B (1 foto) | ¿El híbrido supera a cada ruta sola? |
 
 `FAKE` es una variante de prueba sin llamadas externas (exporta una caja con las medidas).
@@ -42,8 +42,10 @@ Rellena `.env` (el entorno del proceso tiene prioridad sobre `.env`; nunca subas
 | `BLENDER_BIN` | Variante E y renders de control de `eval` | Ruta absoluta al ejecutable de [Blender 4.x](https://www.blender.org/download/), p. ej. `/Applications/Blender.app/Contents/MacOS/Blender` |
 
 Blender solo se usa como subproceso (`BLENDER_BIN --background --python <script> -- <args>`);
-nunca se importa `bpy` en el proceso de Python. Sin `BLENDER_BIN`, E falla (y F cae a la ruta
-orgánica) y `eval` registra los candidatos como «sin puntuar (infraestructura)».
+nunca se importa `bpy` en el proceso de Python. Sin `BLENDER_BIN`, `run` se detiene en la
+comprobación previa si se pide E o `--post` (ver abajo); con `--skip-preflight`, E falla como
+infraestructura, F cae a la ruta orgánica y `eval` registra los candidatos sin renders como «sin
+puntuar (infraestructura)».
 
 ## Protocolo de 10 días (resumen)
 
@@ -88,7 +90,17 @@ días 8–9 consolidar puntuaciones e informe; día 10 decisión por escrito.
 | `just report r1` | `uv run bakeoff report --run-id r1` | Escribe `runs/r1/eval/report.md` |
 | `just test` | `uv run pytest -q` | Tests offline (sin red, sin claves, sin Blender) |
 | `just lint` | `uv run ruff check src tests` | Lint |
-| `just blender-test /ruta/a/blender` | `HARNESS_BLENDER_TEST_BIN=/ruta/a/blender uv run pytest -q tests/test_post.py tests/test_parametric.py tests/test_eval.py` | Tests con un Blender real (opt-in) |
+| `just blender-test /ruta/a/blender [glb]` | `HARNESS_BLENDER_TEST_BIN=/ruta/a/blender HARNESS_TEXTURED_GLB=glb uv run pytest -q tests/test_post.py tests/test_parametric.py tests/test_eval.py` | Tests con un Blender real (opt-in) |
+
+`blender-test` y la textura en los renders: Workbench pinta la textura del nodo de imagen
+**activo** de cada material, y un GLB PBR trae varios (color base, normales, rugosidad).
+`bpy_render.py` activa antes de renderizar el nodo conectado a `Base Color` del Principled BSDF.
+El cubo de `tests/fixtures/` no tiene textura, así que para comprobarlo pasa como segundo
+argumento un GLB PBR texturizado con, al menos, color base y mapa de normales (por ejemplo, un
+GLB real de Tripo o Meshy, o `DamagedHelmet.glb` de los
+[glTF Sample Assets de Khronos](https://github.com/KhronosGroup/glTF-Sample-Assets)); el test
+falla si el render frontal parece un mapa de normales (azul dominante). No se versionan
+fixtures binarios.
 
 Opciones útiles:
 
@@ -103,15 +115,31 @@ Opciones útiles:
   continúa (se evalúa el GLB crudo); un fallo de Blender guarda el final del log en `reason`.
   `--no-post` omite el paso.
 - `bakeoff eval --no-render` no lanza Blender y reutiliza los renders que ya existan.
-- Sin `--run-id`, `run` usa la marca de tiempo UTC (`20261108T101500Z`). Reutilizar un id
-  sobrescribe el `meta.json` del run (ver limitaciones); usa un id nuevo por tanda.
-- Un fallo de una pieza o variante se registra en `errors` del `meta.json` del run y la
-  ejecución continúa; en el informe cuenta como pieza no apta.
+- **Comprobación previa.** Antes de la primera llamada de pago, `run` comprueba las claves que
+  necesita cada variante pedida (A/B: `TRIPO_API_KEY`; C: Tripo + `GEMINI_API_KEY`; D:
+  `MESHY_API_KEY`; F: `ANTHROPIC_API_KEY` + Tripo + Gemini) y Blender si se pide E o `--post`.
+  Si falta algo, imprime el resumen y termina con código 2. `--skip-preflight` continúa de
+  todos modos (F sin Blender solo avisa: sus piezas rectilíneas van a la ruta orgánica).
+- **Ejecución reanudable.** El `meta.json` del run se escribe tras **cada** paso (pieza,
+  variante) y se fusiona con el existente: un run interrumpido conserva lo hecho. Sin
+  `--run-id`, `run` usa la marca de tiempo UTC (`20261108T101500Z`); con un id ya usado y
+  `--resume` (por defecto) se salta, con el aviso «reutilizado», cada paso cuyo resultado está
+  registrado sin error y con todos sus `model.glb` en disco; `--no-resume` lo repite todo.
+  `results` guarda el último resultado de cada paso, `errors` nunca pierde entradas (un
+  reintento marca las anteriores con `superseded: true`) y `total_cost_usd` acumula el coste de
+  cada paso ejecutado.
+- Un fallo de una pieza o variante se registra en `errors` con un `kind` y la ejecución
+  continúa: `infra` (falta una clave, sin Blender, error de red) queda fuera del denominador
+  como «sin puntuar (infraestructura)»; `candidate` (la tarea del proveedor falla, no hay GLB)
+  cuenta como pieza no apta. En C y D un candidato fallido no descarta los ya pagados: se anota
+  en su `meta.json` (`error`) y en las notas; solo si fallan todos se registra el error.
+- E en una pieza con `rectilinear=false` no genera nada y se registra en `skipped` con
+  `kind: "not_applicable"`; con `rectilinear` vacío, E se ejecuta.
 
 Salidas:
 
 ```
-runs/<run_id>/meta.json                                   # run: variantes, piezas, coste total, errores
+runs/<run_id>/meta.json                                   # run: variantes, piezas, resultados, coste acumulado, errores, no aplicables
 runs/<run_id>/<pieza>/<variante>/cand_<n>/model.glb       # modelo generado
 runs/<run_id>/<pieza>/<variante>/cand_<n>/model_post.glb  # modelo postprocesado (Blender)
 runs/<run_id>/<pieza>/<variante>/cand_<n>/post_meta.json  # errores de escala y triángulos del postprocesado
@@ -158,14 +186,24 @@ El informe automático usa solo el juez VLM; la consolidación de las hojas huma
   al menos uno de sus candidatos es apto (el pipeline genera N y se queda el mejor). Cada celda es
   `% (aptas/n)`. «Δ vs A» son puntos porcentuales sobre la línea base en el total.
 - **Medias por eje, coste y tiempo.** Media de cada eje sobre los candidatos puntuados; coste y
-  segundos por pieza = suma de sus candidatos, promediada sobre las piezas.
+  tiempo por pieza (segundos y minutos) = suma de sus candidatos, promediada sobre las piezas;
+  «% mallas cerradas» y «media de componentes» sobre los candidatos medidos con trimesh. Debajo,
+  **Coste total** = generación + enrutado VLM de F + juez VLM.
+- **Escala.** Antes de medir, el modelo se reescala de forma uniforme con la misma regla que el
+  postprocesado (`max(medidas) / max(caja cruda)`): el eje `escala` mide **proporciones**, y un
+  GLB crudo y su copia postprocesada dan la misma nota. `scores.jsonl` guarda la caja cruda
+  (`raw_extents_cm`), el factor (`scale_factor`) y el origen (`trimesh` o `post_meta`), y el
+  modelo que respondió al juez (`judge_model`; el juez nunca usa modelos de respaldo).
 - **Regla de la ganadora (spec).** Una variante gana si tiene **> 60 % de aptos en al menos 2
   categorías** y **> 15 puntos sobre A** en el total. Sin A en el run no se declara ganadora.
 - **Denominador.** Cuentan todas las piezas con algún candidato puntuado o con un fallo atribuible
-  al candidato (generación fallida, modelo ausente, GLB ilegible o malla vacía), que cuentan como
-  no aptas. Solo se excluyen las piezas sin puntuar por infraestructura (sin Blender, sin clave,
-  error del juez); aparecen en la columna «Sin puntuar (infraestructura)». Si esa columna no es 0,
-  el porcentaje se calcula sobre menos de 30 piezas: corrige la infraestructura y repite `eval`.
+  al candidato (`kind: "candidate"`: la tarea del proveedor falla o no hay GLB; o modelo
+  ausente, GLB ilegible o malla vacía), que cuentan como no aptas. Se excluyen las piezas sin
+  puntuar por infraestructura (`kind: "infra"`: sin Blender, sin clave, error de red, o error
+  del juez); aparecen en la columna «Sin puntuar (infraestructura)». Si esa columna no es 0, el
+  porcentaje se calcula sobre menos de 30 piezas: corrige la infraestructura y repite `run`
+  (reanuda) y `eval`. Para E se excluyen además las piezas orgánicas (`not_applicable`): el
+  informe indica «E: N/M piezas aplicables» y sus tasas son sobre ese subconjunto.
 - **Ruido.** Con 30 piezas, diferencias < 15 puntos son ruido: no permiten afirmar que una variante
   sea mejor que otra, aunque la tabla muestre un número mayor.
 
@@ -212,8 +250,10 @@ llamada con las constantes de `src/harness/core/pricing.py`; actualízalas antes
 - **`scores.jsonl` no es ciego.** Contiene la variante; a los jueces humanos solo se les da
   `blind_sheet.csv` y `eval/blind/`.
 - **Regla de la ganadora.** El delta de > 15 puntos se aplica al total, no por categoría.
-- **`--run-id` reutilizado.** Repetir `run` con el mismo id sobrescribe el `meta.json` del run
-  (variantes, coste total, errores) aunque los candidatos previos sigan en disco.
+- **Reanudación a nivel de paso.** `--resume` reutiliza un paso (pieza, variante) completo; un
+  paso con algún candidato fallido pero otros correctos cuenta como terminado y no se repite.
+  `total_cost_usd` no incluye lo gastado en pasos que terminaron en error (p. ej. vistas Gemini
+  de un C cuyos candidatos fallaron todos): está en los `meta.json` de sus candidatos.
 - **Hojas humanas fuera del informe.** El informe solo agrega el juez VLM; las hojas humanas se
   consolidan a mano.
 

@@ -265,7 +265,7 @@ def _message(text: str, stop_reason: str = "end_turn") -> dict:
     }
 
 
-def _vlm(responses: list[httpx2.Response], seen: list[dict]) -> VLMClient:
+def _vlm(responses: list[httpx2.Response], seen: list[dict], **kwargs) -> VLMClient:
     queue = list(responses)
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -283,7 +283,32 @@ def _vlm(responses: list[httpx2.Response], seen: list[dict]) -> VLMClient:
         max_retries=0,
         http_client=httpx2.Client(transport=httpx2.MockTransport(handler)),
     )
-    return VLMClient(client=client, sleep=lambda _: None)
+    return VLMClient(client=client, sleep=lambda _: None, **kwargs)
+
+
+def test_vlm_judge_default_sends_no_fallbacks() -> None:
+    seen: list[dict] = []
+    vlm = _vlm([httpx2.Response(200, json=_message('{"ok": 1}'))], seen)
+    vlm.ask_json("p", [], "{}")
+    assert "fallbacks" not in seen[0]["body"]
+    assert "server-side-fallback" not in seen[0]["headers"].get("anthropic-beta", "")
+    assert vlm.last_model == "claude-sonnet-5-5"
+
+
+def test_vlm_allow_fallback_opt_in() -> None:
+    seen: list[dict] = []
+    vlm = _vlm([httpx2.Response(200, json=_message('{"ok": 1}'))], seen, allow_fallback=True)
+    vlm.ask_json("p", [], "{}")
+    assert seen[0]["body"]["fallbacks"] == "default"
+    assert "server-side-fallback" in seen[0]["headers"]["anthropic-beta"]
+
+
+def test_default_judge_disables_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    import harness.eval as eval_module
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    judge, reason = eval_module._default_judge()
+    assert reason is None and judge.allow_fallback is False
 
 
 def test_vlm_parses_json_and_records_cost(tmp_path: Path) -> None:
@@ -358,6 +383,7 @@ def test_cli_run_with_fake_variant(tmp_path: Path) -> None:
             str(csv_path),
             "--runs-root",
             str(runs),
+            "--skip-preflight",  # --post without Blender: recorded per candidate, not fatal
         ],
     )
     assert result.exit_code == 0, result.output

@@ -1,5 +1,9 @@
 """Variant E — parametric: classify the piece, build it from boxes in Blender and project
-the cleaned photo on it. No external API, cost 0, always exactly one candidate."""
+the cleaned photo on it. No external API, cost 0, always exactly one candidate.
+
+Only for rectilinear pieces: with ``piece.rectilinear is False`` it returns zero candidates
+and ``notes="no aplicable: pieza orgánica"`` (recorded as ``not_applicable`` and excluded
+from E's denominator). ``rectilinear is None`` (unknown) runs."""
 
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ from harness.core import storage
 from harness.core.blender import BlenderNotAvailable, run_blender_script
 from harness.core.config import Settings
 from harness.core.models import Candidate, Piece, VariantResult
+from harness.core.variant import NOT_APPLICABLE_PREFIX
 from harness.post import parametric_spec
 from harness.prep import clean
 
@@ -71,6 +76,13 @@ class ParametricVariant:
 
     def run(self, piece: Piece, workdir: Path, candidates: int = 2) -> VariantResult:
         # Deterministic: ``candidates`` is ignored, there is exactly one candidate.
+        if piece.rectilinear is False:
+            return VariantResult(
+                variant=self.name,
+                piece_id=piece.id,
+                candidates=[],
+                notes=f"{NOT_APPLICABLE_PREFIX}: pieza orgánica",
+            )
         blender_bin = self._resolve_blender()  # fail fast, before the costly photo cleaning
         start = time.monotonic()
         cand = storage.candidate_dir(workdir, 1)

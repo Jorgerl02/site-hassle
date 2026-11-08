@@ -21,7 +21,13 @@ from harness.eval.blind_sheet import (
     read_blind_key,
     write_blind_sheet,
 )
-from harness.eval.geometry import match_extents, measure, measure_glb
+from harness.eval.geometry import (
+    match_extents,
+    measure,
+    measure_candidate,
+    measure_details,
+    measure_glb,
+)
 from harness.eval.judge import (
     JudgeError,
     escala_from_error,
@@ -78,13 +84,51 @@ def test_geometry_exact_box(piece: Piece) -> None:
     assert m.n_components == 1 and m.n_faces == 12
 
 
-def test_geometry_wrong_scale_signed_negative(piece: Piece) -> None:
-    box = trimesh.creation.box(extents=(1.08, 0.675, 0.54))  # 10 % too small
+def test_geometry_uniform_scale_is_forgiven(piece: Piece) -> None:
+    box = trimesh.creation.box(extents=(1.08, 0.675, 0.54))  # 10 % too small, same proportions
     m = measure(box, piece)
-    assert m.err_width == pytest.approx(-0.10)
+    assert m.max_error == pytest.approx(0, abs=1e-9) and m.scale_ok
+
+
+def test_geometry_wrong_proportions_signed_negative(piece: Piece) -> None:
+    box = trimesh.creation.box(extents=(1.20, 0.675, 0.60))  # height 10 % short
+    m = measure(box, piece)
+    assert m.err_width == pytest.approx(0)
     assert m.err_height == pytest.approx(-0.10)
-    assert m.err_depth == pytest.approx(-0.10)
+    assert m.err_depth == pytest.approx(0)
     assert not m.scale_ok
+
+
+def test_geometry_raw_and_prescaled_give_identical_metrics(tmp_path: Path, piece: Piece) -> None:
+    raw = trimesh.creation.box(extents=(0.9, 0.5, 0.3))  # wrong proportions on purpose
+    prescaled = raw.copy()
+    prescaled.apply_scale(1 / 2.7)
+    m_raw, m_pre = measure(raw, piece).model_dump(), measure(prescaled, piece).model_dump()
+    assert m_raw == pytest.approx(m_pre, rel=1e-9, abs=1e-12)  # identical up to float rounding
+    assert m_raw["err_height"] != pytest.approx(0)  # proportions are still measured
+    raw_glb, pre_glb = tmp_path / "raw.glb", tmp_path / "model_post.glb"
+    raw.export(raw_glb)
+    prescaled.export(pre_glb)
+    a, b = measure_candidate(raw_glb, piece), measure_candidate(pre_glb, piece)
+    assert a.metrics and b.metrics and a.source == b.source == "trimesh"
+    # GLB stores float32 vertices: equal up to float32 rounding.
+    assert a.metrics.model_dump() == pytest.approx(b.metrics.model_dump(), rel=1e-5, abs=1e-6)
+    assert a.raw_extents_cm == pytest.approx((90, 50, 30))
+    assert a.scale_factor == pytest.approx(120 / 90)
+    assert b.scale_factor == pytest.approx(120 / 90 * 2.7)
+
+
+def test_geometry_sofa_at_native_one_metre_scale_gets_escala_5() -> None:
+    sofa = Piece(
+        id="s1", name="Sofá", store="T", source_url="https://example.com",
+        category="tapizado", images=[Path("x.jpg")],
+        width_cm=200, height_cm=80, depth_cm=90,
+    )  # fmt: skip
+    native = trimesh.creation.box(extents=(1.0, 0.40, 0.45))  # generator's unit-size output
+    details = measure_details(native, sofa)
+    assert details.metrics.max_error == pytest.approx(0, abs=1e-9)
+    assert details.scale_factor == pytest.approx(2.0)
+    assert escala_from_error(details.metrics.max_error) == 5
 
 
 def test_geometry_rotation_about_vertical_is_forgiven(piece: Piece) -> None:
@@ -122,9 +166,9 @@ def test_geometry_from_glb_scene_and_components(tmp_path: Path, piece: Piece) ->
 
 
 def test_geometry_cube_fixture(cube_glb: Path, piece: Piece) -> None:
-    m = measure_glb(cube_glb, piece)
-    assert m.width_cm == pytest.approx(100)
-    assert m.err_height == pytest.approx(100 / 75 - 1)
+    m = measure_glb(cube_glb, piece)  # 1 m cube rescaled by 120/100
+    assert m.width_cm == pytest.approx(120)
+    assert m.err_height == pytest.approx(120 / 75 - 1)
 
 
 # ---------- judge ----------
@@ -190,6 +234,24 @@ def test_render_real_blender(tmp_path: Path, cube_glb: Path) -> None:
     for p in paths:
         with Image.open(p) as im:
             assert im.size == (1024, 1024)
+
+
+def test_render_real_blender_textured_pbr_shows_albedo(tmp_path: Path) -> None:
+    """Opt-in: the cube fixture has no texture, so the Workbench albedo selection is only
+    exercised with a textured PBR GLB (base colour + normal map at least) given in
+    ``HARNESS_TEXTURED_GLB`` — e.g. a real Tripo/Meshy output, or Khronos' sample
+    ``DamagedHelmet.glb``. No binary fixture is committed; see README, ``blender-test``."""
+    blender = os.environ.get("HARNESS_BLENDER_TEST_BIN")
+    textured = os.environ.get("HARNESS_TEXTURED_GLB")
+    if not blender or not textured:
+        pytest.skip("HARNESS_BLENDER_TEST_BIN y HARNESS_TEXTURED_GLB no definidos (opt-in)")
+    paths = render_views(Path(textured), tmp_path / "renders", blender_bin=Path(blender))
+    with Image.open(paths[0]) as im:
+        pixels = [p for p in im.convert("RGB").getdata() if p != (255, 255, 255)]
+    assert pixels, "render vacío"
+    r, g, b = (sum(c[i] for c in pixels) / len(pixels) for i in range(3))
+    # A tangent-space normal map averages ≈ (128, 128, 255): clearly blue-dominant.
+    assert not (b > 200 and b - max(r, g) > 60), f"parece un mapa de normales: {(r, g, b)}"
 
 
 # ---------- blind sheet ----------
@@ -534,3 +596,120 @@ def test_blind_dir_is_cleared_before_copy(tmp_path: Path) -> None:
     src = _png(tmp_path / "src" / "front.png")
     copies = copy_blind_renders([src], tmp_path / "eval", "B001")
     assert not stale.exists() and [c.name for c in copies] == ["front.png"]
+
+
+def test_report_excludes_not_applicable_from_e_denominator(tmp_path: Path) -> None:
+    applicable = _records("E", {"macizo_mate": (6, 8)})
+    na = [
+        {"piece_id": f"org_{i}", "variant": "E", "category": "tapizado",
+         "status": "not_applicable", "from_run_meta": True, "candidate": None}
+        for i in range(5)
+    ]  # fmt: skip
+    s = summarize([*applicable, *na])["E"]
+    assert s.apt_total == (6, 8) and s.pct() == pytest.approx(75)
+    assert s.not_applicable == 5 and s.unscored == 0 and s.applicable == 8
+    assert s.n_pieces == 13
+    _write_scores(tmp_path, [*applicable, *na])
+    report = build_report("r1", runs_root=tmp_path).read_text(encoding="utf-8")
+    assert "- E: 8/13 piezas aplicables" in report
+
+
+def test_report_total_cost_minutes_and_topology(tmp_path: Path) -> None:
+    records = _records("A", {"tapizado": (1, 2)})
+    for rec, (wt, comps) in zip(records, [(True, 1), (False, 3)], strict=True):
+        rec["geometry"] = {"source": "trimesh", "watertight": wt, "n_components": comps}
+        rec["judge_cost_usd"] = 0.02
+    f_rec = dict(_records("F", {"tapizado": (0, 1)})[0], router_cost_usd=0.1)
+    _write_scores(tmp_path, [*records, f_rec])
+    s = summarize(read_scores(storage.scores_path("r1", tmp_path)))
+    assert s["A"].watertight_pct == pytest.approx(50) and s["A"].components_mean == 2
+    report = build_report("r1", runs_root=tmp_path).read_text(encoding="utf-8")
+    # generation 1.5 (incl. 0.1 router) + judge 0.04
+    assert "**Coste total:** 1,54 USD = generación 1,40 USD + enrutado VLM (F) 0,10 USD" in report
+    assert "+ juez VLM 0,04 USD" in report
+    assert "10,0 s (0,2 min)" in report
+    assert "% mallas cerradas" in report and "| 50 % | 2,0 |" in report
+
+
+def test_evaluate_run_records_judge_model_and_scale(tmp_path: Path, cube_glb: Path) -> None:
+    piece = _cube_piece(tmp_path)
+    runs = _fake_run(tmp_path, cube_glb, piece)
+
+    class ModelVLM(StubVLM):
+        last_model = "claude-sonnet-5-5"
+
+    vlm = ModelVLM({"parecido": 4, "geometria": 4, "materiales": 4, "comentario": ""})
+    scores_file = evaluate_run("run1", runs_root=runs, judge=vlm, render=False, pieces=[piece])
+    scored = [r for r in read_scores(scores_file) if r["status"] == "scored"]
+    assert scored and all(r["judge_model"] == "claude-sonnet-5-5" for r in scored)
+    geo = scored[0]["geometry"]
+    assert geo["raw_extents_cm"] == pytest.approx([100, 100, 100])
+    assert geo["scale_factor"] == pytest.approx(1.0) and geo["source"] == "trimesh"
+
+
+def test_evaluate_run_superseded_errors_are_ignored(tmp_path: Path, cube_glb: Path) -> None:
+    piece = _cube_piece(tmp_path)
+    runs = _fake_run(tmp_path, cube_glb, piece)
+    storage.write_meta(
+        runs / "run1",
+        {"errors": [{"piece_id": "p01", "variant": "C", "error": "x", "superseded": True}]},
+    )
+    scores_file = evaluate_run(
+        "run1", runs_root=runs, judge=StubVLM({}), render=False, pieces=[piece]
+    )
+    assert all(r["variant"] != "C" for r in read_scores(scores_file))
+
+
+# ---------- Workbench texture selection (pure Python, no Blender) ----------
+
+
+def _node(kind: str, name: str, inputs: dict[str, list[Any]] | None = None) -> Any:
+    from types import SimpleNamespace
+
+    socks = [
+        SimpleNamespace(name=k, links=[SimpleNamespace(from_node=n) for n in v])
+        for k, v in (inputs or {}).items()
+    ]
+    return SimpleNamespace(type=kind, name=name, inputs=socks)
+
+
+def test_albedo_node_is_the_one_feeding_base_color() -> None:
+    from harness.eval.bpy_render import albedo_image_node
+
+    normal = _node("TEX_IMAGE", "normal")
+    rough = _node("TEX_IMAGE", "roughness")
+    albedo = _node("TEX_IMAGE", "albedo")
+    normal_map = _node("NORMAL_MAP", "nm", {"Color": [normal]})
+    bsdf = _node(
+        "BSDF_PRINCIPLED",
+        "bsdf",
+        {"Base Color": [albedo], "Roughness": [rough], "Normal": [normal_map]},
+    )
+    assert albedo_image_node([normal, rough, normal_map, bsdf, albedo]).name == "albedo"
+
+
+def test_albedo_node_through_mix_and_fallbacks() -> None:
+    from types import SimpleNamespace
+
+    from harness.eval.bpy_render import activate_albedo_textures, albedo_image_node
+
+    normal = _node("TEX_IMAGE", "normal")
+    albedo = _node("TEX_IMAGE", "albedo")
+    mix = _node("MIX", "mix", {"A": [albedo]})  # e.g. glTF vertex colour × texture
+    bsdf = _node("BSDF_PRINCIPLED", "bsdf", {"Base Color": [mix], "Normal": [normal]})
+    assert albedo_image_node([normal, bsdf, mix, albedo]).name == "albedo"
+    # No Base Color texture: any image node; no image node at all: None.
+    plain = _node("BSDF_PRINCIPLED", "bsdf", {"Base Color": []})
+    assert albedo_image_node([plain, normal]).name == "normal"
+    assert albedo_image_node([plain]) is None
+
+    class Nodes(list):  # stands in for bpy's node collection (iterable + ``active``)
+        active: Any = None
+
+    nodes = Nodes([normal, bsdf, mix, albedo])
+    nodes.active = normal
+    mats = [
+        SimpleNamespace(node_tree=SimpleNamespace(nodes=nodes)),
+        SimpleNamespace(node_tree=None),
+    ]
+    assert activate_albedo_textures(mats) == 1 and nodes.active is albedo

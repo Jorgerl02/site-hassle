@@ -2,10 +2,14 @@
 
 Unit of the apt rate: the piece. A piece is apt for a variant if at least one of its
 candidates is apt (the pipeline generates N candidates and keeps the best one).
-Candidate-attributable failures (``generation_failed``, ``candidate_failed``: model missing,
-unreadable or empty) count as non-apt pieces. Only pieces whose candidates were all skipped
-for infrastructure reasons (``unscored``: no Blender, no API key, judge error) are left out
-of the denominator and listed as "sin puntuar (infraestructura)".
+Candidate-attributable failures (``generation_failed``: the provider task failed or no GLB
+came back, run-meta errors with ``kind="candidate"``; ``candidate_failed``: model missing,
+unreadable or empty) count as non-apt pieces. Pieces whose candidates were all skipped for
+infrastructure reasons (``unscored``: no Blender, no API key, network error — run-meta
+errors with ``kind="infra"`` —, judge error) are left out of the denominator and listed as
+"sin puntuar (infraestructura)". Pieces where the variant does not apply
+(``not_applicable``: E on an organic piece) are left out of that variant's denominator and
+reported as "N/M piezas aplicables".
 Cost and seconds per piece = sum over that piece's candidates, averaged over pieces.
 """
 
@@ -26,9 +30,11 @@ AXES: tuple[str, ...] = ("parecido", "geometria", "materiales", "escala")
 NOT_APT_STATUSES = frozenset({"generation_failed", "candidate_failed"})
 DENOMINATOR_NOTE = (
     "Denominador: todas las piezas con algún candidato puntuado o con un fallo atribuible "
-    "al candidato (generación fallida, modelo ausente, GLB ilegible o malla vacía), que "
-    "cuentan como no aptas; solo se excluyen las piezas sin puntuar por infraestructura "
-    "(sin Blender, sin clave de API o error del juez)."
+    "al candidato (tarea del proveedor fallida, sin GLB, modelo ausente, GLB ilegible o "
+    "malla vacía), que cuentan como no aptas; se excluyen las piezas sin puntuar por "
+    "infraestructura (sin Blender, sin clave de API, error de red o del juez) y, para cada "
+    "variante, las piezas en las que no es aplicable (E solo se ejecuta en piezas "
+    "rectilíneas)."
 )
 NOISE_NOTE = (
     "Diferencias < 15 puntos sobre 30 piezas son ruido: con esta muestra no permiten "
@@ -42,11 +48,22 @@ class VariantSummary:
     apt_by_category: dict[str, tuple[int, int]] = field(default_factory=dict)  # (apt, n)
     apt_total: tuple[int, int] = (0, 0)
     unscored: int = 0
+    not_applicable: int = 0
+    n_pieces: int = 0
     axis_means: dict[str, float | None] = field(default_factory=dict)
     cost_per_piece: float | None = None
     seconds_per_piece: float | None = None
     delta_pp: float | None = None
     winner: bool = False
+    watertight_pct: float | None = None  # over candidates measured by trimesh
+    components_mean: float | None = None
+    generation_cost: float = 0.0  # includes the router share of F
+    router_cost: float = 0.0
+    judge_cost: float = 0.0
+
+    @property
+    def applicable(self) -> int:
+        return self.n_pieces - self.not_applicable
 
     def pct(self, category: str | None = None) -> float | None:
         apt, n = self.apt_total if category is None else self.apt_by_category.get(category, (0, 0))
@@ -68,6 +85,8 @@ def _mean(values: list[float]) -> float | None:
 def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
     pieces: dict[tuple[str, str], dict[str, Any]] = {}
     axis_values: dict[str, dict[str, list[float]]] = {}
+    topology: dict[str, list[tuple[bool, int]]] = {}
+    costs: dict[str, dict[str, float]] = {}
     for rec in records:
         variant = rec["variant"]
         piece = pieces.setdefault(
@@ -75,16 +94,28 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
             {
                 "category": rec.get("category"),
                 "apt": None,
+                "na": False,
                 "cost": 0.0,
                 "seconds": 0.0,
                 "has_cand": False,
             },
         )
         status = rec.get("status")
+        c = costs.setdefault(variant, {"generation": 0.0, "router": 0.0, "judge": 0.0})
+        c["generation"] += float(rec.get("cost_usd") or 0.0)
+        c["router"] += float(rec.get("router_cost_usd") or 0.0)
+        c["judge"] += float(rec.get("judge_cost_usd") or 0.0)
+        if status == "not_applicable":
+            piece["na"] = True
         if status in NOT_APT_STATUSES and piece["apt"] is None:
             piece["apt"] = False
-        if status == "generation_failed":
+        if status == "generation_failed" or rec.get("from_run_meta"):
             continue
+        geometry = rec.get("geometry")
+        if geometry and geometry.get("source") == "trimesh":
+            topology.setdefault(variant, []).append(
+                (bool(geometry.get("watertight")), int(geometry.get("n_components") or 0))
+            )
         piece["has_cand"] = True
         piece["cost"] += float(rec.get("cost_usd") or 0.0)
         piece["seconds"] += float(rec.get("seconds") or 0.0)
@@ -99,7 +130,10 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
     summaries: dict[str, VariantSummary] = {}
     for (variant, _pid), piece in sorted(pieces.items()):
         s = summaries.setdefault(variant, VariantSummary(variant))
-        if piece["apt"] is None:
+        s.n_pieces += 1
+        if piece["apt"] is None and piece["na"]:
+            s.not_applicable += 1
+        elif piece["apt"] is None:
             s.unscored += 1
         else:
             apt, n = s.apt_by_category.get(piece["category"], (0, 0))
@@ -111,6 +145,13 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
         s.seconds_per_piece = _mean([p["seconds"] for p in own])
         values = axis_values.get(variant, {})
         s.axis_means = {a: _mean(values.get(a, [])) for a in AXES}
+        topo = topology.get(variant, [])
+        s.watertight_pct = 100.0 * _mean([float(w) for w, _ in topo]) if topo else None
+        s.components_mean = _mean([float(n) for _, n in topo])
+        c = costs.get(variant, {})
+        s.generation_cost = c.get("generation", 0.0)
+        s.router_cost = c.get("router", 0.0)
+        s.judge_cost = c.get("judge", 0.0)
     decide_winners(summaries)
     return summaries
 
@@ -136,6 +177,12 @@ def _num(value: float | None, decimals: int = 1, suffix: str = "") -> str:
     return f"{value:.{decimals}f}".replace(".", ",") + suffix
 
 
+def _seconds_cell(seconds: float | None) -> str:
+    if seconds is None:
+        return "—"
+    return f"{_num(seconds, 1, ' s')} ({_num(seconds / 60, 1, ' min')})"
+
+
 def _pct_cell(s: VariantSummary, category: str | None) -> str:
     apt, n = s.apt_total if category is None else s.apt_by_category.get(category, (0, 0))
     return "—" if not n else f"{_num(s.pct(category), 1, ' %')} ({apt}/{n})"
@@ -159,6 +206,16 @@ def render_markdown(run_id: str, summaries: dict[str, VariantSummary]) -> str:
         "",
         DENOMINATOR_NOTE,
         "",
+    ]
+    partial = [summaries[v] for v in order if summaries[v].not_applicable]
+    for s in partial:
+        out.append(
+            f"- {s.variant}: {s.applicable}/{s.n_pieces} piezas aplicables; sus tasas se "
+            "calculan sobre ese subconjunto."
+        )
+    if partial:
+        out.append("")
+    out += [
         "## Aptos por variante y categoría",
         "",
         "| Variante | " + " | ".join(CATEGORIES) + " | Total | Δ vs A | Ganadora |",
@@ -177,16 +234,29 @@ def render_markdown(run_id: str, summaries: dict[str, VariantSummary]) -> str:
         "## Medias por eje, coste y tiempo",
         "",
         "| Variante | Parecido | Geometría | Materiales | Escala | Coste medio por pieza "
-        "| Segundos medios por pieza | Sin puntuar (infraestructura) |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Tiempo medio por pieza | % mallas cerradas | Media de componentes "
+        "| Sin puntuar (infraestructura) |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for v in order:
         s = summaries[v]
         means = " | ".join(_num(s.axis_means.get(a), 2) for a in AXES)
         out.append(
             f"| {v} | {means} | {_num(s.cost_per_piece, 2, ' USD')} "
-            f"| {_num(s.seconds_per_piece, 1, ' s')} | {s.unscored} |"
+            f"| {_seconds_cell(s.seconds_per_piece)} | {_num(s.watertight_pct, 0, ' %')} "
+            f"| {_num(s.components_mean, 1)} | {s.unscored} |"
         )
+    generation = sum(s.generation_cost for s in summaries.values())
+    router = sum(s.router_cost for s in summaries.values())
+    judge = sum(s.judge_cost for s in summaries.values())
+    out += [
+        "",
+        f"**Coste total:** {_num(generation + judge, 2, ' USD')} = generación "
+        f"{_num(generation - router, 2, ' USD')} + enrutado VLM (F) {_num(router, 2, ' USD')} "
+        f"+ juez VLM {_num(judge, 2, ' USD')}.",
+        "",
+        "Mallas cerradas y componentes: solo candidatos medidos con trimesh (GLB legible).",
+    ]
     winners = [v for v in order if summaries[v].winner]
     out += ["", "## Decisión", ""]
     if BASELINE not in summaries:

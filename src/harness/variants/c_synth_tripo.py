@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.core import storage
-from harness.core.config import Settings
+from harness.core.config import MissingKeyError, Settings
 from harness.core.models import Candidate, Piece, VariantResult
 from harness.prep.clean import clean_image
 from harness.prep.synth_views import VIEW_NAMES, check_views, generate_views, silhouette_aspect
@@ -49,7 +49,7 @@ class SynthTripoVariant:
 
             key = self._get_settings().tripo_api_key
             if not key:
-                raise RuntimeError("Variante C: falta TRIPO_API_KEY en .env o en el entorno")
+                raise MissingKeyError("Variante C: falta TRIPO_API_KEY en .env o en el entorno")
             self._tripo = TripoClient(key)
         return self._tripo
 
@@ -60,7 +60,7 @@ class SynthTripoVariant:
 
             key = self._get_settings().gemini_api_key
             if not key:
-                raise RuntimeError("Variante C: falta GEMINI_API_KEY en .env o en el entorno")
+                raise MissingKeyError("Variante C: falta GEMINI_API_KEY en .env o en el entorno")
             self._image_client = GeminiImageClient(key)
         return self._image_client
 
@@ -83,30 +83,54 @@ class SynthTripoVariant:
         cost_share = views_cost / candidates if candidates else 0.0
         seconds_share = views_seconds / candidates if candidates else 0.0
 
+        tripo = self.tripo  # resolved before the loop: a missing key is not a candidate failure
+        base_meta: dict[str, Any] = {
+            "variant": self.name,
+            "piece_id": piece.id,
+            "source_image": str(piece.images[0]),
+            "clean_image": str(clean),
+            "clean_image_check": clean_check,
+            "views": {k: str(v) for k, v in views.items()},
+            "views_failed_generation": failed_views,
+            "views_passed": list(check.passed),
+            "views_degraded": check.degraded,
+            "view_checks": check.checks,
+            "view_reasons": check.reasons,
+            "tripo_images": [str(p) for p in images],
+            "image_calls": image_calls,
+            "views_cost_usd_total": views_cost,
+            "views_cost_usd_share": cost_share,
+        }
         result: list[Candidate] = []
+        failures: list[str] = []
+        last_error: Exception | None = None
         for index in range(1, candidates + 1):
             cand = storage.candidate_dir(workdir, index)
-            outcome = self.tripo.generate(images, storage.model_path(cand), seed=index)
+            try:
+                outcome = tripo.generate(images, storage.model_path(cand), seed=index)
+            except Exception as exc:  # one failed candidate must not drop the paid ones
+                last_error = exc
+                failures.append(f"cand_{index}: {exc}")
+                storage.write_meta(
+                    cand,
+                    {
+                        **base_meta,
+                        "index": index,
+                        "seed": index,
+                        "error": str(exc),
+                        "error_payload": getattr(exc, "payload", None),
+                        # Spent so far for this candidate: its share of the Gemini views.
+                        "cost_usd": cost_share,
+                        "seconds": seconds_share,
+                    },
+                )
+                continue
             cost = outcome.cost_usd + cost_share
             seconds = outcome.seconds + seconds_share
             meta = {
-                "variant": self.name,
-                "piece_id": piece.id,
+                **base_meta,
                 "index": index,
                 "seed": index,
-                "source_image": str(piece.images[0]),
-                "clean_image": str(clean),
-                "clean_image_check": clean_check,
-                "views": {k: str(v) for k, v in views.items()},
-                "views_failed_generation": failed_views,
-                "views_passed": list(check.passed),
-                "views_degraded": check.degraded,
-                "view_checks": check.checks,
-                "view_reasons": check.reasons,
-                "tripo_images": [str(p) for p in images],
-                "image_calls": image_calls,
-                "views_cost_usd_total": views_cost,
-                "views_cost_usd_share": cost_share,
                 "tripo_cost_usd": outcome.cost_usd,
                 "tripo_seconds": outcome.seconds,
                 "tripo_meta": outcome.meta,
@@ -123,6 +147,8 @@ class SynthTripoVariant:
                     meta=meta,
                 )
             )
+        if not result and last_error is not None:
+            raise last_error
 
         if check.degraded:
             mode = "degradada a solo la foto limpia (" + "; ".join(check.reasons) + ")"
@@ -133,4 +159,6 @@ class SynthTripoVariant:
             f"{len(failed_views)} fallida(s), {views_cost:.3f} USD) → "
             f"Tripo {mode}; candidatos con semillas 1..{candidates}"
         )
+        if failures:
+            notes += "; candidatos fallidos: " + "; ".join(failures)
         return VariantResult(variant=self.name, piece_id=piece.id, candidates=result, notes=notes)

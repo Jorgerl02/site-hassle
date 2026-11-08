@@ -370,3 +370,43 @@ def test_variant_c_lazy_clients_need_keys(tmp_path: Path, piece: Piece) -> None:
     variant = SynthTripoVariant(settings=Settings())
     with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
         _ = variant.image_client
+
+
+class FlakyTripo(StubTripo):
+    """Fails on the seeds in ``fail_seeds`` (provider task failed)."""
+
+    def __init__(self, fail_seeds: set[int]) -> None:
+        super().__init__()
+        self.fail_seeds = fail_seeds
+
+    def generate(self, images: list[Path], dst_glb: Path, *, seed: int | None = None):
+        if seed in self.fail_seeds:
+            self.calls.append({"images": list(images), "seed": seed})
+            raise RuntimeError(f"tarea {seed} fallida")
+        return super().generate(images, dst_glb, seed=seed)
+
+
+def test_variant_c_keeps_paid_candidates_when_a_later_one_fails(
+    tmp_path: Path, piece: Piece, photo: Path
+) -> None:
+    tripo = FlakyTripo({2})
+    gemini = GeminiImageClient(client=fake_sdk(**outputs()))
+    result = SynthTripoVariant(tripo=tripo, image_client=gemini).run(
+        piece, tmp_path / "C", candidates=3
+    )
+    assert [c.index for c in result.candidates] == [1, 3]
+    assert "cand_2: tarea 2 fallida" in result.notes
+    failed = json.loads((tmp_path / "C" / "cand_2" / "meta.json").read_text())
+    assert failed["error"] == "tarea 2 fallida"
+    assert failed["cost_usd"] == pytest.approx(4 * pricing.GEMINI_IMAGE_USD / 3)
+
+
+def test_variant_c_raises_when_every_candidate_fails(
+    tmp_path: Path, piece: Piece, photo: Path
+) -> None:
+    gemini = GeminiImageClient(client=fake_sdk(**outputs()))
+    with pytest.raises(RuntimeError, match="tarea 2"):
+        SynthTripoVariant(tripo=FlakyTripo({1, 2}), image_client=gemini).run(
+            piece, tmp_path / "C", candidates=2
+        )
+    assert json.loads((tmp_path / "C" / "cand_1" / "meta.json").read_text())["error"]

@@ -1,5 +1,10 @@
-"""Variant B: clean_image on every photo -> multiview_to_model (>= 2 photos) or
-image_to_model (1 photo), one seed per candidate."""
+"""Variant B: clean_image on the FIRST photo -> Tripo image_to_model, one seed per candidate.
+
+Never multiview: catalogue photos carry no view labels (``data/SAMPLE_README.md``), and
+Tripo's multiview slots are fixed (front, left, back, right), so sending them would put
+arbitrary photos in the wrong slots. Multiview stays exclusive to C, whose synthetic views
+are labelled. B therefore isolates the effect of cleaning against A (same photo, raw).
+"""
 
 from __future__ import annotations
 
@@ -39,44 +44,33 @@ class CleanTripoVariant:
         self._client = resolve_client(self._client, self._settings)
         return self._client
 
-    def prepare(self, piece: Piece, workdir: Path) -> tuple[list[Path], list[str]]:
-        """Clean every photo into ``workdir/clean``; photos with no detectable object are
-        skipped (reported as warnings). Raises ``ValueError`` if none survives."""
-        out_dir = Path(workdir) / CLEAN_DIRNAME
-        cleaned: list[Path] = []
-        skipped: list[str] = []
-        for k, src in enumerate(piece.images, start=1):
-            dst = out_dir / f"{k:02d}_{Path(src).stem}.png"
-            try:
-                cleaned.append(clean.clean_image(src, dst, size=CLEAN_SIZE))
-            except ValueError as exc:
-                skipped.append(str(exc))
-        if not cleaned:
-            raise ValueError(f"Ninguna foto de {piece.id} es utilizable tras limpiar: {skipped}")
-        return cleaned, skipped
+    def prepare(self, piece: Piece, workdir: Path) -> Path:
+        """Clean ``piece.images[0]`` into ``workdir/clean``.
+
+        Raises ``ValueError`` if no object is detected in it (a candidate failure).
+        """
+        src = Path(piece.images[0])
+        dst = Path(workdir) / CLEAN_DIRNAME / f"01_{src.stem}.png"
+        return clean.clean_image(src, dst, size=CLEAN_SIZE)
 
     def run(self, piece: Piece, workdir: Path, candidates: int = 2) -> VariantResult:
         workdir = Path(workdir)
         start = time.monotonic()
-        images, skipped = self.prepare(piece, workdir)
+        image = self.prepare(piece, workdir)
         clean_s = time.monotonic() - start
-        result = run_tripo_candidates(
+        return run_tripo_candidates(
             variant=self.name,
             client=self.client,
             piece=piece,
             workdir=workdir,
-            images=images,
+            images=[image],
             candidates=candidates,
             base_seed=self.base_seed,
             extra_meta={
-                "clean_images": [str(p) for p in images],
-                "clean_skipped": skipped,
+                "source_image": str(piece.images[0]),
+                "clean_images": [str(image)],
                 "clean_seconds": clean_s,
             },
             # Cleaning is shared by all candidates: each one carries its share.
             extra_seconds=clean_s / max(candidates, 1),
         )
-        if skipped:
-            note = "fotos descartadas al limpiar: " + "; ".join(skipped)
-            result.notes = "; ".join(filter(None, [result.notes, note]))
-        return result

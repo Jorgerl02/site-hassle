@@ -346,3 +346,26 @@ def test_variant_real_blender(piece: Piece, tmp_path: Path) -> None:
 
     extents = trimesh.load(out, force="mesh").extents
     assert sorted(extents) == pytest.approx(sorted([1.2, 0.75, 0.6]), rel=1e-3)
+
+
+def test_variant_not_applicable_on_organic_piece(
+    monkeypatch: pytest.MonkeyPatch, piece: Piece, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)  # no Blender needed: it declines before checking
+    organic = piece.model_copy(update={"rectilinear": False})
+    result = ParametricVariant().run(organic, tmp_path / "E")
+    assert result.candidates == [] and result.notes == "no aplicable: pieza orgánica"
+    from harness.core.variant import is_not_applicable
+
+    assert is_not_applicable(result)
+
+
+@pytest.mark.parametrize("label", [True, None])
+def test_variant_runs_on_rectilinear_or_unknown(
+    monkeypatch: pytest.MonkeyPatch, piece: Piece, tmp_path: Path, label: bool | None
+) -> None:
+    binary, calls = _setup_fake(monkeypatch, tmp_path)
+    result = ParametricVariant(blender_bin=binary).run(
+        piece.model_copy(update={"rectilinear": label}), tmp_path / "E"
+    )
+    assert len(result.candidates) == 1 and len(calls) == 1

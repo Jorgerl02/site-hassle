@@ -7,17 +7,40 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
+import httpx
 import typer
 from rich.console import Console
 
 from harness.core import storage
 from harness.core.blender import BlenderNotAvailable
-from harness.core.models import DEFAULT_SAMPLE_CSV, Piece, load_pieces
+from harness.core.config import MissingKeyError, Settings
+from harness.core.models import DEFAULT_SAMPLE_CSV, Piece, VariantResult, load_pieces
 from harness.core.registry import get_variant
+from harness.core.variant import is_not_applicable
 from harness.post.blender_post import BlenderPostError, postprocess
 
 POST_REASON_NO_BLENDER = "sin Blender"
 POST_LOG_TAIL_CHARS = 2000
+PREFLIGHT_EXIT_CODE = 2
+
+# Keys each variant needs before its first paid call (Settings attribute → env var name).
+KEY_ENV = {
+    "tripo_api_key": "TRIPO_API_KEY",
+    "gemini_api_key": "GEMINI_API_KEY",
+    "meshy_api_key": "MESHY_API_KEY",
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
+}
+VARIANT_KEYS: dict[str, tuple[str, ...]] = {
+    "A": ("tripo_api_key",),
+    "B": ("tripo_api_key",),
+    "C": ("tripo_api_key", "gemini_api_key"),
+    "D": ("meshy_api_key",),
+    # F: router VLM + its organic routes (B: Tripo; C: Tripo + Gemini).
+    "F": ("anthropic_api_key", "tripo_api_key", "gemini_api_key"),
+}
+VARIANTS_NEEDING_BLENDER = frozenset({"E"})
+# F routes rectilinear pieces to E but falls back to the organic route without Blender.
+VARIANTS_PREFERRING_BLENDER = frozenset({"F"})
 
 app = typer.Typer(help="Bake-off de pipelines foto→3D.", no_args_is_help=True)
 console = Console()
@@ -68,6 +91,161 @@ class _PostStep:
         }
 
 
+def _blender_ok(settings: Settings) -> bool:
+    return settings.blender_bin is not None and Path(settings.blender_bin).is_file()
+
+
+def preflight(
+    variant_names: list[str], post: bool, settings: Settings
+) -> tuple[list[str], list[str]]:
+    """Return ``(problems, warnings)`` (Spanish) for the requested variants and options."""
+    problems: list[str] = []
+    warnings: list[str] = []
+    for name in variant_names:
+        missing = [KEY_ENV[k] for k in VARIANT_KEYS.get(name, ()) if not getattr(settings, k)]
+        if missing:
+            problems.append(f"Variante {name}: falta {', '.join(missing)}")
+    blender = _blender_ok(settings)
+    if not blender:
+        where = (
+            f"BLENDER_BIN no existe: {settings.blender_bin}"
+            if settings.blender_bin
+            else "BLENDER_BIN no definido"
+        )
+        for name in variant_names:
+            if name in VARIANTS_NEEDING_BLENDER:
+                problems.append(f"Variante {name}: necesita Blender ({where})")
+            elif name in VARIANTS_PREFERRING_BLENDER:
+                warnings.append(
+                    f"Variante {name}: sin Blender las piezas rectilíneas irán a la ruta "
+                    f"orgánica ({where})"
+                )
+        if post:
+            problems.append(f"--post: el postprocesado necesita Blender ({where}); usa --no-post")
+    return problems, warnings
+
+
+def error_kind(exc: BaseException) -> str:
+    """``"infra"`` (missing key, no Blender, network) or ``"candidate"`` (provider failed).
+
+    Looks through the whole cause chain: clients wrap network errors in their own types.
+    """
+    infra: tuple[type[BaseException], ...] = (
+        MissingKeyError,
+        BlenderNotAvailable,
+        httpx.TransportError,
+        ConnectionError,
+    )
+    try:
+        import anthropic
+
+        infra = (*infra, anthropic.APIConnectionError)
+    except ImportError:  # pragma: no cover
+        pass
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, infra):
+            return "infra"
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return "candidate"
+
+
+def _key(entry: dict[str, Any]) -> tuple[str, str]:
+    return str(entry.get("piece_id")), str(entry.get("variant"))
+
+
+class RunMeta:
+    """Run-level ``meta.json`` written after EVERY (piece, variant) step and merged with the
+    existing file, so an interrupted run keeps its bookkeeping and a reused ``--run-id``
+    adds to it instead of overwriting it.
+
+    ``results``/``skipped`` hold the latest outcome per (piece, variant) (they mirror what
+    is on disk). ``errors`` are never dropped: when a step is attempted again, its earlier
+    errors are kept with ``superseded: true``. ``total_cost_usd`` adds up every executed step.
+    """
+
+    def __init__(self, run_root: Path, run_id: str, candidates: int) -> None:
+        self.run_root = run_root
+        self.data = storage.read_meta(run_root)
+        now = datetime.now(UTC).isoformat()
+        self.data.setdefault("run_id", run_id)
+        self.data.setdefault("created_at", now)
+        self.data.setdefault("variants", [])
+        self.data.setdefault("pieces", [])
+        self.data.setdefault("total_cost_usd", 0.0)
+        for list_key in ("results", "errors", "skipped"):
+            self.data.setdefault(list_key, [])
+        self.data["candidates"] = candidates
+
+    def declare(self, variants: list[str], pieces: list[str]) -> None:
+        for field, values in (("variants", variants), ("pieces", pieces)):
+            for value in values:
+                if value not in self.data[field]:
+                    self.data[field].append(value)
+        self.save()
+
+    def result_for(self, key: tuple[str, str]) -> dict[str, Any] | None:
+        return next((r for r in self.data["results"] if _key(r) == key), None)
+
+    def has_active_error(self, key: tuple[str, str]) -> bool:
+        return any(_key(e) == key and not e.get("superseded") for e in self.data["errors"])
+
+    def _supersede(self, key: tuple[str, str]) -> None:
+        for err in self.data["errors"]:
+            if _key(err) == key:
+                err["superseded"] = True
+
+    def _replace(self, list_key: str, entry: dict[str, Any] | None, key: tuple[str, str]) -> None:
+        kept = [e for e in self.data[list_key] if _key(e) != key]
+        self.data[list_key] = [*kept, entry] if entry is not None else kept
+
+    def record_result(self, result: VariantResult, cost: float) -> None:
+        key = (result.piece_id, result.variant)
+        self._supersede(key)
+        self._replace("results", result.model_dump(mode="json"), key)
+        skipped = None
+        if is_not_applicable(result):
+            skipped = {
+                "piece_id": result.piece_id,
+                "variant": result.variant,
+                "kind": "not_applicable",
+                "reason": result.notes,
+            }
+        self._replace("skipped", skipped, key)
+        self.data["total_cost_usd"] = float(self.data["total_cost_usd"]) + cost
+        self.save()
+
+    def record_error(self, piece_id: str, variant: str, exc: BaseException) -> None:
+        key = (piece_id, variant)
+        self._supersede(key)
+        self._replace("results", None, key)
+        self._replace("skipped", None, key)
+        self.data["errors"].append(
+            {
+                "piece_id": piece_id,
+                "variant": variant,
+                "kind": error_kind(exc),
+                "error": repr(exc),
+                "at": datetime.now(UTC).isoformat(),
+            }
+        )
+        self.save()
+
+    def save(self) -> None:
+        self.data["updated_at"] = datetime.now(UTC).isoformat()
+        storage.write_meta(self.run_root, self.data)
+
+
+def _reusable(meta: RunMeta, key: tuple[str, str]) -> bool:
+    """A finished step: recorded result, no active error, and every candidate's GLB on disk."""
+    previous = meta.result_for(key)
+    if previous is None or meta.has_active_error(key):
+        return False
+    return all(Path(c["glb_path"]).is_file() for c in previous.get("candidates", []))
+
+
 def _select_pieces(pieces: list[Piece], spec: str) -> list[Piece]:
     if spec.strip().lower() == "all":
         return pieces
@@ -94,6 +272,21 @@ def run(
             help="Postprocesado Blender idéntico para todos los candidatos (model_post.glb)",
         ),
     ] = True,
+    resume: Annotated[
+        bool,
+        typer.Option(
+            "--resume/--no-resume",
+            help="Con un --run-id existente, reutiliza los pasos (pieza, variante) terminados",
+        ),
+    ] = True,
+    skip_preflight: Annotated[
+        bool,
+        typer.Option(
+            "--skip-preflight",
+            help="No abortar si faltan claves o Blender (los pasos afectados fallarán como "
+            "infraestructura)",
+        ),
+    ] = False,
 ) -> None:
     """Ejecuta las variantes sobre las piezas y escribe meta.json por candidato y por run."""
     run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -106,19 +299,43 @@ def run(
     except KeyError as exc:
         raise typer.BadParameter(str(exc.args[0])) from exc
 
+    problems, warnings = preflight([v.name for v in resolved], post, Settings.load())
+    for warning in warnings:
+        console.print(f"[yellow]Aviso:[/yellow] {warning}")
+    if problems:
+        console.print("[bold]Comprobación previa (antes de cualquier llamada de pago):[/bold]")
+        for problem in problems:
+            console.print(f"  [red]✗[/red] {problem}")
+        if not skip_preflight:
+            console.print(
+                "Abortado: corrige la configuración (.env) o usa --skip-preflight para "
+                "continuar de todos modos."
+            )
+            raise typer.Exit(PREFLIGHT_EXIT_CODE)
+        console.print("[yellow]--skip-preflight: se continúa pese a los problemas.[/yellow]")
+
     post_step = _PostStep(post)
-    results: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
+    run_meta = RunMeta(storage.run_dir(run_id, runs_root), run_id, candidates)
+    run_meta.declare([v.name for v in resolved], [p.id for p in selected])
+    executed = reused = failed = 0
     for piece in selected:
         for variant in resolved:
-            workdir = storage.variant_dir(run_id, piece.id, variant.name, runs_root)
             console.print(f"[bold]{piece.id}[/bold] · variante {variant.name}")
+            if resume and _reusable(run_meta, (piece.id, variant.name)):
+                console.print("  reutilizado (ya terminado en este run)")
+                reused += 1
+                continue
+            workdir = storage.variant_dir(run_id, piece.id, variant.name, runs_root)
             try:
                 result = variant.run(piece, workdir, candidates)
             except Exception as exc:  # one failing piece/variant must not stop the run
-                console.print(f"  [red]error:[/red] {exc}")
-                errors.append({"piece_id": piece.id, "variant": variant.name, "error": repr(exc)})
+                kind = error_kind(exc)
+                console.print(f"  [red]error ({kind}):[/red] {exc}")
+                run_meta.record_error(piece.id, variant.name, exc)
+                failed += 1
                 continue
+            if is_not_applicable(result):
+                console.print(f"  {result.notes}")
             for cand in result.candidates:
                 cand_dir = storage.candidate_dir(workdir, cand.index)
                 meta = storage.read_meta(cand_dir)
@@ -129,25 +346,13 @@ def run(
                 if post_info is not None:
                     meta["post"] = post_info
                 storage.write_meta(cand_dir, meta)
-            results.append(result.model_dump(mode="json"))
+            run_meta.record_result(result, sum(c.cost_usd for c in result.candidates))
+            executed += 1
 
-    total = sum(c["cost_usd"] for r in results for c in r["candidates"])
-    storage.write_meta(
-        storage.run_dir(run_id, runs_root),
-        {
-            "run_id": run_id,
-            "created_at": datetime.now(UTC).isoformat(),
-            "variants": [v.name for v in resolved],
-            "pieces": [p.id for p in selected],
-            "candidates": candidates,
-            "total_cost_usd": total,
-            "results": results,
-            "errors": errors,
-        },
-    )
+    total = float(run_meta.data["total_cost_usd"])
     console.print(
-        f"Run [bold]{run_id}[/bold]: {len(results)} resultados, {len(errors)} errores, "
-        f"coste {total:.2f} USD"
+        f"Run [bold]{run_id}[/bold]: {executed} ejecutados, {reused} reutilizados, "
+        f"{failed} errores; coste acumulado {total:.2f} USD"
     )
 
 

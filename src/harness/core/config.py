@@ -11,6 +11,10 @@ from pydantic import BaseModel
 DEFAULT_ENV_FILE = Path(".env")
 
 
+class MissingKeyError(RuntimeError):
+    """A required API key is not configured (infrastructure, not the candidate's fault)."""
+
+
 class Settings(BaseModel):
     tripo_api_key: str | None = None
     meshy_api_key: str | None = None
