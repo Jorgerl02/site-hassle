@@ -1,0 +1,4 @@
+blind_id,fotos,render_front,render_side,render_back,render_three_quarter,render_top,parecido,geometria,materiales,escala,apto,comentario
+B001,/Users/jorge_rl02/site-hassle-estudio/data/images/p04/1.jpg;/Users/jorge_rl02/site-hassle-estudio/data/images/p04/2.jpg,,,,,,,,,,,
+B002,/Users/jorge_rl02/site-hassle-estudio/data/images/p05/1.jpg,,,,,,,,,,,
+B003,/Users/jorge_rl02/site-hassle-estudio/data/images/p23/1.jpg;/Users/jorge_rl02/site-hassle-estudio/data/images/p23/2.jpg;/Users/jorge_rl02/site-hassle-estudio/data/images/p23/3.jpg,,,,,,,,,,,

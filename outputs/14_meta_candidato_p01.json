@@ -1,0 +1,12 @@
+{
+  "piece_id": "p01",
+  "variant": "FAKE",
+  "index": 1,
+  "glb_path": "runs/prueba-offline/p01/FAKE/cand_1/model.glb",
+  "cost_usd": 0.0,
+  "seconds": 0.0010407080117147416,
+  "meta": {
+    "fake": true,
+    "source_glb": ""
+  }
+}

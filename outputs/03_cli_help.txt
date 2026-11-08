@@ -1,0 +1,66 @@
+                                                                                
+ Usage: bakeoff [OPTIONS] COMMAND [ARGS]...                                     
+                                                                                
+ Bake-off de pipelines foto→3D.                                                 
+                                                                                
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --install-completion          Install completion for the current shell.      │
+│ --show-completion             Show completion for the current shell, to copy │
+│                               it or customize the installation.              │
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ run     Ejecuta las variantes sobre las piezas y escribe meta.json por       │
+│         candidato y por run.                                                 │
+│ eval    Evalúa una ejecución (geometría, renders, juez VLM, hoja ciega).     │
+│ report  Genera el informe de una ejecución evaluada.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+                                                                                
+ Usage: bakeoff run [OPTIONS]                                                   
+                                                                                
+ Ejecuta las variantes sobre las piezas y escribe meta.json por candidato y por 
+ run.                                                                           
+                                                                                
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --variants                         <str>               Variantes          │
+│                                                           separadas por      │
+│                                                           comas, p. ej. A,B  │
+│                                                           [required]         │
+│    --pieces                           <str>               'all' o ids        │
+│                                                           separados por      │
+│                                                           comas              │
+│                                                           [default: all]     │
+│    --candidates                       <int range> [x>=1]  Candidatos por     │
+│                                                           pieza y variante   │
+│                                                           [default: 2]       │
+│    --run-id                           <str>               Id de la ejecución │
+│    --sample                           <path>              CSV de la muestra  │
+│                                                           [default:          │
+│                                                           data/sample.csv]   │
+│    --runs-root                        <path>              Carpeta raíz de    │
+│                                                           salidas            │
+│                                                           [default: runs]    │
+│    --post              --no-post                          Postprocesado      │
+│                                                           Blender idéntico   │
+│                                                           para todos los     │
+│                                                           candidatos         │
+│                                                           (model_post.glb)   │
+│                                                           [default: post]    │
+│    --resume            --no-resume                        Con un --run-id    │
+│                                                           existente,         │
+│                                                           reutiliza los      │
+│                                                           pasos (pieza,      │
+│                                                           variante)          │
+│                                                           terminados         │
+│                                                           [default: resume]  │
+│    --skip-preflight                                       No abortar si      │
+│                                                           faltan claves o    │
+│                                                           Blender (los pasos │
+│                                                           afectados fallarán │
+│                                                           como               │
+│                                                           infraestructura)   │
+│    --help                                                 Show this message  │
+│                                                           and exit.          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+

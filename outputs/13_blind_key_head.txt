@@ -1,0 +1,4 @@
+blind_id,piece_id,variant,candidate
+B001,p04,FAKE,2
+B002,p05,FAKE,2
+B003,p23,FAKE,2

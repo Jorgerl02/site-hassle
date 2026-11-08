@@ -1,0 +1,5 @@
+Comprobación previa (antes de cualquier llamada de pago):
+  ✗ Variante A: falta TRIPO_API_KEY
+Abortado: corrige la configuración (.env) o usa --skip-preflight para continuar 
+de todos modos.
+exit=2

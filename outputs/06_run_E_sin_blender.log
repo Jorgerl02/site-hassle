@@ -1,0 +1,17 @@
+Comprobación previa (antes de cualquier llamada de pago):
+  ✗ Variante E: necesita Blender (BLENDER_BIN no definido)
+--skip-preflight: se continúa pese a los problemas.
+p01 · variante E
+  no aplicable: pieza orgánica
+p02 · variante E
+  no aplicable: pieza orgánica
+p09 · variante E
+  no aplicable: pieza orgánica
+p19 · variante E
+  error (infra): BLENDER_BIN no está definido (.env o entorno)
+Run prueba-e-sin-blender: 3 ejecutados, 0 reutilizados, 1 errores; coste 
+acumulado 0.00 USD
+exit=0
+errors: [('p19', 'E', 'infra', "BlenderNotAvailable('BLENDER_BIN no está definido (.env o en")]
+skipped: [('p01', 'not_applicable', 'no aplicable: pieza orgánica'), ('p02', 'not_applicable', 'no aplicable: pieza orgánica'), ('p09', 'not_applicable', 'no aplicable: pieza orgánica')]
+results: 3 total_cost_usd: 0.0
