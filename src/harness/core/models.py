@@ -77,19 +77,26 @@ class Scores(BaseModel):
 class GeometryMetrics(BaseModel):
     """Measured bounding box (cm) and relative error vs the piece's catalogue dimensions."""
 
-    width_cm: float
-    height_cm: float
-    depth_cm: float
-    err_width: float
-    err_height: float
-    err_depth: float
+    width_cm: float = Field(description="Measured bounding-box width (X), cm")
+    height_cm: float = Field(description="Measured bounding-box height (Y, up), cm")
+    depth_cm: float = Field(description="Measured bounding-box depth (Z), cm")
+    err_width: float = Field(
+        description="Signed relative error (measured - target) / target; negative = too small"
+    )
+    err_height: float = Field(
+        description="Signed relative error (measured - target) / target; negative = too small"
+    )
+    err_depth: float = Field(
+        description="Signed relative error (measured - target) / target; negative = too small"
+    )
     watertight: bool
     n_components: int
     n_faces: int
 
     @property
     def max_error(self) -> float:
-        return max(self.err_width, self.err_height, self.err_depth)
+        """Largest absolute relative error over the three axes."""
+        return max(abs(self.err_width), abs(self.err_height), abs(self.err_depth))
 
     @property
     def scale_ok(self) -> bool:

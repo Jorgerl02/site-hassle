@@ -12,8 +12,8 @@ MESHY_USD_PER_MODEL = 0.65
 # TODO verificar 2026-11-08 https://ai.google.dev/gemini-api/docs/pricing
 GEMINI_IMAGE_USD = 0.039
 
+# claude-sonnet-5-5, from the claude-api skill pricing table (cached 2026-10-06).
 # TODO verificar 2026-11-08 https://platform.claude.com/docs/en/about-claude/pricing
-# (placeholder; the cached Claude pricing table lists claude-sonnet-5-5 at 2.0 / 10.0 USD/MTok)
-ANTHROPIC_INPUT_USD_PER_MTOK = 3.0
+ANTHROPIC_INPUT_USD_PER_MTOK = 2.0
 # TODO verificar 2026-11-08 https://platform.claude.com/docs/en/about-claude/pricing
-ANTHROPIC_OUTPUT_USD_PER_MTOK = 15.0
+ANTHROPIC_OUTPUT_USD_PER_MTOK = 10.0

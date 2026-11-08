@@ -96,6 +96,27 @@ def test_scores_and_geometry_models() -> None:
     assert metrics.max_error == 0.04 and not metrics.scale_ok
 
 
+@pytest.mark.parametrize(("err", "ok"), [(-0.10, False), (-0.029, True), (0.029, True)])
+def test_geometry_signed_error_uses_absolute_value(err: float, ok: bool) -> None:
+    metrics = GeometryMetrics(
+        width_cm=108,
+        height_cm=75,
+        depth_cm=60,
+        err_width=err,
+        err_height=0.0,
+        err_depth=0.0,
+        watertight=True,
+        n_components=1,
+        n_faces=12,
+    )
+    assert metrics.max_error == pytest.approx(abs(err))
+    assert metrics.scale_ok is ok
+
+
+def test_anthropic_token_cost_uses_sonnet_5_5_prices() -> None:
+    assert token_cost_usd(1_000_000, 1_000_000) == pytest.approx(2.0 + 10.0)
+
+
 # --- storage --------------------------------------------------------------------------------
 
 
