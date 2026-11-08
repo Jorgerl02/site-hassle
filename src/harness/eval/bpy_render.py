@@ -75,6 +75,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     scene = setup_scene(size)
     bpy.ops.import_scene.gltf(filepath=str(glb))
+    bpy.context.view_layer.update()  # make matrix_world reflect the imported hierarchy
     meshes = [o for o in scene.objects if o.type == "MESH"]
     if not meshes:
         raise SystemExit(f"{glb}: sin objetos de malla")

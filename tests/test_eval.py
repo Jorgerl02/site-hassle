@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,6 @@ from PIL import Image
 
 from harness.core import storage
 from harness.core.blender import BlenderNotAvailable
-from harness.core.config import Settings
 from harness.core.models import GeometryMetrics, Piece
 from harness.eval import build_report, evaluate_run
 from harness.eval.blind_sheet import (
@@ -29,7 +29,7 @@ from harness.eval.judge import (
     scores_from_answer,
 )
 from harness.eval.render import VIEWS, render_views
-from harness.eval.report import NOISE_NOTE, read_scores, summarize
+from harness.eval.report import DENOMINATOR_NOTE, NOISE_NOTE, read_scores, summarize
 
 VARIANT_NAMES = ("A", "B", "C", "D", "E", "F", "FAKE")
 
@@ -87,12 +87,26 @@ def test_geometry_wrong_scale_signed_negative(piece: Piece) -> None:
     assert not m.scale_ok
 
 
-def test_geometry_axes_matched_by_sorted_size(piece: Piece) -> None:
-    # Lying on its side: height along X, width along Z.
-    box = trimesh.creation.box(extents=(0.75, 0.60, 1.20))
+def test_geometry_rotation_about_vertical_is_forgiven(piece: Piece) -> None:
+    # Turned 90° on the floor: width along Z, depth along X.
+    box = trimesh.creation.box(extents=(0.60, 0.75, 1.20))
     m = measure(box, piece)
+    assert (m.width_cm, m.height_cm, m.depth_cm) == pytest.approx((120, 75, 60))
     assert m.scale_ok
-    assert match_extents((10.0, 30.0, 20.0), (5.0, 1.0, 3.0)) == (30.0, 10.0, 20.0)
+
+
+def test_geometry_chair_lying_on_its_side_detected() -> None:
+    chair = Piece(
+        id="c1", name="Silla", store="T", source_url="https://example.com",
+        category="patas_finas", images=[Path("x.jpg")],
+        width_cm=50, height_cm=90, depth_cm=50,
+    )  # fmt: skip
+    lying = trimesh.creation.box(extents=(0.90, 0.50, 0.50))  # Y extent 50 cm
+    m = measure(lying, chair)
+    assert m.height_cm == pytest.approx(50)
+    assert m.err_height == pytest.approx((50 - 90) / 90)
+    assert not m.scale_ok
+    assert match_extents((90.0, 50.0, 50.0), chair) == (90.0, 50.0, 50.0)
 
 
 def test_geometry_from_glb_scene_and_components(tmp_path: Path, piece: Piece) -> None:
@@ -130,8 +144,8 @@ def test_judge_with_stub_vlm(tmp_path: Path) -> None:
     scores = judge_candidate(
         vlm, blind_id="B007", photos=photos, renders=renders, geometry=_metrics(0.01)
     )
-    assert (scores.parecido, scores.geometria, scores.materiales, scores.escala) == (5, 4, 4, 5)
-    assert scores.apt and scores.comentario == "ok"
+    assert (scores["parecido"], scores["geometria"], scores["materiales"]) == (5, 4, 4)
+    assert scores["escala"] == 5 and scores["apt"] and scores["comentario"] == "ok"
     prompt, images, schema = vlm.calls[0]
     assert "B007" in prompt and images == [*photos, *renders]
     assert '"parecido"' in schema and "escala" not in schema
@@ -142,7 +156,14 @@ def test_judge_with_stub_vlm(tmp_path: Path) -> None:
 def test_judge_not_apt_when_scale_bad(tmp_path: Path) -> None:
     vlm = StubVLM({"parecido": 5, "geometria": 5, "materiales": 5, "comentario": ""})
     scores = judge_candidate(vlm, blind_id="B001", photos=[], renders=[], geometry=_metrics(0.05))
-    assert scores.escala == 3 and not scores.apt
+    assert scores["escala"] == 3 and not scores["apt"]
+
+
+def test_judge_without_geometry_still_scores_visual_axes() -> None:
+    vlm = StubVLM({"parecido": 5, "geometria": 5, "materiales": 5, "comentario": "x"})
+    scores = judge_candidate(vlm, blind_id="B002", photos=[], renders=[], geometry=None)
+    assert scores["parecido"] == 5 and scores["escala"] is None and scores["apt"] is False
+    assert len(vlm.calls) == 1
 
 
 def test_judge_rejects_bad_json() -> None:
@@ -161,10 +182,10 @@ def test_render_without_blender_raises(tmp_path: Path, cube_glb: Path) -> None:
 
 
 def test_render_real_blender(tmp_path: Path, cube_glb: Path) -> None:
-    blender = Settings.load(env_file=None).blender_bin
-    if blender is None:
-        pytest.skip("BLENDER_BIN no definido")
-    paths = render_views(cube_glb, tmp_path / "renders", blender_bin=blender)
+    blender = os.environ.get("HARNESS_BLENDER_TEST_BIN")
+    if not blender:
+        pytest.skip("HARNESS_BLENDER_TEST_BIN no definido (opt-in para tests con Blender)")
+    paths = render_views(cube_glb, tmp_path / "renders", blender_bin=Path(blender))
     assert [p.stem for p in paths] == list(VIEWS)
     for p in paths:
         with Image.open(p) as im:
@@ -312,10 +333,27 @@ def test_report_best_candidate_and_failed_generation() -> None:
         "cost_usd": 0.25,
         "seconds": 1.0,
     }
-    s = summarize([*base, second, failed, unscored])["A"]
-    assert s.apt_by_category["tapizado"] == (1, 2)  # piece apt via cand 2; failed = not apt
+    broken = {
+        "piece_id": "z",
+        "variant": "A",
+        "category": "tapizado",
+        "status": "candidate_failed",
+        "scores": None,
+        "cost_usd": 0.25,
+        "seconds": 1.0,
+    }
+    s = summarize([*base, second, failed, unscored, broken])["A"]
+    # piece apt via cand 2; generation_failed and candidate_failed count as not apt;
+    # the infrastructure-unscored piece is excluded.
+    assert s.apt_by_category["tapizado"] == (1, 3)
     assert s.unscored == 1
-    assert s.cost_per_piece == pytest.approx((1.0 + 0.25) / 2)
+    assert s.cost_per_piece == pytest.approx((1.0 + 0.25 + 0.25) / 3)
+
+
+def test_report_states_denominator_rule(tmp_path: Path) -> None:
+    _write_scores(tmp_path, _records("A", {"tapizado": (1, 2)}))
+    report = build_report("r1", runs_root=tmp_path).read_text(encoding="utf-8")
+    assert DENOMINATOR_NOTE in report and "Sin puntuar (infraestructura)" in report
 
 
 def test_report_without_baseline_declares_no_winner() -> None:
@@ -421,3 +459,78 @@ def test_evaluate_run_records_skip_reasons(
 def test_evaluate_run_missing_run(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         evaluate_run("nope", runs_root=tmp_path, judge=StubVLM({}), pieces=[])
+
+
+def _cube_piece(tmp_path: Path) -> Piece:
+    return Piece(
+        id="p01", name="Cubo", store="T", source_url="https://example.com",
+        category="tapizado", images=[_png(tmp_path / "photo.png")],
+        width_cm=100, height_cm=100, depth_cm=100,
+    )  # fmt: skip
+
+
+def test_evaluate_run_unreadable_glb_uses_post_meta(tmp_path: Path, cube_glb: Path) -> None:
+    piece = _cube_piece(tmp_path)
+    runs = _fake_run(tmp_path, cube_glb, piece)
+    cand = runs / "run1" / "p01" / "A" / "cand_1"
+    storage.model_post_path(cand).write_bytes(b"glTF draco garbage")
+    (cand / "post_meta.json").write_text(
+        json.dumps({"errors": {"width": 0.01, "height": -0.02, "depth": 0.0}, "tris_after": 12}),
+        encoding="utf-8",
+    )
+    cand2 = runs / "run1" / "p01" / "A" / "cand_2"
+    storage.model_post_path(cand2).write_bytes(b"not a glb")  # no post_meta.json
+    vlm = StubVLM({"parecido": 4, "geometria": 4, "materiales": 4, "comentario": ""})
+    scores_file = evaluate_run("run1", runs_root=runs, judge=vlm, render=False, pieces=[piece])
+    by_cand = {
+        (r["variant"], r["candidate"]): r
+        for r in read_scores(scores_file)
+        if r["status"] != "generation_failed"
+    }
+    rec = by_cand[("A", 1)]
+    assert rec["status"] == "scored" and rec["geometry"]["source"] == "post_meta"
+    assert rec["geometry"]["err_height"] == pytest.approx(-0.02)
+    assert rec["scores"]["escala"] == 5 and rec["scores"]["apt"]
+    # Unreadable without post_meta: judged anyway (renders exist), escala None, not apt.
+    rec2 = by_cand[("A", 2)]
+    assert rec2["status"] == "scored" and rec2["geometry"] is None
+    assert rec2["scores"]["escala"] is None and rec2["scores"]["apt"] is False
+    assert any(r.startswith("sin geometría") for r in rec2["reasons"])
+    assert len(vlm.calls) == 4
+
+
+def test_evaluate_run_missing_glb_with_renders_is_judged(tmp_path: Path, cube_glb: Path) -> None:
+    piece = _cube_piece(tmp_path)
+    runs = _fake_run(tmp_path, cube_glb, piece)
+    storage.model_path(runs / "run1" / "p01" / "B" / "cand_1").unlink()
+    vlm = StubVLM({"parecido": 5, "geometria": 5, "materiales": 5, "comentario": ""})
+    scores_file = evaluate_run("run1", runs_root=runs, judge=vlm, render=False, pieces=[piece])
+    rec = next(r for r in read_scores(scores_file) if (r["variant"], r["candidate"]) == ("B", 1))
+    assert rec["status"] == "scored" and rec["scores"]["escala"] is None
+    assert rec["scores"]["apt"] is False
+    assert any("sin geometría: no existe el modelo" in r for r in rec["reasons"])
+
+
+def test_evaluate_run_missing_glb_without_renders_counts_not_apt(
+    tmp_path: Path, cube_glb: Path
+) -> None:
+    piece = _cube_piece(tmp_path)
+    runs = _fake_run(tmp_path, cube_glb, piece)
+    cand = runs / "run1" / "p01" / "B" / "cand_1"
+    storage.model_path(cand).unlink()
+    for png in (cand / "renders").glob("*.png"):
+        png.unlink()
+    scores_file = evaluate_run(
+        "run1", runs_root=runs, judge=StubVLM({}), render=False, pieces=[piece]
+    )
+    rec = next(r for r in read_scores(scores_file) if (r["variant"], r["candidate"]) == ("B", 1))
+    assert rec["status"] == "candidate_failed"
+
+
+def test_blind_dir_is_cleared_before_copy(tmp_path: Path) -> None:
+    from harness.eval.blind_sheet import copy_blind_renders
+
+    stale = _png(tmp_path / "eval" / "blind" / "B001" / "old.png")
+    src = _png(tmp_path / "src" / "front.png")
+    copies = copy_blind_renders([src], tmp_path / "eval", "B001")
+    assert not stale.exists() and [c.name for c in copies] == ["front.png"]

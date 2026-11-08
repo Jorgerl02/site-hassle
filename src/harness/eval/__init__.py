@@ -23,7 +23,7 @@ from harness.eval.blind_sheet import (
     copy_blind_renders,
     write_blind_sheet,
 )
-from harness.eval.geometry import measure_glb, model_for_candidate
+from harness.eval.geometry import measure_candidate, model_for_candidate
 from harness.eval.judge import JSONAsker, judge_candidate
 from harness.eval.render import RenderError, existing_renders, render_views
 from harness.eval.report import read_scores, render_markdown, summarize
@@ -109,18 +109,21 @@ def evaluate_run(
         }
 
         geometry = None
+        candidate_error: str | None = None
         if piece is None:
             reasons.append(f"pieza {ref.piece_id} no está en la muestra")
         else:
-            try:
-                geometry = measure_glb(glb, piece)
+            geo = measure_candidate(glb, piece)
+            geometry, candidate_error = geo.metrics, geo.error
+            if geometry is not None:
                 record["geometry"] = {
                     **geometry.model_dump(),
                     "max_error": geometry.max_error,
                     "scale_ok": geometry.scale_ok,
+                    "source": geo.source,
                 }
-            except Exception as exc:  # unreadable GLB must not stop the evaluation
-                reasons.append(f"geometría: {exc}")
+            else:
+                reasons.append(f"sin geometría: {candidate_error}")
 
         renders: list[Path] | None = None
         out_dir = storage.renders_dir(cand_dir)
@@ -139,33 +142,41 @@ def evaluate_run(
             except (RenderError, subprocess.TimeoutExpired) as exc:
                 reasons.append(f"render fallido: {exc}")
         else:
-            reasons.append(f"no existe el modelo {glb.name}")
+            reasons.append(f"render omitido: no existe el modelo {glb.name}")
         blind_renders = copy_blind_renders(renders, eval_dir, blind_id) if renders else []
         photos = [p for p in piece.images if Path(p).is_file()] if piece else []
         sheet_entries.append((blind_id, ref, photos, blind_renders))
 
+        # The judge runs for every candidate with renders, even without geometry.
         if judge is None:
             reasons.append(judge_skip or "juez VLM no disponible")
-        elif geometry is not None and blind_renders:
-            if not photos:
-                reasons.append("juez VLM omitido: no hay fotos originales")
-            else:
-                cost_before = float(getattr(judge, "total_cost_usd", 0.0) or 0.0)
-                try:
-                    scores = judge_candidate(
-                        judge,
-                        blind_id=blind_id,
-                        photos=photos,
-                        renders=blind_renders,
-                        geometry=geometry,
-                    )
-                    record["scores"] = scores.model_dump()
-                except Exception as exc:  # one failed judgement must not stop the run
-                    reasons.append(f"juez VLM: {exc}")
-                cost_after = float(getattr(judge, "total_cost_usd", 0.0) or 0.0)
-                record["judge_cost_usd"] = cost_after - cost_before
+        elif not blind_renders:
+            pass  # nothing to show the judge; the render reason is already recorded
+        elif not photos:
+            reasons.append("juez VLM omitido: no hay fotos originales")
+        else:
+            cost_before = float(getattr(judge, "total_cost_usd", 0.0) or 0.0)
+            try:
+                record["scores"] = judge_candidate(
+                    judge,
+                    blind_id=blind_id,
+                    photos=photos,
+                    renders=blind_renders,
+                    geometry=geometry,
+                )
+            except Exception as exc:  # one failed judgement must not stop the run
+                reasons.append(f"juez VLM: {exc}")
+            cost_after = float(getattr(judge, "total_cost_usd", 0.0) or 0.0)
+            record["judge_cost_usd"] = cost_after - cost_before
 
-        record["status"] = "scored" if record["scores"] else "unscored"
+        # scored: judged. candidate_failed: not judged, but the candidate itself is broken
+        # (counts as not apt). unscored: infrastructure skip (excluded from the denominator).
+        if record["scores"]:
+            record["status"] = "scored"
+        elif candidate_error:
+            record["status"] = "candidate_failed"
+        else:
+            record["status"] = "unscored"
         record["reasons"] = reasons
         records.append(record)
         console.print(f"{blind_id}: {record['status']}")

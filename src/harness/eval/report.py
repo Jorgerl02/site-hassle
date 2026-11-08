@@ -1,9 +1,11 @@
 """Markdown report (Spanish) from ``scores.jsonl``.
 
 Unit of the apt rate: the piece. A piece is apt for a variant if at least one of its
-candidates is apt (the pipeline generates N candidates and keeps the best one). A failed
-generation counts as a non-apt piece; pieces with no scored candidate (e.g. no renders)
-are left out of the denominator and listed as "sin puntuar".
+candidates is apt (the pipeline generates N candidates and keeps the best one).
+Candidate-attributable failures (``generation_failed``, ``candidate_failed``: model missing,
+unreadable or empty) count as non-apt pieces. Only pieces whose candidates were all skipped
+for infrastructure reasons (``unscored``: no Blender, no API key, judge error) are left out
+of the denominator and listed as "sin puntuar (infraestructura)".
 Cost and seconds per piece = sum over that piece's candidates, averaged over pieces.
 """
 
@@ -21,6 +23,13 @@ WIN_PCT = 60.0  # % aptos per category, strict
 WIN_MIN_CATEGORIES = 2
 WIN_DELTA_PP = 15.0  # points over the baseline, strict
 AXES: tuple[str, ...] = ("parecido", "geometria", "materiales", "escala")
+NOT_APT_STATUSES = frozenset({"generation_failed", "candidate_failed"})
+DENOMINATOR_NOTE = (
+    "Denominador: todas las piezas con algún candidato puntuado o con un fallo atribuible "
+    "al candidato (generación fallida, modelo ausente, GLB ilegible o malla vacía), que "
+    "cuentan como no aptas; solo se excluyen las piezas sin puntuar por infraestructura "
+    "(sin Blender, sin clave de API o error del juez)."
+)
 NOISE_NOTE = (
     "Diferencias < 15 puntos sobre 30 piezas son ruido: con esta muestra no permiten "
     "afirmar que una variante sea mejor que otra."
@@ -72,9 +81,9 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
             },
         )
         status = rec.get("status")
+        if status in NOT_APT_STATUSES and piece["apt"] is None:
+            piece["apt"] = False
         if status == "generation_failed":
-            if piece["apt"] is None:
-                piece["apt"] = False
             continue
         piece["has_cand"] = True
         piece["cost"] += float(rec.get("cost_usd") or 0.0)
@@ -84,7 +93,8 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
             piece["apt"] = bool(piece["apt"]) or bool(scores["apt"])
             per_axis = axis_values.setdefault(variant, {a: [] for a in AXES})
             for axis in AXES:
-                per_axis[axis].append(float(scores[axis]))
+                if scores.get(axis) is not None:  # escala is None without geometry
+                    per_axis[axis].append(float(scores[axis]))
 
     summaries: dict[str, VariantSummary] = {}
     for (variant, _pid), piece in sorted(pieces.items()):
@@ -145,8 +155,9 @@ def render_markdown(run_id: str, summaries: dict[str, VariantSummary]) -> str:
     out = [f"# Informe del bake-off · {run_id}", ""]
     out += [
         "Apto = ≥ 4 en los cuatro ejes (parecido, geometría, materiales, escala) sin retoque. "
-        "Una pieza es apta si al menos uno de sus candidatos lo es; una generación fallida "
-        "cuenta como no apta.",
+        "Una pieza es apta si al menos uno de sus candidatos lo es.",
+        "",
+        DENOMINATOR_NOTE,
         "",
         "## Aptos por variante y categoría",
         "",
@@ -166,7 +177,7 @@ def render_markdown(run_id: str, summaries: dict[str, VariantSummary]) -> str:
         "## Medias por eje, coste y tiempo",
         "",
         "| Variante | Parecido | Geometría | Materiales | Escala | Coste medio por pieza "
-        "| Segundos medios por pieza | Sin puntuar |",
+        "| Segundos medios por pieza | Sin puntuar (infraestructura) |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for v in order:

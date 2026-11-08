@@ -52,7 +52,9 @@ def assign_blind_ids(
 def copy_blind_renders(renders: list[Path], eval_dir: Path, blind_id: str) -> list[Path]:
     """Copy the view PNGs to ``eval_dir/blind/<blind_id>/``; returns the copies."""
     target = Path(eval_dir) / "blind" / blind_id
-    target.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        shutil.rmtree(target)  # stale renders of a previous evaluation
+    target.mkdir(parents=True)
     copies = []
     for src in renders:
         dst = target / Path(src).name

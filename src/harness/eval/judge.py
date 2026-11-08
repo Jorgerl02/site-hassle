@@ -93,14 +93,20 @@ def _axis(answer: dict[str, Any], key: str) -> int:
     return int(value)
 
 
-def scores_from_answer(answer: dict[str, Any], escala: int) -> Scores:
-    axes = {key: _axis(answer, key) for key in VLM_AXES}
+def visual_axes(answer: dict[str, Any]) -> dict[str, Any]:
+    """Validated ``parecido``/``geometria``/``materiales`` plus ``comentario``."""
+    axes: dict[str, Any] = {key: _axis(answer, key) for key in VLM_AXES}
     comentario = answer.get("comentario", "")
+    axes["comentario"] = str(comentario) if comentario is not None else ""
+    return axes
+
+
+def scores_from_answer(answer: dict[str, Any], escala: int) -> Scores:
+    visual = visual_axes(answer)
     return Scores(
-        **axes,
+        **visual,
         escala=escala,
-        apt=all(v >= APT_MIN for v in (*axes.values(), escala)),
-        comentario=str(comentario) if comentario is not None else "",
+        apt=all(visual[k] >= APT_MIN for k in VLM_AXES) and escala >= APT_MIN,
     )
 
 
@@ -110,9 +116,15 @@ def judge_candidate(
     blind_id: str,
     photos: list[Path],
     renders: list[Path],
-    geometry: GeometryMetrics,
-) -> Scores:
-    """Ask the VLM for the three visual axes and combine them with the computed ``escala``."""
+    geometry: GeometryMetrics | None,
+) -> dict[str, Any]:
+    """Ask the VLM for the three visual axes and combine them with the computed ``escala``.
+
+    Returns ``Scores.model_dump()``. Without geometry the visual axes are still recorded,
+    with ``escala=None`` and ``apt=False`` (``Scores`` cannot hold a missing axis).
+    """
     prompt = build_prompt(blind_id, len(photos), len(renders))
     answer = vlm.ask_json(prompt, [*photos, *renders], SCHEMA_HINT)
-    return scores_from_answer(answer, escala_from_error(geometry.max_error))
+    if geometry is None:
+        return {**visual_axes(answer), "escala": None, "apt": False}
+    return scores_from_answer(answer, escala_from_error(geometry.max_error)).model_dump()

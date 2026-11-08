@@ -35,13 +35,20 @@ def render_views(
 ) -> list[Path]:
     """Render the five views; returns their paths in ``VIEWS`` order.
 
-    Raises ``BlenderNotAvailable`` without a Blender binary and ``RenderError`` on failure.
+    Raises ``BlenderNotAvailable`` without a Blender binary and ``RenderError`` on failure
+    (including an ``OSError`` launching the binary).
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    run = run_blender_script(
-        BPY_SCRIPT, [str(glb), str(out_dir), str(size)], timeout=timeout, blender_bin=blender_bin
-    )
+    try:
+        run = run_blender_script(
+            BPY_SCRIPT,
+            [str(glb), str(out_dir), str(size)],
+            timeout=timeout,
+            blender_bin=blender_bin,
+        )
+    except OSError as exc:
+        raise RenderError(f"no se pudo lanzar Blender: {exc}") from exc
     paths = expected_renders(out_dir)
     missing = [p.name for p in paths if not p.is_file()]
     if not run.ok or missing:
