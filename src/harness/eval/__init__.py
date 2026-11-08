@@ -1,0 +1,216 @@
+"""Evaluation of a run: geometry, control renders, VLM judge, blind sheet and report.
+
+``evaluate_run(run_id)`` and ``build_report(run_id)`` are what ``harness.cli`` calls.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+
+from rich.console import Console
+
+from harness.core import storage
+from harness.core.blender import BlenderNotAvailable
+from harness.core.config import Settings
+from harness.core.models import DEFAULT_SAMPLE_CSV, Piece, load_pieces
+from harness.eval.blind_sheet import (
+    DEFAULT_SEED,
+    CandidateRef,
+    assign_blind_ids,
+    copy_blind_renders,
+    write_blind_sheet,
+)
+from harness.eval.geometry import measure_glb, model_for_candidate
+from harness.eval.judge import JSONAsker, judge_candidate
+from harness.eval.render import RenderError, existing_renders, render_views
+from harness.eval.report import read_scores, render_markdown, summarize
+
+__all__ = ["evaluate_run", "build_report"]
+
+console = Console()
+
+
+def _discover_candidates(run_root: Path) -> dict[CandidateRef, tuple[Path, dict[str, Any]]]:
+    found: dict[CandidateRef, tuple[Path, dict[str, Any]]] = {}
+    for meta_file in sorted(run_root.glob("*/*/cand_*/meta.json")):
+        cand_dir = meta_file.parent
+        if cand_dir.parent.parent.name == "eval":
+            continue
+        meta = storage.read_meta(cand_dir)
+        ref = CandidateRef(
+            piece_id=str(meta.get("piece_id") or cand_dir.parent.parent.name),
+            variant=str(meta.get("variant") or cand_dir.parent.name),
+            candidate=int(meta.get("index") or cand_dir.name.removeprefix("cand_")),
+        )
+        found[ref] = (cand_dir, meta)
+    return found
+
+
+def _default_judge() -> tuple[JSONAsker | None, str | None]:
+    key = Settings.load().anthropic_api_key
+    if not key:
+        return None, "juez VLM omitido: ANTHROPIC_API_KEY no definido"
+    from harness.clients.vlm import VLMClient
+
+    return VLMClient(api_key=key), None
+
+
+def evaluate_run(
+    run_id: str,
+    *,
+    runs_root: Path = storage.RUNS_ROOT,
+    judge: JSONAsker | None = None,
+    render: bool = True,
+    pieces: list[Piece] | None = None,
+    sample: Path = DEFAULT_SAMPLE_CSV,
+    seed: int = DEFAULT_SEED,
+    blender_bin: Path | None = None,
+) -> Path:
+    """Evaluate every candidate of a run; writes ``scores.jsonl`` and the blind sheet.
+
+    ``render=False`` skips Blender and reuses renders already on disk, if complete.
+    ``judge=None`` builds a ``VLMClient`` from ``ANTHROPIC_API_KEY`` (judging is skipped,
+    with the reason recorded, when there is no key). Returns the ``scores.jsonl`` path.
+    """
+    run_root = Path(runs_root) / run_id
+    if not run_root.is_dir():
+        raise FileNotFoundError(f"No existe la ejecución {run_root}")
+    by_id = {p.id: p for p in (pieces if pieces is not None else load_pieces(sample))}
+    judge_skip: str | None = None
+    if judge is None:
+        judge, judge_skip = _default_judge()
+
+    eval_dir = storage.eval_dir(run_id, runs_root)
+    candidates = _discover_candidates(run_root)
+    records: list[dict[str, Any]] = []
+    sheet_entries: list[tuple[str, CandidateRef, list[Path], list[Path]]] = []
+    blender_missing: str | None = None
+
+    for blind_id, ref in assign_blind_ids(list(candidates), seed):
+        cand_dir, meta = candidates[ref]
+        piece = by_id.get(ref.piece_id)
+        reasons: list[str] = []
+        glb = model_for_candidate(cand_dir)
+        record: dict[str, Any] = {
+            "blind_id": blind_id,
+            "piece_id": ref.piece_id,
+            "variant": ref.variant,
+            "candidate": ref.candidate,
+            "category": piece.category if piece else None,
+            "glb_path": str(glb),
+            "cost_usd": float(meta.get("cost_usd") or 0.0),
+            "seconds": float(meta.get("seconds") or 0.0),
+            "geometry": None,
+            "scores": None,
+            "judge_cost_usd": 0.0,
+        }
+
+        geometry = None
+        if piece is None:
+            reasons.append(f"pieza {ref.piece_id} no está en la muestra")
+        else:
+            try:
+                geometry = measure_glb(glb, piece)
+                record["geometry"] = {
+                    **geometry.model_dump(),
+                    "max_error": geometry.max_error,
+                    "scale_ok": geometry.scale_ok,
+                }
+            except Exception as exc:  # unreadable GLB must not stop the evaluation
+                reasons.append(f"geometría: {exc}")
+
+        renders: list[Path] | None = None
+        out_dir = storage.renders_dir(cand_dir)
+        if not render:
+            renders = existing_renders(out_dir)
+            if renders is None:
+                reasons.append("render desactivado y sin renders previos")
+        elif blender_missing:
+            reasons.append(f"render omitido: {blender_missing}")
+        elif glb.is_file():
+            try:
+                renders = render_views(glb, out_dir, blender_bin=blender_bin)
+            except BlenderNotAvailable as exc:
+                blender_missing = str(exc)
+                reasons.append(f"render omitido: {exc}")
+            except (RenderError, subprocess.TimeoutExpired) as exc:
+                reasons.append(f"render fallido: {exc}")
+        else:
+            reasons.append(f"no existe el modelo {glb.name}")
+        blind_renders = copy_blind_renders(renders, eval_dir, blind_id) if renders else []
+        photos = [p for p in piece.images if Path(p).is_file()] if piece else []
+        sheet_entries.append((blind_id, ref, photos, blind_renders))
+
+        if judge is None:
+            reasons.append(judge_skip or "juez VLM no disponible")
+        elif geometry is not None and blind_renders:
+            if not photos:
+                reasons.append("juez VLM omitido: no hay fotos originales")
+            else:
+                cost_before = float(getattr(judge, "total_cost_usd", 0.0) or 0.0)
+                try:
+                    scores = judge_candidate(
+                        judge,
+                        blind_id=blind_id,
+                        photos=photos,
+                        renders=blind_renders,
+                        geometry=geometry,
+                    )
+                    record["scores"] = scores.model_dump()
+                except Exception as exc:  # one failed judgement must not stop the run
+                    reasons.append(f"juez VLM: {exc}")
+                cost_after = float(getattr(judge, "total_cost_usd", 0.0) or 0.0)
+                record["judge_cost_usd"] = cost_after - cost_before
+
+        record["status"] = "scored" if record["scores"] else "unscored"
+        record["reasons"] = reasons
+        records.append(record)
+        console.print(f"{blind_id}: {record['status']}")
+
+    for error in storage.read_meta(run_root).get("errors", []):
+        piece = by_id.get(error.get("piece_id", ""))
+        records.append(
+            {
+                "blind_id": None,
+                "piece_id": error.get("piece_id"),
+                "variant": error.get("variant"),
+                "candidate": None,
+                "category": piece.category if piece else None,
+                "status": "generation_failed",
+                "reasons": [str(error.get("error", ""))],
+                "geometry": None,
+                "scores": None,
+                "cost_usd": 0.0,
+                "seconds": 0.0,
+                "judge_cost_usd": 0.0,
+            }
+        )
+
+    scores_file = storage.scores_path(run_id, runs_root)
+    scores_file.write_text(
+        "".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in records),
+        encoding="utf-8",
+    )
+    write_blind_sheet(
+        storage.blind_sheet_path(run_id, runs_root),
+        storage.blind_key_path(run_id, runs_root),
+        sheet_entries,
+    )
+    scored = sum(r["status"] == "scored" for r in records)
+    console.print(f"Evaluados {len(records)} registros ({scored} puntuados) → {scores_file}")
+    return scores_file
+
+
+def build_report(run_id: str, *, runs_root: Path = storage.RUNS_ROOT) -> Path:
+    """Write ``report.md`` from ``scores.jsonl``; returns its path."""
+    scores_file = Path(runs_root) / run_id / "eval" / "scores.jsonl"
+    if not scores_file.is_file():
+        raise FileNotFoundError(f"No existe {scores_file}; ejecuta antes `bakeoff eval`")
+    summaries = summarize(read_scores(scores_file))
+    path = storage.report_path(run_id, runs_root)
+    path.write_text(render_markdown(run_id, summaries), encoding="utf-8")
+    console.print(f"Informe → {path}")
+    return path

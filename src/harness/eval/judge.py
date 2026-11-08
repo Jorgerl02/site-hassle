@@ -1,0 +1,118 @@
+"""VLM judge with the fixed rubric of the spec (``Paso previo``, point 3).
+
+The VLM scores ``parecido``, ``geometria`` and ``materiales``; ``escala`` is computed from
+the measured bounding-box error and never asked to the model. The judge only ever sees a
+``blind_id``: no variant name reaches the prompt, the image list or any log.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Protocol
+
+from harness.core.models import GeometryMetrics, Scores
+from harness.eval.render import VIEWS
+
+APT_MIN = 4
+VLM_AXES: tuple[str, ...] = ("parecido", "geometria", "materiales")
+
+RUBRIC_PROMPT = """\
+Eres juez de calidad de modelos 3D de muebles generados a partir de fotos de catálogo.
+Evalúas el candidato {blind_id}. No sabes ni debes intentar adivinar cómo se generó.
+
+Imágenes recibidas, en este orden:
+- {n_photos} foto(s) originales del producto (la referencia).
+- {n_renders} renders del modelo 3D, en este orden de vista: {views}.
+
+Los renders usan iluminación de estudio sin reflejos sobre fondo blanco: juzga brillo,
+metal y vidrio por color, textura y forma, no por reflejos. Puntúa el modelo tal cual,
+sin imaginar retoques.
+
+Puntúa de 1 a 5 cada eje según estas definiciones:
+
+parecido (parecido con la foto)
+5 = es el mismo producto: forma, proporciones y detalles característicos coinciden.
+4 = mismo producto con diferencias menores que un cliente no notaría a primera vista.
+3 = mismo tipo y estilo, pero con diferencias visibles de forma o proporciones.
+2 = mueble del mismo tipo, pero claramente otro modelo.
+1 = no se parece o no es identificable.
+
+geometria (malla, patas, trasera)
+5 = sin agujeros, patas completas y separadas, trasera y partes ocultas creíbles, nada inventado.
+4 = solo irregularidades menores visibles de cerca; sin agujeros ni patas fundidas.
+3 = un defecto claro: pata fundida, deformada o ausente, agujero, trasera poco creíble
+    o pieza inventada.
+2 = varios defectos graves.
+1 = geometría rota o irreconocible.
+
+materiales (color, textura, acabado)
+5 = color, textura y acabado (mate, brillo, tela, metal, vidrio) fieles a la foto.
+4 = fieles con diferencias leves de tono o acabado.
+3 = material reconocible, pero tono o acabado claramente distinto, o textura borrosa o manchada.
+2 = material equivocado (p. ej. madera en lugar de metal) o textura con artefactos graves.
+1 = sin textura o completamente erróneo.
+
+No puntúes la escala: se mide aparte.
+En "comentario" explica en una o dos frases, en español, el defecto principal.
+"""
+
+SCHEMA_HINT = (
+    '{"parecido": int (1-5), "geometria": int (1-5), "materiales": int (1-5), "comentario": str}'
+)
+
+
+class JSONAsker(Protocol):
+    def ask_json(self, prompt: str, images: list[Path], schema_hint: str) -> dict[str, Any]: ...
+
+
+class JudgeError(ValueError):
+    """The VLM answer does not follow the rubric schema."""
+
+
+def escala_from_error(max_error: float) -> int:
+    """5 if < 3 %, 3 if < 10 %, else 1."""
+    if max_error < 0.03:
+        return 5
+    if max_error < 0.10:
+        return 3
+    return 1
+
+
+def build_prompt(blind_id: str, n_photos: int, n_renders: int) -> str:
+    return RUBRIC_PROMPT.format(
+        blind_id=blind_id, n_photos=n_photos, n_renders=n_renders, views=", ".join(VIEWS)
+    )
+
+
+def _axis(answer: dict[str, Any], key: str) -> int:
+    value = answer.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float) or value != int(value):
+        raise JudgeError(f"'{key}' debe ser un entero 1–5; recibido {value!r}")
+    if not 1 <= int(value) <= 5:
+        raise JudgeError(f"'{key}' fuera de rango 1–5: {value!r}")
+    return int(value)
+
+
+def scores_from_answer(answer: dict[str, Any], escala: int) -> Scores:
+    axes = {key: _axis(answer, key) for key in VLM_AXES}
+    comentario = answer.get("comentario", "")
+    return Scores(
+        **axes,
+        escala=escala,
+        apt=all(v >= APT_MIN for v in (*axes.values(), escala)),
+        comentario=str(comentario) if comentario is not None else "",
+    )
+
+
+def judge_candidate(
+    vlm: JSONAsker,
+    *,
+    blind_id: str,
+    photos: list[Path],
+    renders: list[Path],
+    geometry: GeometryMetrics,
+) -> Scores:
+    """Ask the VLM for the three visual axes and combine them with the computed ``escala``."""
+    prompt = build_prompt(blind_id, len(photos), len(renders))
+    answer = vlm.ask_json(prompt, [*photos, *renders], SCHEMA_HINT)
+    return scores_from_answer(answer, escala_from_error(geometry.max_error))
