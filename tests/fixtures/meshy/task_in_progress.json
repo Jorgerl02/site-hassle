@@ -1,0 +1,10 @@
+{
+  "id": "018a210d-8ba4-705c-b111-1f1776f7f578",
+  "type": "image-to-3d",
+  "status": "IN_PROGRESS",
+  "progress": 45,
+  "model_urls": {},
+  "task_error": null,
+  "preceding_tasks": 0,
+  "consumed_credits": 0
+}

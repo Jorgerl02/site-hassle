@@ -1,0 +1,15 @@
+{
+  "id": "018a210d-8ba4-705c-b111-1f1776f7f578",
+  "type": "image-to-3d",
+  "status": "SUCCEEDED",
+  "progress": 100,
+  "model_urls": {
+    "glb": "https://assets.meshy.ai/tasks/018a210d-8ba4-705c-b111-1f1776f7f578/output/model.glb?Expires=1"
+  },
+  "thumbnail_url": "https://assets.meshy.ai/tasks/018a210d-8ba4-705c-b111-1f1776f7f578/output/preview.png?Expires=1",
+  "task_error": null,
+  "created_at": 1762600000000,
+  "started_at": 1762600001000,
+  "finished_at": 1762600060000,
+  "consumed_credits": 30
+}

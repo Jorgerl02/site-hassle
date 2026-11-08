@@ -1,0 +1,14 @@
+{
+  "id": "018a210d-8ba4-705c-b111-1f1776f7f578",
+  "type": "image-to-3d",
+  "status": "FAILED",
+  "progress": 0,
+  "model_urls": {},
+  "task_error": {
+    "type": "invalid_input",
+    "code": "image_too_complex",
+    "message": "The uploaded image is too complex for 3D generation.",
+    "doc_url": "https://docs.meshy.ai/en/api/errors#image-too-complex"
+  },
+  "consumed_credits": 0
+}
