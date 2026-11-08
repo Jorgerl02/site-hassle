@@ -1,0 +1,7 @@
+blind_id,fotos,render_front,render_side,render_back,render_three_quarter,render_top,parecido,geometria,materiales,escala,apto,comentario
+B001,/x/p01/1.jpg;/x/p01/2.jpg,blind/B001/front.png,,,,,4,4,5,4,sí,bien
+B002,/x/p01/1.jpg,blind/B002/front.png,,,,,2,3,,,no,
+B003,/x/p02/1.jpg,blind/B003/front.png,,,,,,,,,,
+B004,/x/p01/1.jpg,blind/B004/front.png,,,,,"4,5",5,4,4,Si,
+B005,/x/p02/1.jpg,blind/B005/front.png,,,,,3,,,,no,patas cortas
+B006,/x/p03/1.jpg,blind/B006/front.png,,,,,,,,,,

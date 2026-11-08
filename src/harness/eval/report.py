@@ -23,9 +23,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from harness.core.models import CATEGORIES
+
+if TYPE_CHECKING:
+    from harness.eval.sheets import HumanSummary
 
 BASELINE = "A"
 WIN_PCT = 60.0  # % aptos per category, strict
@@ -231,7 +234,9 @@ def _delta_cell(s: VariantSummary) -> str:
     return f"{sign}{_num(abs(s.delta_pp))} pp"
 
 
-def render_markdown(run_id: str, summaries: dict[str, VariantSummary]) -> str:
+def render_markdown(
+    run_id: str, summaries: dict[str, VariantSummary], human: HumanSummary | None = None
+) -> str:
     order = sorted(summaries, key=lambda v: (v != BASELINE, v))
     out = [f"# Informe del bake-off · {run_id}", ""]
     out += [
@@ -315,4 +320,53 @@ def render_markdown(run_id: str, summaries: dict[str, VariantSummary]) -> str:
         f"**Nota:** {NOISE_NOTE}",
         "",
     ]
+    if human is not None:
+        out += _human_section(human)
     return "\n".join(out)
+
+
+def _human_section(human: HumanSummary) -> list[str]:
+    """«Jueces humanos»: apt rate per judge and variant, and agreement between judges."""
+    out = ["## Jueces humanos", ""]
+    if not human.judges:
+        return [*out, "Las hojas de los jueces no tienen ninguna fila valorada.", ""]
+    variants = sorted(
+        {v for per_judge in human.by_variant.values() for v in per_judge},
+        key=lambda v: (v != BASELINE, v),
+    )
+    out += [
+        "Unidad: la pieza; una pieza es apta para un juez si marcó «apto» en al menos uno "
+        "de sus candidatos. Solo cuentan las filas con la columna «apto» rellena.",
+        "",
+        "| Juez | " + " | ".join(variants) + " |",
+        "|---|" + "---|" * len(variants),
+    ]
+    for judge in human.judges:
+        per_variant = human.by_variant.get(judge, {})
+        cells = []
+        for v in variants:
+            apt, n = per_variant.get(v, (0, 0))
+            cells.append("—" if not n else f"{_num(100.0 * apt / n, 1, ' %')} ({apt}/{n})")
+        out.append(f"| {judge} | " + " | ".join(cells) + " |")
+    out += [
+        "",
+        "### Acuerdo entre jueces",
+        "",
+        "Sobre los candidatos valorados por ambos jueces: porcentaje de etiquetas «apto» "
+        "iguales y kappa de Cohen (1 = acuerdo total, ≈ 0 = el esperable por azar; «—» si "
+        "no hay candidatos en común o ambos jueces ponen siempre la misma etiqueta).",
+        "",
+    ]
+    if not human.agreement.pairs:
+        out.append("Hace falta más de un juez para medir el acuerdo.")
+    else:
+        out += ["| Juez | Juez | Candidatos en común | Acuerdo | Kappa |", "|---|---|---|---|---|"]
+        for p in human.agreement.pairs:
+            out.append(
+                f"| {p.judge_a} | {p.judge_b} | {p.n} | {_num(p.agree_pct, 1, ' %')} "
+                f"| {_num(p.kappa, 2)} |"
+            )
+    if not human.has_auto:
+        out += ["", "Sin etiquetas del juez automático: no se mide el acuerdo con él."]
+    out.append("")
+    return out
