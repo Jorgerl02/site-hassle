@@ -10,6 +10,8 @@ import json
 import os
 import re
 import shutil
+import struct
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -118,7 +120,7 @@ def test_render_viewer_paths_and_attributes(piece: Piece) -> None:
     assert re.search(r"@google/model-viewer@\d+\.\d+\.\d+/", MODEL_VIEWER_SRC)
     assert "Mesa de roble" in page
     assert "Ancho 120 × alto 75 × fondo 60 cm" in page
-    assert "$" not in page  # every placeholder substituted
+    assert not re.search(r"\$\{?[A-Za-z_]", page)  # every placeholder substituted
 
 
 def test_render_viewer_without_usdz_and_escaping(piece: Piece) -> None:
@@ -284,3 +286,38 @@ def test_deliver_real_blender_real_model(tmp_path: Path, piece: Piece, piece_id:
     assert result.tris_after <= 60_000
     assert result.usdz_path is not None and result.usdz_path.is_file()
     assert all(t["format"] in {"JPEG", "PNG"} for t in result.textures)
+    # Check the real bytes, not the script's own labels.
+    with zipfile.ZipFile(result.usdz_path) as usdz:
+        textures = [n for n in usdz.namelist() if n.startswith("textures/")]
+        assert textures
+        for name in textures:
+            assert _image_magic(usdz.read(name)[:8]) in {"JPEG", "PNG"}, name
+    gltf, binary_chunk = _read_glb(result.glb_path)
+    assert gltf["images"]
+    for image in gltf["images"]:
+        view = gltf["bufferViews"][image["bufferView"]]
+        start = view.get("byteOffset", 0)
+        magic = _image_magic(binary_chunk[start : start + 8])
+        assert magic in {"JPEG", "PNG"}
+        assert image["mimeType"] == f"image/{magic.lower()}"
+    meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
+    assert meta["tris_within_limit"] is True
+    assert result.meta_path.read_text(encoding="utf-8").endswith("\n")
+
+
+def _image_magic(head: bytes) -> str:
+    if head.startswith(b"\xff\xd8\xff"):
+        return "JPEG"
+    if head.startswith(b"\x89PNG"):
+        return "PNG"
+    return repr(head)
+
+
+def _read_glb(path: Path) -> tuple[dict, bytes]:
+    """(JSON chunk, BIN chunk) of a GLB container."""
+    data = path.read_bytes()
+    json_len = struct.unpack_from("<I", data, 12)[0]
+    gltf = json.loads(data[20 : 20 + json_len])
+    bin_start = 20 + json_len
+    bin_len = struct.unpack_from("<I", data, bin_start)[0]
+    return gltf, data[bin_start + 8 : bin_start + 8 + bin_len]

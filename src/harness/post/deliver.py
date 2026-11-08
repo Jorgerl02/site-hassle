@@ -275,5 +275,5 @@ def deliver(
             "model_viewer_version": MODEL_VIEWER_VERSION,
         }
     )
-    result.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    result.meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return result

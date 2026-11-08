@@ -172,7 +172,10 @@ def _process_textures(bpy, max_px: int, quality: int, tmp_dir: str) -> list[dict
         fmt = "PNG" if alpha else "JPEG"
         safe = "".join(c if c.isalnum() else "_" for c in image.name)
         path = os.path.join(tmp_dir, f"{safe}.{'png' if alpha else 'jpg'}")
-        image.save(filepath=path, quality=quality)  # format follows the extension
+        # Image.save writes in the image's current file_format (WEBP for TRELLIS-2), not by
+        # extension: set the target format explicitly.
+        image.file_format = fmt
+        image.save(filepath=path, quality=quality)
         encoded = bpy.data.images.load(path)
         encoded.colorspace_settings.name = image.colorspace_settings.name
         encoded.alpha_mode = image.alpha_mode
@@ -266,6 +269,7 @@ def main(argv: list[str]) -> int:
         "usdz_error": usdz_error,
         "tris_before": tris_before,
         "tris_after": tris_after,
+        "tris_within_limit": tris_after <= args.max_tris,
         "max_tris": args.max_tris,
         "max_tex": args.max_tex,
         "jpeg_quality": args.jpeg_quality,
@@ -277,6 +281,7 @@ def main(argv: list[str]) -> int:
     }
     with open(args.meta, "w", encoding="utf-8") as fh:
         json.dump(meta, fh, indent=2)
+        fh.write("\n")
     print(
         f"[bpy_deliver] OK glb={meta['glb_bytes']} B usdz={meta['usdz_bytes']} B "
         f"tris={tris_before}->{tris_after} usdz_error={usdz_error}"

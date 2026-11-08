@@ -3,11 +3,12 @@
   "glb_out": "outputs/deliver/p05/model_web.glb",
   "usdz_out": "outputs/deliver/p05/model.usdz",
   "glb_in_bytes": 2838428,
-  "glb_bytes": 735472,
-  "usdz_bytes": 3596963,
+  "glb_bytes": 770396,
+  "usdz_bytes": 3570631,
   "usdz_error": null,
   "tris_before": 95118,
   "tris_after": 58798,
+  "tris_within_limit": true,
   "max_tris": 60000,
   "max_tex": 2048,
   "jpeg_quality": 85,
@@ -16,7 +17,7 @@
   "textures": [
     {
       "name": "Image_0",
-      "source_format": "WEBP",
+      "source_format": "JPEG",
       "before": [
         2048,
         2048
@@ -27,11 +28,11 @@
       ],
       "alpha": false,
       "format": "JPEG",
-      "encoded_bytes": 514766
+      "encoded_bytes": 409728
     },
     {
       "name": "Image_1",
-      "source_format": "WEBP",
+      "source_format": "JPEG",
       "before": [
         2048,
         2048
@@ -42,11 +43,11 @@
       ],
       "alpha": false,
       "format": "JPEG",
-      "encoded_bytes": 37604
+      "encoded_bytes": 116338
     }
   ],
   "blender_version": "5.2.3 LTS",
-  "seconds": 4.2554573329980485,
+  "seconds": 0.5906904170115013,
   "piece_id": "p05",
   "size_limit_bytes": 5000000,
   "within_limit": true,
@@ -54,8 +55,8 @@
     {
       "max_tris": 60000,
       "max_tex": 2048,
-      "glb_bytes": 735472,
-      "usdz_bytes": 3596963,
+      "glb_bytes": 770396,
+      "usdz_bytes": 3570631,
       "tris_after": 58798
     }
   ],
