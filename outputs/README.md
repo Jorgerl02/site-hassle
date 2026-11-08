@@ -81,6 +81,34 @@ Higgsfield (39 créditos más, quedan 4): p07 Hunyuan, p13 Hunyuan y Tripo. Magn
 
 Veredicto acumulado: 0 de 14 aptos con el umbral de la spec. Lo que más se repite no es la geometría sino dos cosas: la escala se queda entre el 5 y el 9 % en tapizados y el color o material se pierde. Parte de la pérdida de color es del propio harness: los renders de Workbench salen oscuros y desaturados, lo que penaliza "materiales" a todas las variantes por igual. Conviene arreglar la iluminación de `bpy_render.py` antes de la siguiente ronda de puntuación.
 
+## Cuarta ronda: 16 piezas de macizo y tapizado con TRELLIS-2 y Hunyuan 3.1 Pro (Magnific)
+
+Se completaron las dos categorías con opciones: 8 piezas de macizo y 8 de tapizado, cada una con TRELLIS-2 (730 créditos) y Hunyuan 3.1 Pro con PBR (1.070). 24 generaciones nuevas, 22.670 créditos de Magnific. Antes de puntuar se corrigió la iluminación de los renders (luz de estudio, exposición +0,15): la luminancia del objeto queda a ±5 % de la foto. Las 38 generaciones se re-renderizaron y re-puntuaron.
+
+| Archivo | Qué es |
+|---|---|
+| `contact/<pieza>.jpg` | Hoja de contacto por pieza: foto limpia + renders de cada variante en tres cuartos y frontal, con el error de escala |
+| `25_juez_claude_p04.csv` | Las 38 puntuaciones del juez (Claude, sin ciego) con la rúbrica de la spec |
+| `26_mcp_higgsfield_geometria.txt` | Errores de escala por eje de las 38, y cuántas quedan bajo el 3 % por variante |
+| `24_report_mcp-higgsfield.md` | Informe del harness |
+
+Resultado: **2 aptos de 38**, los dos con TRELLIS-2: el jarrón de gres p05 y el sillón Matilda p15.
+
+| Variante | Piezas | Escala < 3 % | Aptos |
+|---|---|---|---|
+| TRELLIS-2 (Magnific) | 14 | 3 | 2 |
+| Hunyuan 3.1 Pro (Magnific) | 14 | 3 | 0 |
+| Hunyuan v3 (Higgsfield) | 4 | 0 | 0 |
+| Tripo H3.1 (Higgsfield) | 6 | 0 | 0 |
+
+Por categoría, contando el mejor candidato por pieza: macizo 1 de 8 aptas, tapizado 1 de 8. El umbral de la spec era 60 %.
+
+Qué falla, por orden:
+1. **Escala**: solo 6 de 28 candidatos de Magnific quedan bajo el 3 %; la mayoría está entre el 3 y el 9 %, justo fuera. Con un umbral del 5 % habría 13 de 28.
+2. **Piezas finas**: los dos cabeceros (3 y 6 cm de fondo) salen con 20 cm o se convierten en sofás. Es un fallo de categoría, no de modelo.
+3. **Materiales**: TRELLIS-2 reproduce bouclé, listones y gres; Hunyuan tiende a cuero liso. Con la luz corregida el color ya no es el problema.
+4. **Geometría inventada** en patas (p04) y bases (p06, p16).
+
 ## Observaciones de la prueba
 
 1. **`validate_input` rechaza 9 de 30 primeras fotos** por "objeto ≤ 10 % del área": lámparas, percheros, mesas auxiliares y piezas altas y finas (p01, p17, p20, p23, p24, p25, p29, p30). El umbral del 10 % de píxeles es demasiado estricto para producto fino; conviene bajarlo o medir por caja envolvente. Hoy las variantes no bloquean por esto, pero el validador de la etapa 1 del pipeline lo haría.

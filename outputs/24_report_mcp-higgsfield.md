@@ -21,8 +21,8 @@ Denominador: todas las piezas con algún candidato puntuado o con un fallo atrib
 | HF_HUNYUAN | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 2258,5 | 4 |
 | HF_TRIPO_CLEAN | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 197,4 | 5 |
 | HF_TRIPO_RAW | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 526,0 | 1 |
-| MG_HUNYUAN31PRO | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 1810,5 | 2 |
-| MG_TRELLIS2 | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 5797,5 | 2 |
+| MG_HUNYUAN31PRO | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 2144,3 | 14 |
+| MG_TRELLIS2 | — | — | — | — | 0,00 USD | 0,0 s (0,0 min) | 0 % | 5448,9 | 14 |
 
 **Coste total:** 0,00 USD = generación 0,00 USD + enrutado VLM (F) 0,00 USD + juez VLM 0,00 USD.
 
