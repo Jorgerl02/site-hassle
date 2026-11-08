@@ -49,3 +49,7 @@ p14,tapizado,MG_TRELLIS2_R5 c1,magnific,trellis-2 + ajuste a caja,4,4,4,5,7.0%�
 p14,tapizado,MG_TRELLIS2_R5 c2,magnific,trellis-2 + ajuste a caja,4,4,4,5,5.5%→0%,sí,"Igual, con un disco de textura en el respaldo"
 p11,tapizado,E,local,paramétrico Blender,4,4,4,5,0%,sí,"Cabecero fino: caja exacta con la foto proyectada; lo que ningún modelo de IA consiguió"
 p12,tapizado,E,local,paramétrico Blender,4,4,4,5,0%,sí,"Cabecero rayado: caja exacta con la foto proyectada"
+p03,macizo_mate,E,local,paramétrico box,4,3,4,5,0%,no,"Frontal del zapatero convincente con la foto proyectada; pero es una caja sin las patas de 10 cm y los laterales repiten el frontal"
+p04,macizo_mate,E,local,paramétrico panel_table pairs,3,3,3,5,0%,no,"Los pares de paneles en L no reproducen los tablones inclinados del original; veta del tablero estirada; región de foto en los paneles poco creíble"
+p07,macizo_mate,E,local,paramétrico panel_table sides + balda,4,4,4,5,0%,sí,"Dos paneles laterales y balda a 29 cm con el travertino de la foto proyectado: muy cercano a la pieza real y escala exacta"
+p08,macizo_mate,E,local,paramétrico box,4,4,3,5,0%,no,"Caja con los dos cajones de la foto en el frontal; falta el zócalo y la banda superior del tablero muestra un artefacto gris"
