@@ -73,13 +73,24 @@ def _max_abs(errors: Mapping[str, Any] | None) -> float | None:
 def _scale_error(post: Mapping[str, Any], row: Mapping[str, Any] | None) -> float | None:
     """Uniform-scale residual: pre-fit errors from post, else the evaluation's max_error."""
     if post.get("ok"):
-        err = _max_abs(post.get("errors_before_fit")) or _max_abs(post.get("errors"))
+        err = _max_abs(post.get("errors_before_fit"))
+        if err is None:
+            err = _max_abs(post.get("errors"))
         if err is not None:
             return err
     geometry = (row or {}).get("geometry") or {}
-    if geometry.get("max_error") is not None:
-        return abs(float(geometry["max_error"]))
-    return None
+    value = _as_number(geometry.get("max_error"))
+    return abs(value) if value is not None else None
+
+
+def _as_number(value: Any) -> float | None:
+    """``float(value)`` or ``None`` for missing / non-numeric values (treated as no data)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _rejected_by_guard(post: Mapping[str, Any]) -> bool:
@@ -104,8 +115,10 @@ def diagnose(
     issues: list[Issue] = []
     err = _scale_error(post, scores)
     fit_applied = bool(post.get("fit_box_applied"))
+    rejected = _rejected_by_guard(post)
 
-    if err is not None and tolerance <= err <= guard and not fit_applied:
+    # A guard rejection means fit_box would be rejected again: that is a geometry issue.
+    if err is not None and tolerance <= err <= guard and not fit_applied and not rejected:
         issues.append(
             Issue(
                 "scale",
@@ -118,23 +131,25 @@ def diagnose(
     geometry_reasons: list[str] = []
     if err is not None and err > guard:
         geometry_reasons.append(f"error {_pct(err)} por encima de la guarda ({_pct(guard)})")
-    elif _rejected_by_guard(post):
+    elif rejected:
         why = post.get("fit_skip_reason") or "sin motivo"
         geometry_reasons.append(f"ajuste a la caja rechazado por la guarda ({why})")
-    components = ((scores or {}).get("geometry") or {}).get("n_components")
-    if components is not None and int(components) > MAX_COMPONENTS:
+    components = _as_number(((scores or {}).get("geometry") or {}).get("n_components"))
+    if components is not None and components > MAX_COMPONENTS:
         geometry_reasons.append(f"{int(components)} componentes (máximo {MAX_COMPONENTS})")
     if geometry_reasons:
         issues.append(Issue("geometry", "; ".join(geometry_reasons), err))
 
     judged = (scores or {}).get("scores") or {}
-    materiales = judged.get("materiales")
-    if materiales is not None and int(materiales) <= MAX_BAD_MATERIAL_SCORE:
+    if not isinstance(judged, Mapping):
+        judged = {}
+    materiales = _as_number(judged.get("materiales"))
+    if materiales is not None and materiales <= MAX_BAD_MATERIAL_SCORE:
         issues.append(
             Issue(
                 "material",
                 f"materiales {int(materiales)}/5 (≤ {MAX_BAD_MATERIAL_SCORE})",
-                float(materiales),
+                materiales,
             )
         )
     return issues

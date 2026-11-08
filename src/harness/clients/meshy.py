@@ -85,6 +85,7 @@ def _data_uri(path: Path) -> str:
 
 
 def _model_data_uri(path: Path) -> str:
+    # The cap is checked on the raw bytes; the base64 payload sent is ~1.33x larger.
     data = Path(path).read_bytes()
     if len(data) > MAX_MODEL_DATA_URI_BYTES:
         raise ValueError(

@@ -164,8 +164,9 @@ def test_diagnose_geometry_issue_when_guard_rejected_fit():
     post = post_block({"width": 0.05, "height": 0.0, "depth": 0.0})
     post.update(fit_box_requested=True, fit_skip_reason="caja degenerada")
     issues = diagnose({"post": post}, None)
-    assert [i.kind for i in issues] == ["scale", "geometry"]
-    assert "caja degenerada" in issues[1].detail
+    # no "scale": fit_box would be rejected again by the guard
+    assert [i.kind for i in issues] == ["geometry"]
+    assert "caja degenerada" in issues[0].detail
 
 
 def test_diagnose_geometry_issue_from_components():
@@ -195,6 +196,21 @@ def test_diagnose_falls_back_to_eval_error_without_post():
         "geometry"
     ]
     assert diagnose({}, None) == []
+
+
+def test_diagnose_zero_pre_fit_error_is_not_missing():
+    post = post_block({"width": 0.0, "height": 0.0, "depth": 0.0})
+    post["errors"] = {"width": 0.05, "height": 0.0, "depth": 0.0}
+    assert diagnose({"post": post}, None) == []
+
+
+def test_diagnose_non_numeric_scores_mean_no_score():
+    meta = {"post": post_block({"width": 0.0, "height": 0.0, "depth": 0.0})}
+    row = score_row()
+    row["scores"]["materiales"] = "n/a"
+    row["geometry"]["n_components"] = "muchos"
+    assert diagnose(meta, row) == []
+    assert diagnose(meta, {"scores": "roto", "geometry": None}) == []
 
 
 # ----------------------------------------------------------------------------- plan
@@ -318,6 +334,101 @@ def test_refine_caps_regenerations_at_two_across_calls(tmp_path, piece):
     assert second.steps == [] and len(variant.calls) == 2
     history = json.loads((cand1 / REFINE_FILENAME).read_text())["history"]
     assert len(history) == 2
+
+
+def test_refine_regeneration_cap_is_per_workdir(tmp_path, piece):
+    root = tmp_path / "runs"
+    bad = post_block({"width": 0.4, "height": 0.0, "depth": 0.0})
+    cand1 = make_candidate(root, 1, bad)
+    make_candidate(root, 2, bad)  # sibling, never refined
+    post = FakePost({"width": 0.4, "height": 0.0, "depth": 0.0}, guard_ok=False)
+    variant = FakeVariant()
+    prov = providers(post, variant)
+
+    first = refine_candidate(
+        RUN, "p01", "B", 1, piece=piece, root=root, max_rounds=5, providers=prov
+    )
+    assert [s["new_candidate"] for s in first.steps] == [3, 4]
+    assert len(variant.calls) == 2
+
+    for start in (2, 3, 4):  # a sibling, and both regenerated candidates
+        report = refine_candidate(
+            RUN, "p01", "B", start, piece=piece, root=root, max_rounds=5, providers=prov
+        )
+        assert report.steps == [] and report.paid_actions == 0
+    assert len(variant.calls) == 2
+    assert sorted(p.name for p in cand1.parent.glob("cand_*")) == [f"cand_{i}" for i in range(1, 5)]
+
+
+def test_refine_regenerated_meta_carries_attribution(tmp_path, piece):
+    root = tmp_path / "runs"
+    make_candidate(root, 1, post_block({"width": 0.4, "height": 0.0, "depth": 0.0}))
+    post = FakePost({"width": 0.0, "height": 0.0, "depth": 0.0})
+    refine_candidate(
+        RUN, "p01", "B", 1, piece=piece, root=root, providers=providers(post, FakeVariant())
+    )
+    meta = storage.read_meta(root / RUN / "p01" / "B" / "cand_2")
+    assert meta["piece_id"] == "p01" and meta["variant"] == "B"
+    assert meta["index"] == 2 and meta["cost_usd"] == 0.25 and meta["seconds"] == 0.0
+    assert meta["glb_path"].endswith("B/cand_2/model.glb")
+
+
+def test_refine_keeps_billed_cost_when_post_fails_after_move(tmp_path, piece):
+    root = tmp_path / "runs"
+    make_candidate(root, 1, post_block({"width": 0.4, "height": 0.0, "depth": 0.0}))
+
+    def broken_post(*args, **kwargs):
+        raise RuntimeError("Blender se cayó")
+
+    report = refine_candidate(
+        RUN, "p01", "B", 1, piece=piece, root=root,
+        providers=providers(broken_post, FakeVariant()),
+    )  # fmt: skip
+
+    step = report.steps[0]
+    assert step["status"] == "failed" and "Blender se cayó" in step["detail"]
+    assert step["new_candidate"] == 2 and step["cost_usd"] == pytest.approx(0.5)
+    assert report.paid_actions == 1 and report.cost_usd == pytest.approx(0.5)
+    assert report.final_candidate == 2
+    cand2 = root / RUN / "p01" / "B" / "cand_2"
+    assert "refine_origin" in storage.read_meta(cand2)
+    saved = json.loads((root / RUN / "p01" / "B" / "cand_1" / REFINE_FILENAME).read_text())
+    assert saved["history"][0]["cost_usd"] == pytest.approx(0.5)
+
+
+def test_refine_keeps_billed_cost_when_variant_leaves_no_candidate(tmp_path, piece):
+    root = tmp_path / "runs"
+    make_candidate(root, 1, post_block({"width": 0.4, "height": 0.0, "depth": 0.0}))
+
+    class Short(FakeVariant):
+        def run(self, piece, workdir, candidates=2):
+            return super().run(piece, workdir, candidates=candidates - 1)
+
+    report = refine_candidate(
+        RUN, "p01", "B", 1, piece=piece, root=root,
+        providers=providers(FakePost({"width": 0.4, "height": 0.0, "depth": 0.0}), Short()),
+    )  # fmt: skip
+
+    step = report.steps[0]
+    assert step["status"] == "failed" and "cand_2" in step["detail"]
+    assert step["cost_usd"] == pytest.approx(0.25) and report.paid_actions == 1
+    assert not (root / RUN / "p01" / "B" / "cand_2").exists()
+
+
+def test_refine_survives_corrupt_refine_json(tmp_path, piece):
+    root = tmp_path / "runs"
+    cand = make_candidate(root, 1, post_block({"width": 0.01, "height": -0.06, "depth": 0.0}))
+    (cand / REFINE_FILENAME).write_text("{no es json", encoding="utf-8")
+
+    report = refine_candidate(
+        RUN, "p01", "B", 1, piece=piece, root=root,
+        providers=providers(FakePost({"width": 0.01, "height": -0.06, "depth": 0.0})),
+    )  # fmt: skip
+
+    assert [s["action"] for s in report.steps] == ["fit_box"]
+    assert report.warnings and "corrupto" in report.warnings[0]
+    assert (cand / (REFINE_FILENAME + ".corrupt")).read_text() == "{no es json"
+    assert len(json.loads((cand / REFINE_FILENAME).read_text())["history"]) == 1
 
 
 def test_refine_retexture_uses_provider_and_scores(tmp_path, piece):
