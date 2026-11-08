@@ -17,6 +17,7 @@ from harness.core.blender import BlenderNotAvailable, BlenderRun
 from harness.core.models import Piece
 from harness.post import bpy_parametric
 from harness.post.parametric_spec import (
+    KINDS,
     Box,
     Spec,
     bounding_box,
@@ -33,6 +34,8 @@ from harness.variants.e_parametric import (
     ParametricBuildError,
     ParametricVariant,
     crop_to_content,
+    load_overrides,
+    photo_regions,
 )
 
 
@@ -66,7 +69,7 @@ def test_table_120x75x60_top_and_four_legs(piece: Piece) -> None:
     assert boxes["leg_br"] == Box("leg_br", (5.0, 5.0, 71.0), (52.5, 22.5, 35.5))
 
 
-@pytest.mark.parametrize("kind", ["table", "shelf", "sideboard", "slab", "box"])
+@pytest.mark.parametrize("kind", ["table", "panel_table", "shelf", "sideboard", "slab", "box"])
 @pytest.mark.parametrize("dims", [(120, 75, 60), (80, 180, 35), (200, 3, 90), (45, 45, 45)])
 def test_union_bbox_matches_piece_dims(tmp_path: Path, kind: str, dims) -> None:
     w, h, d = dims
@@ -497,3 +500,224 @@ def test_variant_runs_on_rectilinear_or_unknown(
         piece.model_copy(update={"rectilinear": label}), tmp_path / "E"
     )
     assert len(result.candidates) == 1 and len(calls) == 1
+
+
+# ---------------------------------------------------------------- panel_table
+
+
+PANEL_CASES = [
+    {"panel_layout": "sides"},
+    {"panel_layout": "sides", "shelf_height_cm": 27, "panel_thickness": 2.5, "panel_inset": 0},
+    {"panel_layout": "pairs"},
+    {"panel_layout": "pairs", "panel_pair_shape": "L", "panel_fin_length": 30, "panel_inset": 15},
+    {"panel_layout": "pairs", "shelf_height_cm": 20, "top_thickness": 6},
+]
+
+
+@pytest.mark.parametrize("params", PANEL_CASES)
+@pytest.mark.parametrize("dims", [(135, 38, 79), (35, 50, 35), (45, 45, 45), (200, 3, 90)])
+def test_panel_table_bbox_exact(tmp_path: Path, params, dims) -> None:
+    w, h, d = dims
+    boxes = build_spec(make_piece(tmp_path, w, h, d), "panel_table", params)
+    mins, maxs = bounding_box(boxes)
+    assert mins == pytest.approx((-w / 2, -d / 2, 0.0))
+    assert maxs == pytest.approx((w / 2, d / 2, h))
+    assert all(s > 0 for b in boxes for s in b.size_cm)
+
+
+def test_panel_table_sides_defaults(tmp_path: Path) -> None:
+    boxes = {b.name: b for b in build_spec(make_piece(tmp_path, 100, 50, 40), "panel_table")}
+    assert set(boxes) == {"top", "panel_l", "panel_r"}  # no shelf unless requested
+    assert boxes["top"] == Box("top", (100.0, 40.0, 4.0), (0.0, 0.0, 48.0))
+    # inset 8 % of 100 = 8 cm from the top's edge to the panel's outer face, 3 cm thick
+    assert boxes["panel_r"].size_cm == (3.0, 40.0, 46.0)
+    assert boxes["panel_r"].pos_cm[0] + 1.5 == pytest.approx(50 - 8)
+    assert boxes["panel_l"].pos_cm[0] - 1.5 == pytest.approx(-(50 - 8))
+
+
+def test_panel_table_sides_shelf_p07(tmp_path: Path) -> None:
+    params = {"panel_layout": "sides", "shelf_height_cm": 27, "panel_thickness": 2.5}
+    params |= {"panel_inset": 0, "top_thickness": 2.5}
+    boxes = {b.name: b for b in build_spec(make_piece(tmp_path, 35, 50, 35), "panel_table", params)}
+    assert set(boxes) == {"top", "panel_l", "panel_r", "shelf"}
+    assert boxes["panel_l"].pos_cm[0] - 1.25 == pytest.approx(-17.5)  # flush with the edge
+    shelf = boxes["shelf"]
+    assert shelf.size_cm == pytest.approx((30.0, 35.0, 2.5))  # between the panels' inner faces
+    assert shelf.pos_cm[2] + shelf.size_cm[2] / 2 == pytest.approx(27.0)  # top face at 27 cm
+
+
+def test_panel_table_pairs_t_and_l(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 135, 38, 79)
+    t = {b.name: b for b in build_spec(piece, "panel_table", {"panel_layout": "pairs"})}
+    assert set(t) == {"top", "panel_l", "panel_l_fin", "panel_r", "panel_r_fin"}
+    inset = 0.08 * 135
+    assert t["panel_r"].size_cm == pytest.approx((3.0, 79 - 2 * inset, 34.0))
+    assert t["panel_r"].pos_cm[0] + 1.5 == pytest.approx(67.5 - inset)
+    fin = t["panel_r_fin"]
+    assert fin.size_cm == pytest.approx((39.5, 3.0, 34.0))  # 50 % of the depth
+    assert fin.pos_cm[1] == 0.0  # T: mid-depth
+    assert fin.pos_cm[0] + fin.size_cm[0] / 2 == pytest.approx(67.5 - inset - 3.0)  # touches
+    params = {"panel_layout": "pairs", "panel_pair_shape": "L", "panel_fin_length": 30}
+    lshape = {b.name: b for b in build_spec(piece, "panel_table", params)}
+    end, fin = lshape["panel_l"], lshape["panel_l_fin"]
+    assert fin.size_cm[0] == 30.0
+    # L: the fin's front face is flush with the end panel's front end
+    assert fin.pos_cm[1] - 1.5 == pytest.approx(end.pos_cm[1] - end.size_cm[1] / 2)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{"panel_layout": "x"}, {"panel_pair_shape": "U"}, {"legs": 4}],
+)
+def test_panel_table_rejects_bad_params(piece: Piece, params) -> None:
+    with pytest.raises(ValueError, match="panel_table"):
+        build_spec(piece, "panel_table", params)
+
+
+def test_params_rejected_for_other_kinds(piece: Piece) -> None:
+    with pytest.raises(ValueError, match="no admite"):
+        build_spec(piece, "box", {"panel_layout": "sides"})
+
+
+def test_panel_table_photo_regions(piece: Piece) -> None:
+    spec = make_spec(
+        piece,
+        "panel_table",
+        params={"shelf_height_cm": 30},
+        photo_regions={"top_row": 0.25, "side_band": [0.1, 0.4]},
+    )
+    boxes = {b.name: b for b in spec.boxes}
+    assert spec.extra["side_band"] == [0.1, 0.4]
+    assert spec.extra["params"] == {"shelf_height_cm": 30}
+    assert boxes["top"].uv_v == pytest.approx((0.75, 0.81))
+    assert boxes["panel_l"].uv_v[0] == pytest.approx(0.04)
+    assert boxes["panel_l"].uv_v[1] == pytest.approx(0.75)
+    assert 0.04 < boxes["shelf"].uv_v[0] < boxes["shelf"].uv_v[1] < 0.75
+    assert Spec.from_dict(spec.to_dict()) == spec  # uv_v survives the JSON round trip
+    plain = make_spec(piece, "table", photo_regions={"top_row": 0.25, "side_band": [0, 1]})
+    assert all(b.uv_v is None for b in plain.boxes) and "side_band" not in plain.extra
+
+
+def test_planar_uv_box_z_and_side_band() -> None:
+    mins, maxs = (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)
+    box_z = (0.0, 0.5, (0.1, 0.6))
+    assert bpy_parametric.planar_uv((0, -1, 0), (0.5, 0, 0.5), mins, maxs, box_z) == (
+        pytest.approx(0.5),
+        pytest.approx(0.6),
+    )
+    u, v = bpy_parametric.planar_uv((-1, 0, 0), (0, 0.5, 0.0), mins, maxs, box_z, (0.2, 0.4))
+    assert (u, v) == (pytest.approx(0.3), pytest.approx(0.1))
+    u, v = bpy_parametric.planar_uv((0, 0, 1), (1.0, 0.0, 1.0), mins, maxs, None, (0.2, 0.4))
+    assert (u, v) == (pytest.approx(0.4), pytest.approx(bpy_parametric.BAND_V0))
+
+
+def test_build_geometry_uses_box_hints() -> None:
+    boxes = [
+        {"name": "top", "size_cm": [10, 10, 2], "pos_cm": [0, 0, 9], "uv_v": [0.7, 0.8]},
+        {"name": "leg", "size_cm": [2, 2, 8], "pos_cm": [0, 0, 4]},
+    ]
+    _, _, uvs = bpy_parametric.build_geometry(boxes, side_band=(0.2, 0.4))
+    top_front = uvs[2]  # box 0, face "front"
+    assert sorted({round(v, 6) for _, v in top_front}) == [0.7, 0.8]
+    leg_left = uvs[6 + 5]  # box 1 has no hints: no band, straight projection
+    assert all(0.0 <= u <= 1.0 for u, _ in leg_left)
+    assert {round(v, 6) for _, v in leg_left} == {0.0, 0.8}
+
+
+def test_photo_regions_detects_top_and_solid_band(tmp_path: Path) -> None:
+    img = Image.new("RGB", (100, 100), "white")
+    img.paste((120, 80, 40), (0, 0, 100, 20))  # top: full rows 0..19
+    img.paste((120, 80, 40), (0, 20, 40, 100))  # solid left panel, columns 0..39
+    img.paste((120, 80, 40), (90, 20, 100, 100))  # thin right panel (too narrow a band)
+    img.save(tmp_path / "t.png")
+    regions = photo_regions(tmp_path / "t.png")
+    assert regions["top_row"] == pytest.approx(0.2)
+    assert regions["side_band"] == pytest.approx([0.0, 0.4])
+    Image.new("RGB", (50, 50), (120, 80, 40)).save(tmp_path / "solid.png")
+    assert photo_regions(tmp_path / "solid.png")["top_row"] is None
+
+
+# ---------------------------------------------------------------- classify panel_table
+
+
+@pytest.mark.parametrize(
+    ("text", "kind"),
+    [
+        ("Mesa de centro con patas de panel", "panel_table"),
+        ("Mesa con paneles laterales de roble", "panel_table"),
+        ("Consola con laterales macizos", "panel_table"),
+        ("Mesa de centro con estructura en U", "panel_table"),
+        ("Mesa auxiliar cuadrada de mármol", "panel_table"),
+        ("Mesita auxiliar de travertino", "panel_table"),
+        ("Mesa auxiliar de piedra natural", "panel_table"),
+        ("Mesita auxiliar de nogal", "table"),  # auxiliar without stone stays a table
+        ("Mesa de mármol", "table"),  # stone without auxiliar stays a table
+    ],
+)
+def test_classify_text_panel_table(text: str, kind: str) -> None:
+    assert classify_text(text) == kind
+
+
+def test_classify_panel_from_name(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 35, 50, 35, "Cuadrada 35 x 35", name="Mesa auxiliar en mármol")
+    assert classify(piece) == "panel_table"
+    assert "panel_table" in KINDS
+
+
+# ---------------------------------------------------------------- overrides
+
+
+def test_load_overrides_missing_file(tmp_path: Path) -> None:
+    assert load_overrides(tmp_path / "nope.json") == {}
+
+
+def test_load_overrides_entries(tmp_path: Path) -> None:
+    path = tmp_path / "o.json"
+    path.write_text(
+        '{"_comment": "x", "p03": "box", "p07": {"kind": "panel_table", "shelf_height_cm": 27}}',
+        encoding="utf-8",
+    )
+    assert load_overrides(path) == {
+        "p03": {"kind": "box"},
+        "p07": {"kind": "panel_table", "shelf_height_cm": 27},
+    }
+    path.write_text('{"p03": "chair"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="desconocido"):
+        load_overrides(path)
+
+
+def test_resolve_kind_sources(piece: Piece, tmp_path: Path) -> None:
+    path = tmp_path / "o.json"
+    path.write_text('{"p01": {"kind": "panel_table", "panel_layout": "pairs"}}', encoding="utf-8")
+    assert ParametricVariant(overrides_path=path).resolve_kind(piece) == (
+        "panel_table",
+        "override",
+        {"panel_layout": "pairs"},
+    )
+    # constructor overrides win; file params of another kind are dropped
+    variant = ParametricVariant(kind_overrides={"p01": "box"}, overrides_path=path)
+    assert variant.resolve_kind(piece) == ("box", "override", {})
+    no_file = ParametricVariant(overrides_path=tmp_path / "none.json")
+    assert no_file.resolve_kind(piece) == ("table", "classify", {})
+    with pytest.raises(ValueError, match="desconocido"):
+        ParametricVariant(kind_overrides={"p01": "chair"})
+
+
+def test_variant_records_override_in_meta(
+    monkeypatch: pytest.MonkeyPatch, piece: Piece, tmp_path: Path
+) -> None:
+    binary, calls = _setup_fake(monkeypatch, tmp_path)
+    path = tmp_path / "o.json"
+    path.write_text(
+        '{"p01": {"kind": "panel_table", "panel_layout": "sides", "shelf_height_cm": 30}}',
+        encoding="utf-8",
+    )
+    result = ParametricVariant(blender_bin=binary, overrides_path=path).run(piece, tmp_path / "E")
+    meta = result.candidates[0].meta
+    assert meta["kind"] == "panel_table" and meta["kind_source"] == "override"
+    assert meta["params"] == {"panel_layout": "sides", "shelf_height_cm": 30}
+    assert meta["n_boxes"] == 4 and "photo_regions" in meta
+    spec = read_spec(Path(calls[0]["args"][calls[0]["args"].index("--spec") + 1]))
+    assert spec.kind == "panel_table"
+    assert {b.name for b in spec.boxes} == {"top", "panel_l", "panel_r", "shelf"}
+    assert "override" in result.notes

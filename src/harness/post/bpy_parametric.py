@@ -47,6 +47,9 @@ FACE_NORMALS: dict[str, Vec3] = {
 }
 # Top/bottom faces sample this fraction of the photo's rows, starting at the top edge.
 TOP_BAND = 0.15
+# With a side band, top/bottom faces sample the band's rows BAND_V0..BAND_V0 + BAND_V_SPAN.
+BAND_V0 = 0.2
+BAND_V_SPAN = 0.6
 
 
 def script_argv(argv: list[str]) -> list[str]:
@@ -78,7 +81,14 @@ def bounds(vertices: list[tuple[float, float, float]]) -> tuple[tuple[float, ...
     return mins, maxs
 
 
-def planar_uv(normal: Vec3, v: Vec3, mins: Vec3, maxs: Vec3) -> UV:
+def planar_uv(
+    normal: Vec3,
+    v: Vec3,
+    mins: Vec3,
+    maxs: Vec3,
+    box_z: tuple[float, float, tuple[float, float]] | None = None,
+    side_band: tuple[float, float] | None = None,
+) -> UV:
     """Planar UV of point ``v`` on a face with outward ``normal``, relative to the piece
     bounding box ``(mins, maxs)``. Blender UV convention: (0, 0) = bottom-left of the image.
 
@@ -94,22 +104,42 @@ def planar_uv(normal: Vec3, v: Vec3, mins: Vec3, maxs: Vec3) -> UV:
     - top/bottom (normal ±Z): the top ``TOP_BAND`` rows of the photo (the top surface in
       a front/3-4 view) stretched across X-Y; the front edge samples the top row, so it
       matches the front face's upper edge.
+
+    Optional photo-region hints (variant E ``panel_table``): ``box_z = (z0, z1, (v0, v1))``
+    maps the box's own height ``z0..z1`` onto photo rows ``v0..v1`` for its vertical faces
+    (instead of the whole piece height), and ``side_band = (u0, u1)`` squeezes the u of
+    right/left faces into that column band of the photo (a solid region of material);
+    with a band, top/bottom faces also sample it (rows ``BAND_V0``..``+BAND_V_SPAN``).
     """
 
     def norm(i: int) -> float:
         span = maxs[i] - mins[i]
         return (v[i] - mins[i]) / span if span > 0 else 0.0
 
+    def vert() -> float:
+        if box_z is None:
+            return norm(2)
+        z0, z1, (v0, v1) = box_z
+        t = (v[2] - z0) / (z1 - z0) if z1 > z0 else 0.0
+        return v0 + (v1 - v0) * t
+
     axis = max(range(3), key=lambda i: abs(normal[i]))
     if axis == 1:  # front / back
-        return norm(0), norm(2)
+        return norm(0), vert()
     if axis == 0:  # right / left
-        return (1.0 - norm(1) if normal[0] > 0 else norm(1)), norm(2)
+        u = 1.0 - norm(1) if normal[0] > 0 else norm(1)
+        if side_band is not None:
+            u = side_band[0] + (side_band[1] - side_band[0]) * u
+        return u, vert()
+    if side_band is not None:  # top / bottom inside the solid band (no top-band patchwork)
+        u = side_band[0] + (side_band[1] - side_band[0]) * norm(0)
+        return u, BAND_V0 + BAND_V_SPAN * norm(1)
     return norm(0), 1.0 - TOP_BAND * norm(1)  # top / bottom
 
 
 def build_geometry(
     boxes: list[dict],
+    side_band: tuple[float, float] | None = None,
 ) -> tuple[list[Vec3], list[tuple[int, ...]], list[list[UV]]]:
     """All boxes as one mesh: (vertices in m, quad faces, per-face loop UVs).
 
@@ -121,13 +151,16 @@ def build_geometry(
     verts: list[Vec3] = []
     faces: list[tuple[int, ...]] = []
     uvs: list[list[UV]] = []
-    for box in corners:
+    for spec_box, box in zip(boxes, corners, strict=True):
+        uv_v = spec_box.get("uv_v")
+        box_z = (box[0][2], box[4][2], (float(uv_v[0]), float(uv_v[1]))) if uv_v else None
+        band = side_band if uv_v else None  # the band only applies to hinted (panel) boxes
         for name, idx in BOX_FACES:
             base = len(verts)
             quad = [box[i] for i in idx]
             verts.extend(quad)
             faces.append(tuple(range(base, base + 4)))
-            uvs.append([planar_uv(FACE_NORMALS[name], v, mins, maxs) for v in quad])
+            uvs.append([planar_uv(FACE_NORMALS[name], v, mins, maxs, box_z, band) for v in quad])
     return verts, faces, uvs
 
 
@@ -163,7 +196,8 @@ def main(argv: list[str]) -> int:
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete()
 
-    verts, faces, uvs = build_geometry(spec["boxes"])
+    band = (spec.get("extra") or {}).get("side_band")
+    verts, faces, uvs = build_geometry(spec["boxes"], tuple(band) if band else None)
     mesh = bpy.data.meshes.new(spec.get("kind", "parametric"))
     mesh.from_pydata(verts, [], faces)
     uv_layer = mesh.uv_layers.new(name="UVMap")

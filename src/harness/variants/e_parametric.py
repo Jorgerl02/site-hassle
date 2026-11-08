@@ -7,8 +7,10 @@ from E's denominator). ``rectilinear is None`` (unknown) runs."""
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageChops
@@ -26,6 +28,9 @@ SPEC_FILENAME = "parametric_spec.json"
 TEXTURE_FILENAME = "texture.png"
 LOG_FILENAME = "parametric_blender.log"
 LOG_TAIL_CHARS = 4000
+# Optional per-piece overrides (relative to the working directory, like ``.env``):
+# {"p07": {"kind": "panel_table", "panel_layout": "sides", "shelf_height_cm": 27}, "p08": "box"}
+DEFAULT_OVERRIDES_PATH = Path("data/parametric_overrides.json")
 WHITE = (255, 255, 255)
 CROP_THRESHOLD = 8  # per-channel distance from white still considered background
 FILL_THRESHOLD = 16  # max-channel distance from white below which a pixel is background
@@ -110,16 +115,112 @@ def fill_background(path: Path, threshold: int = FILL_THRESHOLD, erode: int = FI
     return Path(path)
 
 
+SOLID_ROW_COVERAGE = 0.9  # a photo row this covered by the object is part of the top
+SOLID_COL_COVERAGE = 0.9  # a photo column this covered is solid material (side band)
+MIN_SIDE_BAND = 0.2  # narrower solid runs are ignored (no side band)
+
+
+def photo_regions(path: Path, threshold: int = FILL_THRESHOLD) -> dict[str, Any]:
+    """Where the top and the solid material are in the cropped (not yet filled) photo.
+
+    - ``top_row``: fraction of rows (from the top) where the first run of rows covered
+      ≥ ``SOLID_ROW_COVERAGE`` by the object ends = bottom of the top's front edge in a
+      front/3-4 view (None if no such run or it reaches the bottom).
+    - ``side_band``: ``[u0, u1]`` widest run of columns covered ≥ ``SOLID_COL_COVERAGE``
+      (a panel seen face-on), None if narrower than ``MIN_SIDE_BAND``.
+    """
+    with Image.open(path) as img:
+        arr = np.asarray(img.convert("RGB")).astype(np.int16)
+    mask = (255 - arr).max(axis=2) > threshold
+    h, w = mask.shape
+    rows = mask.mean(axis=1) >= SOLID_ROW_COVERAGE
+    top_row = None
+    if rows.any():
+        first = int(np.argmax(rows))
+        after = rows[first:]
+        end = first + (int(np.argmin(after)) if not after.all() else len(after))
+        top_row = end / h if end < h else None
+    cols = mask.mean(axis=0) >= SOLID_COL_COVERAGE
+    best: tuple[int, int] | None = None
+    start = None
+    for i, solid in enumerate([*cols.tolist(), False]):
+        if solid and start is None:
+            start = i
+        elif not solid and start is not None:
+            if best is None or i - start > best[1] - best[0]:
+                best = (start, i)
+            start = None
+    side_band = None
+    if best is not None and (best[1] - best[0]) / w >= MIN_SIDE_BAND:
+        side_band = [best[0] / w, best[1] / w]
+    return {"top_row": top_row, "side_band": side_band}
+
+
 class ParametricBuildError(RuntimeError):
     """Blender failed to build the parametric model."""
+
+
+def load_overrides(path: Path) -> dict[str, dict[str, Any]]:
+    """``{piece_id: {"kind": ..., **params}}`` from ``path`` (missing file → ``{}``).
+
+    An entry can be a bare kind string or an object with ``kind`` plus params (``kind`` may
+    be omitted to keep the classified kind). Kinds and params are validated here so a typo
+    fails before any Blender run."""
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: se esperaba un objeto {{piece_id: tipo | {{kind, ...}}}}")
+    out: dict[str, dict[str, Any]] = {}
+    for piece_id, entry in raw.items():
+        if piece_id.startswith("_"):  # "_comment" and similar
+            continue
+        entry = {"kind": entry} if isinstance(entry, str) else dict(entry)
+        kind = entry.get("kind")
+        if kind is not None and kind not in parametric_spec.KINDS:
+            raise ValueError(f"{path}: {piece_id}: tipo desconocido {kind!r}")
+        out[piece_id] = entry
+    return out
 
 
 class ParametricVariant:
     name = "E"
 
-    def __init__(self, blender_bin: Path | None = None, timeout: int = 300) -> None:
+    def __init__(
+        self,
+        blender_bin: Path | None = None,
+        timeout: int = 300,
+        kind_overrides: dict[str, str] | None = None,
+        overrides_path: Path | None = DEFAULT_OVERRIDES_PATH,
+    ) -> None:
         self.blender_bin = blender_bin
         self.timeout = timeout
+        for piece_id, kind in (kind_overrides or {}).items():
+            if kind not in parametric_spec.KINDS:
+                raise ValueError(f"kind_overrides: {piece_id}: tipo desconocido {kind!r}")
+        self.kind_overrides = dict(kind_overrides or {})
+        self.overrides_path = overrides_path
+
+    def resolve_kind(self, piece: Piece) -> tuple[str, str, dict[str, Any]]:
+        """``(kind, source, params)``: ``kind_overrides`` > overrides JSON > :func:`classify`.
+
+        Params from the JSON apply only when its kind is the one finally chosen (or it
+        names no kind)."""
+        entry = dict(
+            load_overrides(self.overrides_path).get(piece.id, {})
+            if self.overrides_path is not None
+            else {}
+        )
+        file_kind = entry.pop("kind", None)
+        if piece.id in self.kind_overrides:
+            kind, source = self.kind_overrides[piece.id], "override"
+        elif file_kind is not None:
+            kind, source = file_kind, "override"
+        else:
+            kind, source = parametric_spec.classify(piece), "classify"
+        params = entry if file_kind in (None, kind) else {}
+        return kind, source, params
 
     def _resolve_blender(self) -> Path:
         binary = self.blender_bin if self.blender_bin is not None else Settings.load().blender_bin
@@ -129,14 +230,19 @@ class ParametricVariant:
             raise BlenderNotAvailable(f"BLENDER_BIN no existe: {binary}")
         return Path(binary)
 
-    def _texture(self, piece: Piece, cand: Path) -> tuple[Path, str]:
+    def _texture(self, piece: Piece, cand: Path) -> tuple[Path, str, dict[str, Any]]:
         dst = cand / TEXTURE_FILENAME
         try:
             cleaned = clean.clean_image(piece.images[0], dst)
         except ValueError:
-            return piece.images[0], "original (clean_image no detectó objeto)"
+            return piece.images[0], "original (clean_image no detectó objeto)", {}
         cropped = crop_to_content(cleaned, dst)
-        return fill_background(cropped), "clean_image + recorte al objeto + relleno del fondo"
+        regions = photo_regions(cropped)  # before the fill erases the background
+        return (
+            fill_background(cropped),
+            "clean_image + recorte al objeto + relleno del fondo",
+            regions,
+        )
 
     def run(self, piece: Piece, workdir: Path, candidates: int = 2) -> VariantResult:
         # Deterministic: ``candidates`` is ignored, there is exactly one candidate.
@@ -151,9 +257,11 @@ class ParametricVariant:
         start = time.monotonic()
         cand = storage.candidate_dir(workdir, 1)
 
-        kind = parametric_spec.classify(piece)
-        texture, texture_source = self._texture(piece, cand)
-        spec = parametric_spec.make_spec(piece, kind, texture=Path(texture).resolve())
+        kind, kind_source, params = self.resolve_kind(piece)
+        texture, texture_source, regions = self._texture(piece, cand)
+        spec = parametric_spec.make_spec(
+            piece, kind, texture=Path(texture).resolve(), params=params, photo_regions=regions
+        )
         spec_path = parametric_spec.write_spec(cand / SPEC_FILENAME, spec)
 
         glb = storage.model_path(cand)
@@ -179,10 +287,13 @@ class ParametricVariant:
             seconds=time.monotonic() - start,
             meta={
                 "kind": kind,
+                "kind_source": kind_source,
+                "params": params,
                 "spec_path": str(spec_path),
                 "n_boxes": len(spec.boxes),
                 "texture": str(texture),
                 "texture_source": texture_source,
+                "photo_regions": regions,
                 "blender_seconds": run.seconds,
             },
         )
@@ -190,5 +301,5 @@ class ParametricVariant:
             variant=self.name,
             piece_id=piece.id,
             candidates=[candidate],
-            notes=f"tipo paramétrico: {kind}; 1 candidato (determinista)",
+            notes=f"tipo paramétrico: {kind} ({kind_source}); 1 candidato (determinista)",
         )

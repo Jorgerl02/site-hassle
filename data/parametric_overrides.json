@@ -1,0 +1,25 @@
+{
+  "_comment": "Variante E: tipo paramétrico por pieza (+ parámetros de panel_table). Ver harness/variants/e_parametric.py",
+  "p03": {
+    "kind": "box"
+  },
+  "p04": {
+    "kind": "panel_table",
+    "panel_layout": "pairs",
+    "panel_thickness": 3,
+    "panel_inset": 15,
+    "panel_pair_shape": "L",
+    "panel_fin_length": 30
+  },
+  "p07": {
+    "kind": "panel_table",
+    "panel_layout": "sides",
+    "shelf_height_cm": 29,
+    "panel_thickness": 2.5,
+    "top_thickness": 2.5,
+    "panel_inset": 0
+  },
+  "p08": {
+    "kind": "box"
+  }
+}

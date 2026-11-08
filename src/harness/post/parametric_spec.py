@@ -19,8 +19,8 @@ from typing import Any, Literal
 
 from harness.core.models import Piece
 
-Kind = Literal["table", "shelf", "sideboard", "slab", "box"]
-KINDS: tuple[str, ...] = ("table", "shelf", "sideboard", "slab", "box")
+Kind = Literal["table", "panel_table", "shelf", "sideboard", "slab", "box"]
+KINDS: tuple[str, ...] = ("table", "panel_table", "shelf", "sideboard", "slab", "box")
 SPEC_VERSION = 1
 
 # Default construction dimensions (cm).
@@ -32,6 +32,23 @@ SHELF_THICKNESS = 2.0  # sides and boards
 SIDEBOARD_LEG_HEIGHT = 10.0
 SIDEBOARD_DOOR_THICKNESS = 2.0
 SIDEBOARD_DOOR_GAP = 0.5
+# panel_table: a top on vertical panels instead of legs (p04 teak coffee table, p07 marble
+# side table). ``panel_inset`` is the distance from the top's edge to the panel's outer face.
+PANEL_THICKNESS = 3.0
+PANEL_INSET_RATIO = 0.08  # default panel_inset = 8 % of the width
+PANEL_LAYOUTS: tuple[str, ...] = ("sides", "pairs")
+PANEL_FIN_RATIO = 0.5  # "pairs": length of the perpendicular panel = 50 % of the depth
+# "pairs" seen from above: "T" = fin at mid-depth of the end panel, "L" = fin at its front end
+PANEL_PAIR_SHAPES: tuple[str, ...] = ("T", "L")
+PANEL_TABLE_PARAMS: tuple[str, ...] = (
+    "top_thickness",
+    "panel_thickness",
+    "panel_inset",
+    "panel_layout",
+    "panel_fin_length",
+    "panel_pair_shape",
+    "shelf_height_cm",
+)
 
 # Spanish keywords (accent-free, lowercase). The earliest match in the text wins, so
 # "mesa con tablero de travertino" is a table and "tablero para mesa" is a slab.
@@ -41,6 +58,12 @@ KEYWORDS: dict[str, tuple[str, ...]] = {
     "sideboard": ("aparador", "comoda", "credenza", "buffet", "cajonera", "mueble tv"),
     "slab": ("encimera", "losa", "tablero", "placa", "lamina"),
 }
+
+# Checked BEFORE ``KEYWORDS`` (anywhere in the text): any panel keyword, or "auxiliar"
+# together with a stone word → panel_table ("Mesa auxiliar de mármol" is a panel table).
+PANEL_KEYWORDS: tuple[str, ...] = ("panel", "laterales", "estructura en u")
+PANEL_AUX_WORD = "auxiliar"
+PANEL_STONE_WORDS: tuple[str, ...] = ("marmol", "travertino", "piedra")
 
 SLAB_MAX_HEIGHT_RATIO = 0.15  # height / max(width, depth) below this → slab
 SHELF_MIN_HEIGHT_RATIO = 1.5  # height / width above this (and shallow) → shelf
@@ -52,9 +75,19 @@ class Box:
     name: str
     size_cm: tuple[float, float, float]
     pos_cm: tuple[float, float, float]
+    # Optional photo rows (Blender v, 0 = bottom) sampled by this box's vertical faces,
+    # bottom→top of the box; None = straight projection over the whole piece height.
+    uv_v: tuple[float, float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "size_cm": list(self.size_cm), "pos_cm": list(self.pos_cm)}
+        out: dict[str, Any] = {
+            "name": self.name,
+            "size_cm": list(self.size_cm),
+            "pos_cm": list(self.pos_cm),
+        }
+        if self.uv_v is not None:
+            out["uv_v"] = list(self.uv_v)
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Box:
@@ -62,7 +95,13 @@ class Box:
         pos = tuple(float(v) for v in data["pos_cm"])
         if len(size) != 3 or len(pos) != 3:
             raise ValueError(f"Box {data.get('name')!r}: size_cm y pos_cm deben tener 3 valores")
-        return cls(name=str(data["name"]), size_cm=size, pos_cm=pos)  # type: ignore[arg-type]
+        uv_v = data.get("uv_v")
+        return cls(
+            name=str(data["name"]),
+            size_cm=size,  # type: ignore[arg-type]
+            pos_cm=pos,  # type: ignore[arg-type]
+            uv_v=(float(uv_v[0]), float(uv_v[1])) if uv_v is not None else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -101,8 +140,24 @@ def _normalise(text: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c))
 
 
+def _has_word(norm: str, word: str) -> bool:
+    return re.search(rf"\b{re.escape(word)}", norm) is not None
+
+
+def is_panel_text(text: str) -> bool:
+    """Panel keywords ("panel", "paneles", "patas de panel", "laterales", "estructura en U")
+    or "auxiliar" + "mármol"/"travertino"/"piedra"."""
+    norm = _normalise(text)
+    if any(_has_word(norm, w) for w in PANEL_KEYWORDS):
+        return True
+    return _has_word(norm, PANEL_AUX_WORD) and any(_has_word(norm, w) for w in PANEL_STONE_WORDS)
+
+
 def classify_text(text: str) -> str | None:
-    """Kind whose keyword appears earliest in ``text`` (whole-word prefix match), or None."""
+    """``panel_table`` if :func:`is_panel_text`, else the kind whose keyword appears earliest
+    in ``text`` (whole-word prefix match), or None."""
+    if is_panel_text(text):
+        return "panel_table"
     norm = _normalise(text)
     best: tuple[int, str] | None = None
     for kind, words in KEYWORDS.items():
@@ -176,9 +231,84 @@ def _sideboard(w: float, d: float, h: float) -> list[Box]:
     return [body, *doors, *_legs(w, d, leg_h)]
 
 
-def build_spec(piece: Piece, kind: str) -> list[Box]:
-    """Boxes (cm) for ``piece`` built as ``kind``; their union bbox equals the piece's dims."""
+def panel_table_params(w: float, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolved panel_table parameters (defaults filled in); rejects unknown keys."""
+    params = dict(params or {})
+    unknown = sorted(set(params) - set(PANEL_TABLE_PARAMS))
+    if unknown:
+        raise ValueError(f"panel_table: parámetros desconocidos {unknown}")
+    layout = params.get("panel_layout", "sides")
+    if layout not in PANEL_LAYOUTS:
+        raise ValueError(f"panel_table: panel_layout {layout!r} (válidos: {PANEL_LAYOUTS})")
+    shape = params.get("panel_pair_shape", "T")
+    if shape not in PANEL_PAIR_SHAPES:
+        raise ValueError(f"panel_table: panel_pair_shape {shape!r} (válidos: {PANEL_PAIR_SHAPES})")
+    shelf = params.get("shelf_height_cm")
+    return {
+        "top_thickness": float(params.get("top_thickness", TABLE_TOP_THICKNESS)),
+        "panel_thickness": float(params.get("panel_thickness", PANEL_THICKNESS)),
+        "panel_inset": float(params.get("panel_inset", PANEL_INSET_RATIO * w)),
+        "panel_layout": layout,
+        "panel_fin_length": (
+            float(params["panel_fin_length"]) if "panel_fin_length" in params else None
+        ),
+        "panel_pair_shape": shape,
+        "shelf_height_cm": float(shelf) if shelf is not None else None,
+    }
+
+
+def _panel_table(w: float, d: float, h: float, params: dict[str, Any] | None) -> list[Box]:
+    p = panel_table_params(w, params)
+    top_t = min(p["top_thickness"], h / 2)
+    pt = min(p["panel_thickness"], w / 4)
+    inset = min(max(p["panel_inset"], 0.0), w / 2 - pt)  # outer face never past the centre
+    panel_h = h - top_t
+    x_out = w / 2 - inset  # outer face of each panel
+    xc = x_out - pt / 2
+    x_in = x_out - pt  # inner face
+    boxes = [Box("top", (w, d, top_t), (0.0, 0.0, h - top_t / 2))]
+    if p["panel_layout"] == "sides":
+        panel_d = d
+        for side, sign in (("l", -1), ("r", 1)):
+            boxes.append(
+                Box(f"panel_{side}", (pt, panel_d, panel_h), (sign * xc, 0.0, panel_h / 2))
+            )
+    else:  # "pairs": an end panel along the depth + a perpendicular fin (T or L)
+        inset_d = min(inset, d / 4)
+        panel_d = d - 2 * inset_d
+        fin = p["panel_fin_length"] if p["panel_fin_length"] is not None else PANEL_FIN_RATIO * d
+        fin = max(min(fin, x_in), 0.0)
+        fin_y = 0.0 if p["panel_pair_shape"] == "T" else -(panel_d / 2 - pt / 2)
+        for side, sign in (("l", -1), ("r", 1)):
+            boxes.append(
+                Box(f"panel_{side}", (pt, panel_d, panel_h), (sign * xc, 0.0, panel_h / 2))
+            )
+            if fin > 0:
+                boxes.append(
+                    Box(
+                        f"panel_{side}_fin",
+                        (fin, pt, panel_h),
+                        (sign * (x_in - fin / 2), fin_y, panel_h / 2),
+                    )
+                )
+    shelf = p["shelf_height_cm"]
+    if shelf is not None:
+        shelf_t = top_t
+        z_top = min(max(shelf, shelf_t), panel_h)  # shelf_height_cm = height of its top face
+        boxes.append(Box("shelf", (2 * x_in, panel_d, shelf_t), (0.0, 0.0, z_top - shelf_t / 2)))
+    return boxes
+
+
+def build_spec(piece: Piece, kind: str, params: dict[str, Any] | None = None) -> list[Box]:
+    """Boxes (cm) for ``piece`` built as ``kind``; their union bbox equals the piece's dims.
+
+    ``params`` only applies to ``panel_table`` (see :data:`PANEL_TABLE_PARAMS`); other kinds
+    reject non-empty params."""
     w, h, d = float(piece.width_cm), float(piece.height_cm), float(piece.depth_cm)
+    if params and kind != "panel_table":
+        raise ValueError(f"El tipo {kind!r} no admite parámetros ({sorted(params)})")
+    if kind == "panel_table":
+        return _panel_table(w, d, h, params)
     if kind == "table":
         return _table(w, d, h)
     if kind == "shelf":
@@ -190,6 +320,37 @@ def build_spec(piece: Piece, kind: str) -> list[Box]:
     raise ValueError(f"Tipo desconocido: {kind!r} (válidos: {', '.join(KINDS)})")
 
 
+TOP_EDGE_ROWS = 0.06  # photo rows (fraction) above the top/support split = the top's edge
+SUPPORT_V_FLOOR = 0.04  # supports skip the photo's lowest rows (floor shadow / fill halo)
+
+
+def with_photo_regions(boxes: list[Box], top_row: float | None) -> list[Box]:
+    """panel_table: map the vertical faces of the top onto the photo rows just above
+    ``top_row`` (its front edge) and those of the supports (panels, shelf) onto the rows
+    below it, so panels do not show the photo's top surface. ``top_row`` is the fraction
+    of photo rows, from the top, where the top ends (None → boxes unchanged)."""
+    if top_row is None or not 0.0 < top_row < 1.0:
+        return boxes
+    split = 1.0 - top_row  # Blender v of the split (v = 0 at the bottom of the photo)
+    edge = min(TOP_EDGE_ROWS, top_row)
+    out = []
+    for b in boxes:
+        uv_v = (split, split + edge) if b.name == "top" else None
+        if b.name != "top":
+            # supports start at the floor; scale their z range onto [0, split]
+            z0 = b.pos_cm[2] - b.size_cm[2] / 2
+            z1 = b.pos_cm[2] + b.size_cm[2] / 2
+            top_z = max(bb.pos_cm[2] - bb.size_cm[2] / 2 for bb in boxes if bb.name == "top")
+            lo = min(SUPPORT_V_FLOOR, split)
+            uv_v = (
+                (lo + (split - lo) * z0 / top_z, lo + (split - lo) * z1 / top_z)
+                if top_z > 0
+                else None
+            )
+        out.append(Box(b.name, b.size_cm, b.pos_cm, uv_v))
+    return out
+
+
 def bounding_box(boxes: list[Box]) -> tuple[tuple[float, ...], tuple[float, ...]]:
     """(min_xyz, max_xyz) of the union of ``boxes`` in cm."""
     mins = tuple(min(b.pos_cm[i] - b.size_cm[i] / 2 for b in boxes) for i in range(3))
@@ -197,13 +358,29 @@ def bounding_box(boxes: list[Box]) -> tuple[tuple[float, ...], tuple[float, ...]
     return mins, maxs
 
 
-def make_spec(piece: Piece, kind: str, texture: Path | None = None) -> Spec:
+def make_spec(
+    piece: Piece,
+    kind: str,
+    texture: Path | None = None,
+    params: dict[str, Any] | None = None,
+    photo_regions: dict[str, Any] | None = None,
+) -> Spec:
+    """``photo_regions`` (``{"top_row": f, "side_band": [u0, u1]}``, from the cleaned photo)
+    is only used by ``panel_table``: per-box ``uv_v`` and ``extra["side_band"]``."""
+    extra: dict[str, Any] = {"piece_id": piece.id}
+    if params:
+        extra["params"] = dict(params)
+    boxes = build_spec(piece, kind, params)
+    if kind == "panel_table" and photo_regions:
+        boxes = with_photo_regions(boxes, photo_regions.get("top_row"))
+        if photo_regions.get("side_band") is not None:
+            extra["side_band"] = [float(v) for v in photo_regions["side_band"]]
     return Spec(
         kind=kind,
-        boxes=build_spec(piece, kind),
+        boxes=boxes,
         texture=str(texture) if texture is not None else None,
         dims_cm=(piece.width_cm, piece.depth_cm, piece.height_cm),
-        extra={"piece_id": piece.id},
+        extra=extra,
     )
 
 
