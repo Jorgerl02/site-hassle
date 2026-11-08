@@ -1,10 +1,13 @@
-"""Meshy API client (image-to-3D and multi-image-to-3D).
+"""Meshy API client (image-to-3D, multi-image-to-3D and retexture).
 
 Docs consulted 2026-11-08:
 - https://docs.meshy.ai/en/api/image-to-3d
 - https://docs.meshy.ai/en/api/multi-image-to-3d
 - https://docs.meshy.ai/en/api/errors
-- https://docs.meshy.ai/en/api/pricing  (30 credits per textured generation, meshy-7.1 / 2K)
+- https://docs.meshy.ai/en/api/pricing  (30 credits per textured generation, meshy-7.1 / 2K;
+  retexture: 10 credits at 2K/4K, 15 at 8K)
+- https://docs.meshy.ai/en/api/retexture  (POST /retexture; ``model_url`` accepts a public URL
+  or a data URI up to 100 MB with MIME ``application/octet-stream``, so no upload is needed)
 
 Neither endpoint documents a ``seed`` parameter, so ``seed`` is recorded in meta but not sent.
 """
@@ -36,6 +39,20 @@ MAX_RETRIES = 3  # retries after the first attempt
 NON_IDEMPOTENT_RETRY_STATUS = {429}
 NON_IDEMPOTENT_RETRY_EXC = (httpx.ConnectError, httpx.ConnectTimeout)
 
+RETEXTURE_ENDPOINT = "retexture"
+RETEXTURE_CREDITS = 10  # 2K texture resolution (docs pricing page)
+# Credits → USD derived from the generation price (30 credits = MESHY_USD_PER_MODEL).
+MESHY_USD_PER_RETEXTURE = round(MESHY_USD_PER_MODEL * RETEXTURE_CREDITS / 30, 4)
+MAX_MODEL_DATA_URI_BYTES = 100 * 1024 * 1024  # API limit for model_url as a data URI
+MAX_STYLE_PROMPT_CHARS = 800
+# Keep the existing UVs (the mesh is already post-processed); PBR maps; GLB only.
+RETEXTURE_PARAMS: dict[str, Any] = {
+    "ai_model": "latest",
+    "enable_original_uv": True,
+    "enable_pbr": True,
+    "target_formats": ["glb"],
+}
+
 # Request parameters shared by both endpoints (furniture: PBR textures, GLB only).
 DEFAULT_PARAMS: dict[str, Any] = {
     "ai_model": "latest",
@@ -65,6 +82,16 @@ def _data_uri(path: Path) -> str:
     mime = mimetypes.guess_type(path.name)[0] or "image/png"
     encoded = base64.b64encode(Path(path).read_bytes()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+def _model_data_uri(path: Path) -> str:
+    data = Path(path).read_bytes()
+    if len(data) > MAX_MODEL_DATA_URI_BYTES:
+        raise ValueError(
+            f"{path} pesa {len(data) / 1e6:.0f} MB; Meshy admite como máximo 100 MB en data URI "
+            "(súbelo a una URL pública)"
+        )
+    return "data:application/octet-stream;base64," + base64.b64encode(data).decode("ascii")
 
 
 class MeshyClient:
@@ -184,6 +211,72 @@ class MeshyClient:
         return GenerationOutcome(
             glb_path=dst_glb,
             cost_usd=MESHY_USD_PER_MODEL,
+            seconds=time.monotonic() - start,
+            meta=meta,
+        )
+
+    def retexture(
+        self,
+        model_url_or_path: str | Path,
+        *,
+        image_ref: Path | None = None,
+        text_prompt: str | None = None,
+        dst_glb: Path,
+    ) -> GenerationOutcome:
+        """Re-texture an existing model (``POST /retexture``) and download the GLB.
+
+        ``model_url_or_path``: an ``http(s)`` URL is sent as is; a local file is sent as a
+        data URI (≤ 100 MB, the API limit; larger models need a public URL, not supported
+        here). Style: ``image_ref`` (sent as a data URI; the API gives it precedence) and/or
+        ``text_prompt`` (≤ 800 characters); at least one is required.
+        """
+        if image_ref is None and not text_prompt:
+            raise ValueError("retexture necesita image_ref o text_prompt")
+        start = time.monotonic()
+        source = str(model_url_or_path)
+        remote = source.startswith(("http://", "https://"))
+        body: dict[str, Any] = dict(RETEXTURE_PARAMS)
+        body["model_url"] = source if remote else _model_data_uri(Path(source))
+        if image_ref is not None:
+            body["image_style_url"] = _data_uri(Path(image_ref))
+        if text_prompt:
+            body["text_style_prompt"] = text_prompt[:MAX_STYLE_PROMPT_CHARS]
+
+        meta: dict[str, Any] = {
+            "provider": "meshy",
+            "endpoint": RETEXTURE_ENDPOINT,
+            "model_source": source,
+            "model_sent_as": "url" if remote else "data_uri",
+            "image_ref": str(image_ref) if image_ref is not None else None,
+            "text_prompt": body.get("text_style_prompt"),
+            "request": dict(RETEXTURE_PARAMS),
+        }
+        url = f"{self.base_url}/{RETEXTURE_ENDPOINT}"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        with httpx.Client(headers=headers, timeout=120.0) as http:
+            response, meta["create_attempts"] = self._request(
+                http, "POST", url, idempotent=False, json=body
+            )
+            created = response.json()
+            task_id = created.get("result")
+            if not task_id:
+                raise MeshyError("Meshy no devolvió id de tarea", created)
+            meta["task_id"] = task_id
+            payload = self._poll(http, f"{url}/{task_id}", meta)
+
+        glb_url = (payload.get("model_urls") or {}).get("glb")
+        if not glb_url:
+            raise MeshyError(f"Tarea Meshy {task_id} sin model_urls.glb", payload)
+        dst_glb = Path(dst_glb)
+        dst_glb.parent.mkdir(parents=True, exist_ok=True)
+        with httpx.Client(timeout=120.0, follow_redirects=True) as http:
+            dst_glb.write_bytes(self._request(http, "GET", glb_url)[0].content)
+
+        meta["consumed_credits"] = payload.get("consumed_credits")
+        meta["final_status"] = payload
+        return GenerationOutcome(
+            glb_path=dst_glb,
+            cost_usd=MESHY_USD_PER_RETEXTURE,
             seconds=time.monotonic() - start,
             meta=meta,
         )
