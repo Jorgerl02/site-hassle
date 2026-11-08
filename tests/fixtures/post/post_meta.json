@@ -1,0 +1,17 @@
+{
+  "glb_in": "runs/r1/p01/A/cand_1/model.glb",
+  "glb_out": "runs/r1/p01/A/cand_1/model_post.glb",
+  "target_cm": {"width": 120.0, "depth": 60.0, "height": 75.0},
+  "raw_cm": {"width": 100.0, "depth": 51.0, "height": 61.0},
+  "measured_cm": {"width": 120.0, "depth": 61.2, "height": 73.2},
+  "scale_axis": "width",
+  "scale_factor": 1.2,
+  "errors": {"width": 0.0, "depth": 0.02, "height": -0.024},
+  "tris_before": 412000,
+  "tris_after": 149870,
+  "max_tris": 150000,
+  "textures": [{"name": "Image_0", "before": [4096, 4096], "after": [2048, 2048]}],
+  "draco": true,
+  "blender_version": "4.5.3 LTS",
+  "seconds": 12.5
+}
