@@ -49,10 +49,11 @@ class IngestReport:
     downloaded: list[ImageRecord] = field(default_factory=list)
     skipped: list[ImageRecord] = field(default_factory=list)
     failures: list[ImageRecord] = field(default_factory=list)
+    error: str = ""  # run-level error that stopped the ingest early, if any
 
     @property
     def ok(self) -> bool:
-        return not self.failures
+        return not self.failures and not self.error
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -140,15 +141,15 @@ def ingest(
         images_root=str(images_root),
         started_at=datetime.now(UTC).isoformat(timespec="seconds"),
     )
-    targets = image_targets(Path(csv_path), images_root)
     own_client = client is None
-    if client is None:
-        client = httpx.Client(
-            headers={"User-Agent": USER_AGENT, "Accept": "image/*,*/*;q=0.8"},
-            follow_redirects=True,
-            timeout=timeout_s,
-        )
     try:
+        targets = image_targets(Path(csv_path), images_root)
+        if client is None:
+            client = httpx.Client(
+                headers={"User-Agent": USER_AGENT, "Accept": "image/*,*/*;q=0.8"},
+                follow_redirects=True,
+                timeout=timeout_s,
+            )
         for piece_id, n, url, dst in targets:
             record = ImageRecord(piece_id=piece_id, index=n, url=url, path=str(dst))
             if dst.exists() and dst.stat().st_size > 0:
@@ -156,23 +157,27 @@ def ingest(
                 continue
             try:
                 data = _to_jpeg(_fetch(client, url, max_retries, backoff_s, sleep))
-            except _DownloadError as exc:
-                record.error = str(exc)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dst.with_suffix(".part")
+                tmp.write_bytes(data)
+                tmp.replace(dst)
+            except Exception as exc:  # one bad image (InvalidURL, OSError…) never stops the run
+                record.error = (
+                    str(exc) if isinstance(exc, _DownloadError) else f"{type(exc).__name__}: {exc}"
+                )
                 report.failures.append(record)
                 continue
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            tmp = dst.with_suffix(".part")
-            tmp.write_bytes(data)
-            tmp.replace(dst)
             report.downloaded.append(record)
+    except BaseException as exc:
+        report.error = f"{type(exc).__name__}: {exc}"
+        raise
     finally:
-        if own_client:
+        if own_client and client is not None:
             client.close()
-
-    images_root.mkdir(parents=True, exist_ok=True)
-    (images_root / REPORT_FILENAME).write_text(
-        json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+        images_root.mkdir(parents=True, exist_ok=True)
+        (images_root / REPORT_FILENAME).write_text(
+            json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     return report
 
 

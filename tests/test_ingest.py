@@ -99,7 +99,16 @@ def test_sample_image_columns_consistent() -> None:
         assert r["source_url"].startswith("https://"), r["id"]
 
 
-def test_image_targets_match_images_column(tmp_path: Path) -> None:
+def test_sample_store_mix() -> None:
+    rows = _rows()
+    assert len({r["store"] for r in rows}) >= 4
+    for cat in CATEGORIES:
+        stores = Counter(r["store"] for r in rows if r["category"] == cat)
+        total = sum(stores.values())
+        assert max(stores.values()) / total <= 0.6, (cat, stores)
+
+
+def test_image_targets_match_images_column() -> None:
     targets = image_targets(SAMPLE, Path("data/images"))
     expected = [p for r in _rows() for p in r["images"].split(";")]
     assert [str(t[3]) for t in targets] == expected
@@ -219,3 +228,28 @@ def test_cli_exit_code_reflects_failures(
 
     assert code == 1
     assert "fallidas: 1" in capsys.readouterr().out
+
+
+def test_ingest_records_invalid_url_and_keeps_going(tmp_path: Path, httpx_mock: HTTPXMock) -> None:
+    csv_path = _write_sample(tmp_path / "s.csv", [("p01", ["::nope", "https://img.test/ok.jpg"])])
+    httpx_mock.add_response(url="https://img.test/ok.jpg", content=_image_bytes())
+    root = tmp_path / "images"
+
+    report = ingest(csv_path, root)
+
+    assert [f.index for f in report.failures] == [1]
+    assert report.failures[0].error.startswith("InvalidURL")
+    assert [r.index for r in report.downloaded] == [2]
+    assert (root / REPORT_FILENAME).exists()
+
+
+def test_ingest_writes_report_even_when_run_aborts(tmp_path: Path) -> None:
+    csv_path = tmp_path / "bad.csv"
+    csv_path.write_text("id,name\np01,Mesa\n", encoding="utf-8")  # no image_urls column
+    root = tmp_path / "images"
+
+    with pytest.raises(ValueError):
+        ingest(csv_path, root)
+
+    data = json.loads((root / REPORT_FILENAME).read_text(encoding="utf-8"))
+    assert "image_urls" in data["error"]
