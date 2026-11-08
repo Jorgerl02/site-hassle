@@ -71,7 +71,20 @@ def test_tiny_object_fails(tmp_path: Path) -> None:
     problems = clean.validate_input(tiny)
     assert len(problems) == 1
     assert problems[0].startswith("Objeto demasiado pequeño")
-    assert "10% × 10%" in problems[0]
+    assert "10 % × 10 %" in problems[0]
+    assert "≥ 25 %)" in problems[0]
+
+
+def test_tiny_object_with_stray_pixel_fails(tmp_path: Path) -> None:
+    # A rembg speck in the opposite corner must not inflate the box
+    path = _square_object(tmp_path / "speck.png", (1000, 1500), (50, 50, 200, 200))
+    with Image.open(path) as img:
+        img = img.copy()
+    img.putpixel((990, 1490), METAL)
+    img.save(path)
+    problems = clean.validate_input(path)
+    assert len(problems) == 1
+    assert problems[0].startswith("Objeto demasiado pequeño")
 
 
 def test_elongated_piece_passes(tmp_path: Path) -> None:
@@ -97,7 +110,7 @@ def test_low_resolution_fails(tmp_path: Path) -> None:
     low = _square_object(tmp_path / "low.png", (600, 800), (100, 100, 500, 700))
     problems = clean.validate_input(low)
     assert len(problems) == 1
-    assert problems[0].startswith("Resolución insuficiente")
+    assert problems[0] == "Resolución insuficiente: lado mayor 800 px (< 1.000 px)"
 
 
 def test_core_small_object_still_rejected(tmp_path: Path) -> None:
@@ -123,3 +136,10 @@ def test_explain_with_issues(tmp_path: Path) -> None:
 
 def test_explain_without_issues() -> None:
     assert explain([]) == "La foto cumple los requisitos."
+
+
+def test_spanish_number_formatting() -> None:
+    assert clean.format_int(1000) == "1.000"
+    assert clean.format_int(800) == "800"
+    assert clean.format_pct(0.25) == "25 %"
+    assert any("25 %" in req for req in PHOTO_REQUIREMENTS)

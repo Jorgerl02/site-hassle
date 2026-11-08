@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 CROP_MARGIN = 0.08  # fraction of the object's larger side
@@ -16,6 +17,9 @@ MIN_LONG_SIDE_PX = 1000
 # far-away objects. Requiring it on the short axis too would reject well-framed elongated
 # pieces: a 35x176 cm coat rack (p25, 14 % wide) or a 165x60 cm headboard (p12, 21 % tall).
 MIN_BBOX_FRACTION = 0.25
+# Percentiles of the mask's pixel coordinates used as the robust bounding box, so a stray
+# rembg speck far from the object does not inflate it.
+BBOX_PERCENTILES = (0.5, 99.5)
 BACKGROUND = (255, 255, 255)
 
 
@@ -70,7 +74,8 @@ def validate_input(path: Path) -> list[str]:
         long_side = max(img.size)
         if long_side < MIN_LONG_SIDE_PX:
             problems.append(
-                f"Resolución insuficiente: lado mayor {long_side} px (< {MIN_LONG_SIDE_PX} px)"
+                f"Resolución insuficiente: lado mayor {format_int(long_side)} px "
+                f"(< {format_int(MIN_LONG_SIDE_PX)} px)"
             )
         mask = _object_mask(_remove_background(img.convert("RGB")))
 
@@ -78,18 +83,38 @@ def validate_input(path: Path) -> list[str]:
     return problems
 
 
+def format_int(value: int) -> str:
+    """Spanish thousands separator: 1000 → "1.000"."""
+    return f"{value:,}".replace(",", ".")
+
+
+def format_pct(fraction: float) -> str:
+    """Spanish percentage with a space before the sign: 0.25 → "25 %"."""
+    return f"{fraction * 100:.0f} %"
+
+
+def _robust_bbox_size(mask: Image.Image) -> tuple[int, int] | None:
+    """Width and height of the mask's coordinate-percentile box, or None if empty."""
+    ys, xs = np.nonzero(np.asarray(mask))
+    if xs.size == 0:
+        return None
+    x_lo, x_hi = np.percentile(xs, BBOX_PERCENTILES)
+    y_lo, y_hi = np.percentile(ys, BBOX_PERCENTILES)
+    return round(x_hi - x_lo) + 1, round(y_hi - y_lo) + 1
+
+
 def _object_size_problems(mask: Image.Image) -> list[str]:
-    """Check the object's bounding box against ``MIN_BBOX_FRACTION`` of the long side."""
-    bbox = mask.getbbox()
-    if bbox is None:
+    """Check the object's robust bounding box against ``MIN_BBOX_FRACTION`` of the long side."""
+    size = _robust_bbox_size(mask)
+    if size is None:
         return ["Objeto no detectado: la eliminación de fondo no encuentra ninguna pieza"]
-    left, top, right, bottom = bbox
-    box_w, box_h = right - left, bottom - top
+    box_w, box_h = size
     long_side = max(mask.size)
     if max(box_w, box_h) < MIN_BBOX_FRACTION * long_side:
         return [
-            f"Objeto demasiado pequeño en la foto: caja envolvente {box_w}×{box_h} px "
-            f"({box_w / long_side:.0%} × {box_h / long_side:.0%} del lado mayor de la imagen; "
-            f"su lado mayor debe ocupar ≥ {MIN_BBOX_FRACTION:.0%})"
+            f"Objeto demasiado pequeño en la foto: caja envolvente {format_int(box_w)}×"
+            f"{format_int(box_h)} px ({format_pct(box_w / long_side)} × "
+            f"{format_pct(box_h / long_side)} del lado mayor de la imagen; "
+            f"su lado mayor debe ocupar ≥ {format_pct(MIN_BBOX_FRACTION)})"
         ]
     return []
