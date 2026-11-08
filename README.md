@@ -169,7 +169,7 @@ Opciones útiles:
   están en `data/parametric_overrides.json`.
 - **Enrutado de F (`--router-classifier auto|vlm|rules`, `auto` por defecto).** `rules` usa la
   etiqueta `rectilinear` del CSV: rectilínea → E; orgánica → C con ≥ 2 fotos o B con 1; sin
-  etiqueta → ruta orgánica (o el VLM, si hay clave). `vlm` pregunta siempre al VLM y exige
+  etiqueta → ruta orgánica (nunca consulta al VLM). `vlm` pregunta siempre al VLM y exige
   `ANTHROPIC_API_KEY`. `auto` usa el VLM si hay clave y, si no, las reglas. El motivo queda en
   `meta.json` → `router.rule` y en las notas. `--organic-variant D` (o cualquier otra variante
   registrada salvo E y F) sustituye a C/B como ruta orgánica; la comprobación previa pide

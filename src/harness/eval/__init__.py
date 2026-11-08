@@ -88,7 +88,8 @@ def refine_fields(cand_dir: Path | None, meta: dict[str, Any]) -> dict[str, Any]
     A regenerated candidate's ``cost_usd`` is its own generation only, while
     ``refine_origin.cost_usd`` is what the N + 1 generations billed: the difference is
     refinement spend. A retexture adds ``retexture.cost_usd``. ``refined`` is true for a
-    regenerated candidate or one with a ``refine.json`` (any refinement, even a free one).
+    regenerated candidate or one whose ``refine.json`` has at least one successful step
+    (a free fit-box counts; a dry run or an inspection with no steps does not).
     """
     extra = 0.0
     origin = meta.get("refine_origin")
@@ -97,8 +98,30 @@ def refine_fields(cand_dir: Path | None, meta: dict[str, Any]) -> dict[str, Any]
     retex = meta.get("retexture")
     if isinstance(retex, dict):
         extra += float(retex.get("cost_usd") or 0.0)
-    has_history = cand_dir is not None and (Path(cand_dir) / REFINE_FILENAME).is_file()
-    return {"refine_cost_usd": extra, "refined": isinstance(origin, dict) or has_history}
+    refined = isinstance(origin, dict) or isinstance(retex, dict) or _has_ok_step(cand_dir)
+    return {"refine_cost_usd": extra, "refined": refined}
+
+
+def _has_ok_step(cand_dir: Path | None) -> bool:
+    """True when the candidate's ``refine.json`` holds at least one step with status ``ok``.
+
+    A ``refine.json`` with no successful step (a dry run or a call that found nothing to do)
+    does not make the candidate "refined"."""
+    if cand_dir is None:
+        return False
+    path = Path(cand_dir) / REFINE_FILENAME
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    history = data.get("history", []) if isinstance(data, dict) else []
+    return any(
+        isinstance(entry, dict)
+        and any(isinstance(s, dict) and s.get("status") == "ok" for s in entry.get("steps", []))
+        for entry in history
+    )
 
 
 def _failed_candidate_record(

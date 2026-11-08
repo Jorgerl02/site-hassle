@@ -336,9 +336,15 @@ def test_refine_fields_from_meta(tmp_path: Path) -> None:
     regen = {"cost_usd": 0.25, "refine_origin": {"from_candidate": 1, "cost_usd": 0.75}}
     assert refine_fields(tmp_path, regen) == {"refine_cost_usd": 0.5, "refined": True}
     retex = {"cost_usd": 0.3, "retexture": {"cost_usd": 0.22}}
-    (tmp_path / "refine.json").write_text("{}", encoding="utf-8")
     fields = refine_fields(tmp_path, retex)
     assert fields["refined"] is True and fields["refine_cost_usd"] == pytest.approx(0.22)
+    # A refine.json without a successful step (dry run, nothing to do) is not a refinement.
+    (tmp_path / "refine.json").write_text('{"history": [{"steps": []}]}', encoding="utf-8")
+    assert refine_fields(tmp_path, {"cost_usd": 0.3})["refined"] is False
+    (tmp_path / "refine.json").write_text(
+        '{"history": [{"steps": [{"kind": "fit_box", "status": "ok"}]}]}', encoding="utf-8"
+    )
+    assert refine_fields(tmp_path, {"cost_usd": 0.3})["refined"] is True
     both = {**regen, "retexture": {"cost_usd": 0.22}}
     assert refine_fields(None, both)["refine_cost_usd"] == pytest.approx(0.72)
 
