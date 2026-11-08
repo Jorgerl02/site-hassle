@@ -80,6 +80,7 @@ def test_single_image_happy_path(httpx_mock: HTTPXMock, images, tmp_path):
     assert outcome.meta["multi_image"] is False
     assert outcome.meta["consumed_credits"] == 30
     assert outcome.meta["polls"] == 2
+    assert outcome.meta["create_attempts"] == 1
     assert outcome.meta["final_status"]["status"] == "SUCCEEDED"
 
     create = httpx_mock.get_requests(method="POST")[0]
@@ -136,33 +137,73 @@ def test_timeout_raises_with_last_status(httpx_mock: HTTPXMock, images, tmp_path
     assert exc.value.payload["status"] == "IN_PROGRESS"
 
 
-def test_transient_http_is_retried(httpx_mock: HTTPXMock, images, tmp_path):
-    httpx_mock.add_response(method="POST", url=f"{BASE}/image-to-3d", status_code=503)
-    httpx_mock.add_response(method="POST", url=f"{BASE}/image-to-3d", status_code=429)
-    httpx_mock.add_response(method="POST", url=f"{BASE}/image-to-3d", json=fixture("create"))
+def test_create_post_5xx_is_not_retried(httpx_mock: HTTPXMock, images, tmp_path):
     httpx_mock.add_response(
-        method="GET", url=f"{BASE}/image-to-3d/{TASK_ID}", json=fixture("task_succeeded")
+        method="POST", url=f"{BASE}/image-to-3d", status_code=502, json={"message": "bad gw"}
     )
+    with pytest.raises(MeshyError, match="502") as exc:
+        client().generate(images[:1], tmp_path / "x.glb")
+    assert exc.value.payload == {"message": "bad gw"}
+    assert len(httpx_mock.get_requests(method="POST")) == 1
+
+
+def test_create_post_read_timeout_is_not_retried(httpx_mock: HTTPXMock, images, tmp_path):
+    httpx_mock.add_exception(httpx.ReadTimeout("lost"), method="POST", url=f"{BASE}/image-to-3d")
+    with pytest.raises(MeshyError, match="no idempotente"):
+        client().generate(images[:1], tmp_path / "x.glb")
+    assert len(httpx_mock.get_requests(method="POST")) == 1
+
+
+def test_create_post_429_is_retried(httpx_mock: HTTPXMock, images, tmp_path):
+    httpx_mock.add_response(method="POST", url=f"{BASE}/image-to-3d", status_code=429)
+    mock_cycle(httpx_mock, "image-to-3d")
+    outcome = client().generate(images[:1], tmp_path / "r.glb")
+    assert outcome.meta["create_attempts"] == 2
+    assert len(httpx_mock.get_requests(method="POST")) == 2
+
+
+def test_create_post_connect_error_is_retried(httpx_mock: HTTPXMock, images, tmp_path):
+    httpx_mock.add_exception(
+        httpx.ConnectError("refused"), method="POST", url=f"{BASE}/image-to-3d"
+    )
+    httpx_mock.add_exception(
+        httpx.ConnectTimeout("slow dns"), method="POST", url=f"{BASE}/image-to-3d"
+    )
+    mock_cycle(httpx_mock, "image-to-3d")
+    outcome = client().generate(images[:1], tmp_path / "r.glb")
+    assert outcome.meta["create_attempts"] == 3
+    assert len(httpx_mock.get_requests(method="POST")) == 3
+
+
+def test_create_post_429_gives_up_after_three_retries(httpx_mock: HTTPXMock, images, tmp_path):
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{BASE}/image-to-3d",
+        status_code=429,
+        json={"message": "NoMorePendingTasks"},
+        is_reusable=True,
+    )
+    with pytest.raises(MeshyError, match="429") as exc:
+        client().generate(images[:1], tmp_path / "x.glb")
+    assert exc.value.payload == {"message": "NoMorePendingTasks"}
+    assert len(httpx_mock.get_requests(method="POST")) == 4
+
+
+def test_idempotent_gets_retry_transient_errors(httpx_mock: HTTPXMock, images, tmp_path):
+    poll_url = f"{BASE}/image-to-3d/{TASK_ID}"
+    httpx_mock.add_response(method="POST", url=f"{BASE}/image-to-3d", json=fixture("create"))
+    httpx_mock.add_response(method="GET", url=poll_url, status_code=502)
+    httpx_mock.add_exception(httpx.ReadTimeout("slow"), method="GET", url=poll_url)
+    httpx_mock.add_response(method="GET", url=poll_url, status_code=408)
+    httpx_mock.add_response(method="GET", url=poll_url, json=fixture("task_succeeded"))
     httpx_mock.add_exception(httpx.ReadTimeout("slow"), method="GET", url=GLB_URL)
+    httpx_mock.add_response(method="GET", url=GLB_URL, status_code=503)
     httpx_mock.add_response(method="GET", url=GLB_URL, content=GLB_BYTES)
 
     outcome = client().generate(images[:1], tmp_path / "r.glb")
     assert outcome.glb_path.read_bytes() == GLB_BYTES
-    assert len(httpx_mock.get_requests(method="POST")) == 3
-
-
-def test_transient_http_gives_up_after_three_retries(httpx_mock: HTTPXMock, images, tmp_path):
-    httpx_mock.add_response(
-        method="POST",
-        url=f"{BASE}/image-to-3d",
-        status_code=500,
-        json={"message": "boom"},
-        is_reusable=True,
-    )
-    with pytest.raises(MeshyError, match="500") as exc:
-        client().generate(images[:1], tmp_path / "x.glb")
-    assert exc.value.payload == {"message": "boom"}
-    assert len(httpx_mock.get_requests(method="POST")) == 4
+    assert outcome.meta["create_attempts"] == 1
+    assert len(httpx_mock.get_requests(method="GET", url=poll_url)) == 4
 
 
 def test_client_error_is_not_retried(httpx_mock: HTTPXMock, images, tmp_path):

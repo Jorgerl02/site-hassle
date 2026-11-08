@@ -32,6 +32,9 @@ TERMINAL_OK = "SUCCEEDED"
 TERMINAL_FAILED = {"FAILED", "CANCELED"}
 TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
 MAX_RETRIES = 3  # retries after the first attempt
+# Task creation is not idempotent: only retry when no task can have been created.
+NON_IDEMPOTENT_RETRY_STATUS = {429}
+NON_IDEMPOTENT_RETRY_EXC = (httpx.ConnectError, httpx.ConnectTimeout)
 
 # Request parameters shared by both endpoints (furniture: PBR textures, GLB only).
 DEFAULT_PARAMS: dict[str, Any] = {
@@ -85,25 +88,40 @@ class MeshyClient:
 
     # -- HTTP -----------------------------------------------------------------
 
-    def _request(self, http: httpx.Client, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    def _request(
+        self, http: httpx.Client, method: str, url: str, *, idempotent: bool = True, **kwargs: Any
+    ) -> tuple[httpx.Response, int]:
+        """Send with retries; returns ``(response, attempts)``.
+
+        Idempotent calls retry 408/429/5xx and any transport error. Non-idempotent calls
+        (task creation) retry only 429 and connect errors, where the request certainly
+        did not create a task; anything else could duplicate a billed task.
+        """
+        retry_status = TRANSIENT_STATUS if idempotent else NON_IDEMPOTENT_RETRY_STATUS
+        retry_exc = httpx.TransportError if idempotent else NON_IDEMPOTENT_RETRY_EXC
         last: httpx.Response | Exception | None = None
+        attempts = 0
         for attempt in range(MAX_RETRIES + 1):
             if attempt:
                 time.sleep(self.retry_backoff_s * 2 ** (attempt - 1))
+            attempts += 1
             try:
                 response = http.request(method, url, **kwargs)
-            except httpx.TransportError as exc:
+            except retry_exc as exc:
                 last = exc
                 continue
-            if response.status_code in TRANSIENT_STATUS:
+            except httpx.TransportError as exc:
+                raise MeshyError(
+                    f"Meshy error de red en {method} {url} (sin reintento: no idempotente): {exc}",
+                    {"error": repr(exc), "attempts": attempts},
+                ) from exc
+            if response.status_code in retry_status:
                 last = response
                 continue
             if response.is_error:
-                raise MeshyError(
-                    f"Meshy HTTP {response.status_code} en {method} {url}",
-                    _json_or_text(response),
-                )
-            return response
+                payload = _json_or_text(response)
+                raise MeshyError(f"Meshy HTTP {response.status_code} en {method} {url}", payload)
+            return response, attempts
         if isinstance(last, httpx.Response):
             raise MeshyError(
                 f"Meshy HTTP {last.status_code} en {method} {url} tras {MAX_RETRIES} reintentos",
@@ -142,7 +160,10 @@ class MeshyClient:
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
         with httpx.Client(headers=headers, timeout=60.0) as http:
-            created = self._request(http, "POST", f"{self.base_url}/{endpoint}", json=body).json()
+            response, meta["create_attempts"] = self._request(
+                http, "POST", f"{self.base_url}/{endpoint}", idempotent=False, json=body
+            )
+            created = response.json()
             task_id = created.get("result")
             if not task_id:
                 raise MeshyError("Meshy no devolvió id de tarea", created)
@@ -156,7 +177,7 @@ class MeshyClient:
         dst_glb.parent.mkdir(parents=True, exist_ok=True)
         # Signed asset URL: no Authorization header.
         with httpx.Client(timeout=120.0, follow_redirects=True) as http:
-            dst_glb.write_bytes(self._request(http, "GET", glb_url).content)
+            dst_glb.write_bytes(self._request(http, "GET", glb_url)[0].content)
 
         meta["consumed_credits"] = payload.get("consumed_credits")
         meta["final_status"] = payload
@@ -171,7 +192,7 @@ class MeshyClient:
         start = time.monotonic()
         polls = 0
         while True:
-            payload = self._request(http, "GET", url).json()
+            payload = self._request(http, "GET", url)[0].json()
             polls += 1
             meta["polls"] = polls
             status = payload.get("status")
