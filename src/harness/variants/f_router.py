@@ -1,4 +1,8 @@
-"""Variant F — router: a VLM decides whether the piece is rectilinear or organic.
+"""Variant F — router: decides whether the piece is rectilinear or organic.
+
+Two classifiers: a VLM (``classifier="vlm"``) or deterministic rules over the CSV label
+(``classifier="rules"``, see :func:`rule_classify`). ``classifier="auto"`` (default) uses the
+VLM when one was injected or ``ANTHROPIC_API_KEY`` is set, and the rules otherwise.
 
 rectilinear → E (parametric, Blender); organic → C (synthetic views + Tripo) when the piece
 has ≥ 2 photos, else B (clean + Tripo). If E cannot run because Blender is missing, the
@@ -13,6 +17,7 @@ are then copied to F's own ``workdir/cand_<n>/``.
 from __future__ import annotations
 
 import shutil
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +37,55 @@ ROUTER_PROMPT = (
 ROUTER_SCHEMA_HINT = '{"rectilinear": bool, "motivo": str}'
 DELEGATE_DIR_PREFIX = "route_"
 MIN_PHOTOS_FOR_SYNTH = 2
+CLASSIFIERS: tuple[str, ...] = ("auto", "vlm", "rules")
+ROUTE_VLM = "VLM"  # rule_classify: "ask the VLM" (unlabelled piece with a key available)
+# Thin piece (coordinator's rule): some dimension below this, or width/depth or
+# height/depth above THIN_MAX_RATIO.
+THIN_MIN_CM = 8.0
+THIN_MAX_RATIO = 15.0
+
+
+@dataclass(frozen=True)
+class RouteDecision:
+    """Outcome of :func:`rule_classify`: ``route`` is a delegate name ("E", "C", "B", or a
+    configured organic variant) or :data:`ROUTE_VLM`; ``reason`` is a Spanish sentence."""
+
+    route: str
+    reason: str
+    thin: bool
+
+
+def is_thin(piece: Piece) -> bool:
+    w, h, d = piece.width_cm, piece.height_cm, piece.depth_cm
+    return min(w, h, d) < THIN_MIN_CM or w / d > THIN_MAX_RATIO or h / d > THIN_MAX_RATIO
+
+
+def organic_route_for(piece: Piece, organic_variant: str | None = None) -> str:
+    """``organic_variant`` when configured (e.g. "TRELLIS"), else C with ≥ 2 photos, else B."""
+    if organic_variant:
+        return organic_variant
+    return "C" if len(piece.images) >= MIN_PHOTOS_FOR_SYNTH else "B"
+
+
+def rule_classify(
+    piece: Piece, *, vlm_available: bool = False, organic_variant: str | None = None
+) -> RouteDecision:
+    """Route from the CSV label, no API call.
+
+    - ``rectilinear is True`` → E (a thin piece is still a box for E, flagged ``thin``);
+    - ``rectilinear is False`` → organic route (:func:`organic_route_for`);
+    - ``rectilinear is None`` → :data:`ROUTE_VLM` when a VLM is available, else organic
+      with ``reason="sin etiqueta"``.
+    """
+    thin = is_thin(piece)
+    if piece.rectilinear is True:
+        reason = "rectilínea y fina (caja fina)" if thin else "rectilínea"
+        return RouteDecision("E", reason, thin)
+    if piece.rectilinear is False:
+        return RouteDecision(organic_route_for(piece, organic_variant), "orgánica", thin)
+    if vlm_available:
+        return RouteDecision(ROUTE_VLM, "sin etiqueta: se consulta al VLM", thin)
+    return RouteDecision(organic_route_for(piece, organic_variant), "sin etiqueta", thin)
 
 
 class RouterVariant:
@@ -45,10 +99,30 @@ class RouterVariant:
         c: Variant | None = None,
         b: Variant | None = None,
         settings: Settings | None = None,
+        classifier: str = "auto",
+        organic_variant: str | None = None,
+        others: dict[str, Variant] | None = None,
     ) -> None:
+        """``organic_variant`` replaces C/B as the organic route (reserved for external
+        providers such as "TRELLIS"); its delegate must be passed in ``others``."""
+        if classifier not in CLASSIFIERS:
+            raise ValueError(f"Variante F: clasificador {classifier!r} (válidos: {CLASSIFIERS})")
         self._vlm = vlm
-        self._delegates: dict[str, Variant | None] = {"E": e, "C": c, "B": b}
+        self._delegates: dict[str, Variant | None] = {"E": e, "C": c, "B": b, **(others or {})}
         self._settings = settings
+        self.classifier = classifier
+        self.organic_variant = organic_variant
+
+    def vlm_available(self) -> bool:
+        if self._vlm is not None:
+            return True
+        return bool((self._settings or Settings.load()).anthropic_api_key)
+
+    def resolved_classifier(self) -> str:
+        """ "vlm" or "rules" ("auto" → VLM only when one is available)."""
+        if self.classifier == "auto":
+            return "vlm" if self.vlm_available() else "rules"
+        return self.classifier
 
     @property
     def vlm(self) -> Any:
@@ -63,6 +137,10 @@ class RouterVariant:
         return self._vlm
 
     def delegate(self, route: str) -> Variant:
+        if route not in self._delegates:
+            raise ValueError(
+                f"Variante F: no hay variante para la ruta {route!r} (pásala en others)"
+            )
         if self._delegates[route] is None:
             if route == "E":
                 from harness.variants.e_parametric import ParametricVariant
@@ -107,12 +185,40 @@ class RouterVariant:
         return info
 
     def organic_route(self, piece: Piece) -> str:
-        return "C" if len(piece.images) >= MIN_PHOTOS_FOR_SYNTH else "B"
+        return organic_route_for(piece, self.organic_variant)
+
+    def decide(self, piece: Piece) -> tuple[str, dict[str, Any]]:
+        """``(route, router_info)`` with the configured classifier; rules that defer to the
+        VLM (unlabelled piece) fall through to :meth:`classify`."""
+        mode = self.resolved_classifier()
+        if mode == "rules":
+            decision = rule_classify(
+                piece,
+                vlm_available=self.vlm_available(),
+                organic_variant=self.organic_variant,
+            )
+            rules = asdict(decision)
+            if decision.route != ROUTE_VLM:
+                info: dict[str, Any] = {
+                    "csv_rectilinear": piece.rectilinear,
+                    "rectilinear": decision.route == "E",
+                    "motivo": decision.reason,
+                    "source": "rules",
+                    "rule": rules,
+                    "thin": decision.thin,
+                    "cost_usd": 0.0,
+                }
+                return decision.route, info
+            info = {**self.classify(piece), "rule": rules, "thin": decision.thin}
+        else:
+            info = {**self.classify(piece), "thin": is_thin(piece)}
+        info["classifier"] = mode
+        return ("E" if info["rectilinear"] else self.organic_route(piece)), info
 
     def run(self, piece: Piece, workdir: Path, candidates: int = 2) -> VariantResult:
         workdir = Path(workdir)
-        router = self.classify(piece)
-        route = "E" if router["rectilinear"] else self.organic_route(piece)
+        route, router = self.decide(piece)
+        router.setdefault("classifier", "rules")
         fallback: str | None = None
 
         try:
@@ -160,8 +266,11 @@ class RouterVariant:
                 )
             )
 
-        kind = "rectilínea" if router["rectilinear"] else "orgánica"
-        parts = [f"VLM ({router['source']}): {kind} → ruta {route}"]
+        if router["source"] == "rules":
+            parts = [f"Reglas: {router['motivo']} → ruta {route}"]
+        else:
+            kind = "rectilínea" if router["rectilinear"] else "orgánica"
+            parts = [f"VLM ({router['source']}): {kind} → ruta {route}"]
         if fallback:
             parts.append(fallback)
         if result.notes:

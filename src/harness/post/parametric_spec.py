@@ -19,8 +19,16 @@ from typing import Any, Literal
 
 from harness.core.models import Piece
 
-Kind = Literal["table", "panel_table", "shelf", "sideboard", "slab", "box"]
-KINDS: tuple[str, ...] = ("table", "panel_table", "shelf", "sideboard", "slab", "box")
+Kind = Literal["table", "panel_table", "shelf", "sideboard", "slab", "box", "box_legs"]
+KINDS: tuple[str, ...] = (
+    "table",
+    "panel_table",
+    "shelf",
+    "sideboard",
+    "slab",
+    "box",
+    "box_legs",
+)
 SPEC_VERSION = 1
 
 # Default construction dimensions (cm).
@@ -49,6 +57,29 @@ PANEL_TABLE_PARAMS: tuple[str, ...] = (
     "panel_pair_shape",
     "shelf_height_cm",
 )
+# box_legs: a closed body on four square legs (p03 shoe cabinet) and/or on a recessed
+# plinth (p08 bedside table). Legs are used when ``leg_height_cm`` is given or no plinth is;
+# with both, the plinth stands on the legs. ``leg_inset_cm`` = body edge → outer leg face.
+BOX_LEG_HEIGHT = 10.0
+BOX_LEG_SIZE = 5.0
+BOX_LEG_INSET = 3.0
+BOX_PLINTH_HEIGHT = 5.0  # only used when the text says "zócalo" without a height
+BOX_PLINTH_INSET = 2.0
+BOX_BASE_MAX_RATIO = 0.5  # legs + plinth never take more than half the height
+# ``side_edge`` (fraction of the photo width, optional): the body's sides and top sample
+# the photo's left ``side_edge`` columns (the solid frame stile) instead of the whole
+# front, so drawers are not repeated on the sides. Unset = straight projection.
+BOX_LEGS_PARAMS: tuple[str, ...] = (
+    "leg_height_cm",
+    "leg_size_cm",
+    "leg_inset_cm",
+    "plinth_height_cm",
+    "plinth_inset_cm",
+    "side_edge",
+)
+# Checked AFTER ``KEYWORDS`` (a "mesa con patas" stays a table): base words → box_legs.
+BOX_LEGS_WORDS: tuple[str, ...] = ("pata",)
+BOX_PLINTH_WORDS: tuple[str, ...] = ("zocalo",)
 
 # Spanish keywords (accent-free, lowercase). The earliest match in the text wins, so
 # "mesa con tablero de travertino" is a table and "tablero para mesa" is a slab.
@@ -168,18 +199,45 @@ def classify_text(text: str) -> str | None:
     return best[1] if best else None
 
 
-def classify(piece: Piece) -> Kind:
-    """Heuristic kind: description keywords first, then name, then proportions."""
-    for text in (piece.description, piece.name):
-        kind = classify_text(text or "")
+def base_params_from_text(text: str) -> dict[str, Any] | None:
+    """box_legs params implied by ``text``: "zócalo" → plinth (plus default legs if "patas"
+    is also there), "patas" → legs; None when neither word appears."""
+    norm = _normalise(text)
+    legs = any(_has_word(norm, w) for w in BOX_LEGS_WORDS)
+    plinth = any(_has_word(norm, w) for w in BOX_PLINTH_WORDS)
+    if not legs and not plinth:
+        return None
+    params: dict[str, Any] = {}
+    if plinth:
+        params["plinth_height_cm"] = BOX_PLINTH_HEIGHT
+    if legs and plinth:
+        params["leg_height_cm"] = BOX_LEG_HEIGHT
+    return params
+
+
+def classify_with_params(piece: Piece) -> tuple[Kind, dict[str, Any]]:
+    """Heuristic ``(kind, params)``: description keywords first, then name, then the base
+    words ("patas" / "zócalo" → ``box_legs``), then proportions."""
+    texts = (piece.description or "", piece.name or "")
+    for text in texts:
+        kind = classify_text(text)
         if kind is not None:
-            return kind  # type: ignore[return-value]
+            return kind, {}  # type: ignore[return-value]
+    for text in texts:
+        params = base_params_from_text(text)
+        if params is not None:
+            return "box_legs", params
     w, h, d = piece.width_cm, piece.height_cm, piece.depth_cm
     if h <= SLAB_MAX_HEIGHT_RATIO * max(w, d):
-        return "slab"
+        return "slab", {}
     if h >= SHELF_MIN_HEIGHT_RATIO * w and d <= SHELF_MAX_DEPTH:
-        return "shelf"
-    return "box"
+        return "shelf", {}
+    return "box", {}
+
+
+def classify(piece: Piece) -> Kind:
+    """Heuristic kind (see :func:`classify_with_params`)."""
+    return classify_with_params(piece)[0]
 
 
 def _legs(
@@ -299,16 +357,72 @@ def _panel_table(w: float, d: float, h: float, params: dict[str, Any] | None) ->
     return boxes
 
 
+def box_legs_params(params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolved box_legs parameters; rejects unknown keys. ``leg_height_cm`` is None when
+    the piece has no legs (a plinth only), ``plinth_height_cm`` None without plinth."""
+    params = dict(params or {})
+    unknown = sorted(set(params) - set(BOX_LEGS_PARAMS))
+    if unknown:
+        raise ValueError(f"box_legs: parámetros desconocidos {unknown}")
+    plinth = params.get("plinth_height_cm")
+    leg = params.get("leg_height_cm", None if plinth is not None else BOX_LEG_HEIGHT)
+    out = {
+        "leg_height_cm": float(leg) if leg is not None else None,
+        "leg_size_cm": float(params.get("leg_size_cm", BOX_LEG_SIZE)),
+        "leg_inset_cm": float(params.get("leg_inset_cm", BOX_LEG_INSET)),
+        "plinth_height_cm": float(plinth) if plinth is not None else None,
+        "plinth_inset_cm": float(params.get("plinth_inset_cm", BOX_PLINTH_INSET)),
+        "side_edge": float(params["side_edge"]) if "side_edge" in params else None,
+    }
+    if out["side_edge"] is not None and not 0.0 < out["side_edge"] <= 1.0:
+        raise ValueError(f"box_legs: side_edge debe estar en (0, 1] ({out['side_edge']})")
+    for key, value in out.items():
+        if value is not None and value < 0:
+            raise ValueError(f"box_legs: {key} no puede ser negativo ({value})")
+    return out
+
+
+def _box_legs(w: float, d: float, h: float, params: dict[str, Any] | None) -> list[Box]:
+    p = box_legs_params(params)
+    leg_h = p["leg_height_cm"] or 0.0
+    plinth_h = p["plinth_height_cm"] or 0.0
+    base_max = BOX_BASE_MAX_RATIO * h
+    if leg_h + plinth_h > base_max:  # scale the base down on very low pieces
+        scale = base_max / (leg_h + plinth_h)
+        leg_h, plinth_h = leg_h * scale, plinth_h * scale
+    base_h = leg_h + plinth_h
+    body_h = h - base_h
+    boxes = [Box("body", (w, d, body_h), (0.0, 0.0, base_h + body_h / 2))]
+    if plinth_h > 0:
+        inset = min(max(p["plinth_inset_cm"], 0.0), w / 4, d / 4)
+        boxes.append(
+            Box(
+                "plinth",
+                (w - 2 * inset, d - 2 * inset, plinth_h),
+                (0.0, 0.0, leg_h + plinth_h / 2),
+            )
+        )
+    if leg_h > 0:
+        side = min(max(p["leg_size_cm"], 0.1), w / 2, d / 2)
+        # Legs under a plinth sit under the plinth's footprint.
+        ref_w = boxes[-1].size_cm[0] if plinth_h > 0 else w
+        ref_d = boxes[-1].size_cm[1] if plinth_h > 0 else d
+        boxes.extend(_legs(ref_w, ref_d, leg_h, side, p["leg_inset_cm"]))
+    return boxes
+
+
 def build_spec(piece: Piece, kind: str, params: dict[str, Any] | None = None) -> list[Box]:
     """Boxes (cm) for ``piece`` built as ``kind``; their union bbox equals the piece's dims.
 
-    ``params`` only applies to ``panel_table`` (see :data:`PANEL_TABLE_PARAMS`); other kinds
-    reject non-empty params."""
+    ``params`` only applies to ``panel_table`` (see :data:`PANEL_TABLE_PARAMS`) and
+    ``box_legs`` (see :data:`BOX_LEGS_PARAMS`); other kinds reject non-empty params."""
     w, h, d = float(piece.width_cm), float(piece.height_cm), float(piece.depth_cm)
-    if params and kind != "panel_table":
+    if params and kind not in ("panel_table", "box_legs"):
         raise ValueError(f"El tipo {kind!r} no admite parámetros ({sorted(params)})")
     if kind == "panel_table":
         return _panel_table(w, d, h, params)
+    if kind == "box_legs":
+        return _box_legs(w, d, h, params)
     if kind == "table":
         return _table(w, d, h)
     if kind == "shelf":
@@ -358,6 +472,12 @@ def bounding_box(boxes: list[Box]) -> tuple[tuple[float, ...], tuple[float, ...]
     return mins, maxs
 
 
+def _straight_v(box: Box, h: float) -> tuple[float, float]:
+    """Photo rows of ``box`` under the straight projection (v = z / height)."""
+    z0 = box.pos_cm[2] - box.size_cm[2] / 2
+    return (z0 / h, (z0 + box.size_cm[2]) / h)
+
+
 def make_spec(
     piece: Piece,
     kind: str,
@@ -366,7 +486,9 @@ def make_spec(
     photo_regions: dict[str, Any] | None = None,
 ) -> Spec:
     """``photo_regions`` (``{"top_row": f, "side_band": [u0, u1]}``, from the cleaned photo)
-    is only used by ``panel_table``: per-box ``uv_v`` and ``extra["side_band"]``."""
+    is only used by ``panel_table``: per-box ``uv_v`` and ``extra["side_band"]``.
+    ``box_legs`` with ``side_edge`` hints its body (same rows as the straight projection)
+    and sets ``extra["side_band"] = [0, side_edge]``."""
     extra: dict[str, Any] = {"piece_id": piece.id}
     if params:
         extra["params"] = dict(params)
@@ -375,6 +497,15 @@ def make_spec(
         boxes = with_photo_regions(boxes, photo_regions.get("top_row"))
         if photo_regions.get("side_band") is not None:
             extra["side_band"] = [float(v) for v in photo_regions["side_band"]]
+    if kind == "box_legs":
+        edge = box_legs_params(params)["side_edge"]
+        if edge is not None:
+            h = float(piece.height_cm)
+            boxes = [
+                Box(b.name, b.size_cm, b.pos_cm, _straight_v(b, h)) if b.name == "body" else b
+                for b in boxes
+            ]
+            extra["side_band"] = [0.0, edge]
     return Spec(
         kind=kind,
         boxes=boxes,

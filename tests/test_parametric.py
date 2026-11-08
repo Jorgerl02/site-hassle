@@ -24,6 +24,7 @@ from harness.post.parametric_spec import (
     build_spec,
     classify,
     classify_text,
+    classify_with_params,
     make_spec,
     read_spec,
     write_spec,
@@ -721,3 +722,113 @@ def test_variant_records_override_in_meta(
     assert spec.kind == "panel_table"
     assert {b.name for b in spec.boxes} == {"top", "panel_l", "panel_r", "shelf"}
     assert "override" in result.notes
+
+
+# ---------------------------------------------------------------- box_legs
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        None,
+        {"leg_height_cm": 10, "leg_inset_cm": 7},
+        {"plinth_height_cm": 5, "plinth_inset_cm": 2},
+        {"leg_height_cm": 4, "plinth_height_cm": 5},
+        {"leg_height_cm": 80, "plinth_height_cm": 80},  # clamped to half the height
+    ],
+)
+@pytest.mark.parametrize("dims", [(110, 106, 35), (52, 50, 36), (200, 3, 90), (20, 20, 20)])
+def test_box_legs_bbox_exact(tmp_path: Path, params, dims) -> None:
+    w, h, d = dims
+    boxes = build_spec(make_piece(tmp_path, w, h, d), "box_legs", params)
+    mins, maxs = bounding_box(boxes)
+    assert mins == pytest.approx((-w / 2, -d / 2, 0.0))
+    assert maxs == pytest.approx((w / 2, d / 2, h))
+    assert all(s > 0 for b in boxes for s in b.size_cm)
+
+
+def test_box_legs_with_legs_p03(tmp_path: Path) -> None:
+    boxes = {b.name: b for b in build_spec(make_piece(tmp_path, 110, 106, 35), "box_legs")}
+    assert set(boxes) == {"body", "leg_fl", "leg_fr", "leg_bl", "leg_br"}
+    assert boxes["body"] == Box("body", (110.0, 35.0, 96.0), (0.0, 0.0, 58.0))
+    # defaults: 10 cm high, 5 cm square, 3 cm from the body edge to the outer face
+    assert boxes["leg_fl"] == Box("leg_fl", (5.0, 5.0, 10.0), (-49.5, -12.0, 5.0))
+    assert boxes["leg_br"].pos_cm == (49.5, 12.0, 5.0)
+
+
+def test_box_legs_with_plinth_p08(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 52, 50, 36)
+    boxes = {b.name: b for b in build_spec(piece, "box_legs", {"plinth_height_cm": 5})}
+    assert set(boxes) == {"body", "plinth"}  # no legs without leg_height_cm
+    assert boxes["body"] == Box("body", (52.0, 36.0, 45.0), (0.0, 0.0, 27.5))
+    assert boxes["plinth"] == Box("plinth", (48.0, 32.0, 5.0), (0.0, 0.0, 2.5))
+
+
+def test_box_legs_plinth_on_legs(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 52, 50, 36)
+    boxes = {
+        b.name: b
+        for b in build_spec(piece, "box_legs", {"leg_height_cm": 4, "plinth_height_cm": 5})
+    }
+    assert boxes["plinth"].pos_cm[2] == pytest.approx(6.5)
+    assert boxes["body"].pos_cm[2] - boxes["body"].size_cm[2] / 2 == pytest.approx(9.0)
+    assert sum(n.startswith("leg") for n in boxes) == 4
+
+
+@pytest.mark.parametrize("params", [{"panel_layout": "sides"}, {"leg_height_cm": -1}])
+def test_box_legs_rejects_bad_params(piece: Piece, params) -> None:
+    with pytest.raises(ValueError, match="box_legs"):
+        build_spec(piece, "box_legs", params)
+
+
+@pytest.mark.parametrize(
+    ("description", "kind", "params"),
+    [
+        ("Zapatero de madera maciza con patas", "box_legs", {}),
+        ("Mueble de mango sobre zócalo", "box_legs", {"plinth_height_cm": 5.0}),
+        ("Mueble con zócalo y patas", "box_legs", {"plinth_height_cm": 5.0, "leg_height_cm": 10.0}),
+        ("Mesa de roble con patas", "table", {}),  # a kind keyword wins
+        ("Zapatero de madera maciza", "box", {}),  # no keyword: box as before
+    ],
+)
+def test_classify_box_legs(tmp_path: Path, description: str, kind: str, params) -> None:
+    piece = make_piece(tmp_path, 110, 106, 35, description)
+    assert classify_with_params(piece) == (kind, params)
+    assert classify(piece) == kind
+    assert "box_legs" in KINDS
+
+
+def test_resolve_kind_box_legs_from_text_and_file(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 52, 50, 36, "Mueble sobre zócalo")
+    no_file = ParametricVariant(overrides_path=tmp_path / "none.json")
+    assert no_file.resolve_kind(piece) == ("box_legs", "classify", {"plinth_height_cm": 5.0})
+    path = tmp_path / "o.json"
+    path.write_text('{"p99": {"kind": "box_legs", "leg_height_cm": 10}}', encoding="utf-8")
+    assert ParametricVariant(overrides_path=path).resolve_kind(piece) == (
+        "box_legs",
+        "override",
+        {"leg_height_cm": 10},
+    )
+
+
+def test_repo_overrides_p03_legs_p08_plinth() -> None:
+    repo = Path(__file__).resolve().parent.parent / "data" / "parametric_overrides.json"
+    overrides = load_overrides(repo)
+    assert overrides["p03"]["kind"] == "box_legs"
+    assert overrides["p03"]["leg_height_cm"] == 10
+    assert "plinth_height_cm" not in overrides["p03"]
+    assert overrides["p08"]["kind"] == "box_legs"
+    assert overrides["p08"]["plinth_height_cm"] == 5
+
+
+def test_box_legs_side_edge_hints_body(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 52, 50, 36)
+    spec = make_spec(piece, "box_legs", params={"plinth_height_cm": 5, "side_edge": 0.05})
+    boxes = {b.name: b for b in spec.boxes}
+    assert spec.extra["side_band"] == [0.0, 0.05]
+    assert boxes["body"].uv_v == pytest.approx((0.1, 1.0))  # = the straight projection
+    assert boxes["plinth"].uv_v is None
+    plain = make_spec(piece, "box_legs", params={"plinth_height_cm": 5})
+    assert "side_band" not in plain.extra and all(b.uv_v is None for b in plain.boxes)
+    with pytest.raises(ValueError, match="side_edge"):
+        build_spec(piece, "box_legs", {"side_edge": 0})

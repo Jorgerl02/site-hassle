@@ -1,7 +1,11 @@
 {
-  "_comment": "Variante E: tipo paramétrico por pieza (+ parámetros de panel_table). Ver harness/variants/e_parametric.py",
+  "_comment": "Variante E: tipo paramétrico por pieza (+ parámetros de panel_table y box_legs). Ver harness/variants/e_parametric.py",
   "p03": {
-    "kind": "box"
+    "kind": "box_legs",
+    "leg_height_cm": 10,
+    "leg_size_cm": 4,
+    "leg_inset_cm": 7,
+    "side_edge": 0.012
   },
   "p04": {
     "kind": "panel_table",
@@ -20,6 +24,9 @@
     "panel_inset": 0
   },
   "p08": {
-    "kind": "box"
+    "kind": "box_legs",
+    "plinth_height_cm": 5,
+    "plinth_inset_cm": 3,
+    "side_edge": 0.05
   }
 }

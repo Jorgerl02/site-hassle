@@ -203,10 +203,11 @@ class ParametricVariant:
         self.overrides_path = overrides_path
 
     def resolve_kind(self, piece: Piece) -> tuple[str, str, dict[str, Any]]:
-        """``(kind, source, params)``: ``kind_overrides`` > overrides JSON > :func:`classify`.
+        """``(kind, source, params)``: ``kind_overrides`` > overrides JSON >
+        :func:`~harness.post.parametric_spec.classify_with_params`.
 
         Params from the JSON apply only when its kind is the one finally chosen (or it
-        names no kind)."""
+        names no kind); a classified ``box_legs`` also carries the params its text implies."""
         entry = dict(
             load_overrides(self.overrides_path).get(piece.id, {})
             if self.overrides_path is not None
@@ -218,7 +219,9 @@ class ParametricVariant:
         elif file_kind is not None:
             kind, source = file_kind, "override"
         else:
-            kind, source = parametric_spec.classify(piece), "classify"
+            kind, implied = parametric_spec.classify_with_params(piece)
+            # Params implied by the text ("zócalo" → plinth) under any params from the file.
+            return kind, "classify", {**implied, **entry}
         params = entry if file_kind in (None, kind) else {}
         return kind, source, params
 
