@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from harness.core import config
 from harness.core.models import CSV_COLUMNS, Piece
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -12,10 +13,11 @@ ENV_KEYS = ("TRIPO_API_KEY", "MESHY_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_K
 
 
 @pytest.fixture(autouse=True)
-def _offline_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tests never see real keys or a real Blender."""
+def _offline_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Tests never see real keys or a real Blender, not even from the repo's .env."""
     for key in ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(config, "DEFAULT_ENV_FILE", tmp_path / "no-such.env")
 
 
 @pytest.fixture

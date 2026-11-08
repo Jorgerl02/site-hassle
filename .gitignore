@@ -9,3 +9,4 @@ data/images/
 *.egg-info/
 .DS_Store
 outputs/clean/
+renders/

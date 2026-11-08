@@ -9,6 +9,7 @@ from dotenv import dotenv_values
 from pydantic import BaseModel
 
 DEFAULT_ENV_FILE = Path(".env")
+_UNSET = object()
 
 
 class MissingKeyError(RuntimeError):
@@ -23,7 +24,9 @@ class Settings(BaseModel):
     blender_bin: Path | None = None
 
     @classmethod
-    def load(cls, env_file: Path | None = DEFAULT_ENV_FILE) -> Settings:
+    def load(cls, env_file: Path | None | object = _UNSET) -> Settings:
+        if env_file is _UNSET:
+            env_file = DEFAULT_ENV_FILE  # resolved at call time so tests can redirect it
         values: dict[str, str | None] = {}
         if env_file is not None and Path(env_file).exists():
             values.update(dotenv_values(env_file))
