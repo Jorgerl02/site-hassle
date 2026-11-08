@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raw Jarrón Gres · 3D</title>
+<script type="module" src="https://unpkg.com/@google/model-viewer@4.4.0/dist/model-viewer.min.js"></script>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f5f2; --fg: #1d1d1b; --muted: #6b6a66; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #f1f0ec; --muted: #a3a29d; } }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { display: flex; flex-direction: column; height: 100%; }
+  header { padding: 16px 16px 8px; }
+  h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+  p { margin: 4px 0 0; color: var(--muted); font-size: 0.9rem; }
+  model-viewer { flex: 1; width: 100%; min-height: 320px; background: transparent; }
+  .ar-button { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+    padding: 12px 20px; border: 0; border-radius: 999px; background: var(--fg); color: var(--bg);
+    font: inherit; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Raw Jarrón Gres</h1>
+    <p>Ancho 12,5 × alto 20 × fondo 12 cm</p>
+  </header>
+  <model-viewer
+    src="model_web.glb"
+    ios-src="model.usdz"
+    alt="Modelo 3D de Raw Jarrón Gres"
+    ar
+    ar-modes="webxr scene-viewer quick-look"
+    ar-scale="fixed"
+    ar-placement="floor"
+    camera-controls
+    touch-action="pan-y"
+    shadow-intensity="1">
+    <button slot="ar-button" class="ar-button">Ver en tu espacio</button>
+  </model-viewer>
+</main>
+</body>
+</html>

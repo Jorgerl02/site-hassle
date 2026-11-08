@@ -1,0 +1,64 @@
+{
+  "glb_in": "runs/mcp-higgsfield/p05/MG_TRELLIS2/cand_1/model_post.glb",
+  "glb_out": "outputs/deliver/p05/model_web.glb",
+  "usdz_out": "outputs/deliver/p05/model.usdz",
+  "glb_in_bytes": 2838428,
+  "glb_bytes": 735472,
+  "usdz_bytes": 3596963,
+  "usdz_error": null,
+  "tris_before": 95118,
+  "tris_after": 58798,
+  "max_tris": 60000,
+  "max_tex": 2048,
+  "jpeg_quality": 85,
+  "draco": true,
+  "draco_level": 6,
+  "textures": [
+    {
+      "name": "Image_0",
+      "source_format": "WEBP",
+      "before": [
+        2048,
+        2048
+      ],
+      "after": [
+        2048,
+        2048
+      ],
+      "alpha": false,
+      "format": "JPEG",
+      "encoded_bytes": 514766
+    },
+    {
+      "name": "Image_1",
+      "source_format": "WEBP",
+      "before": [
+        2048,
+        2048
+      ],
+      "after": [
+        2048,
+        2048
+      ],
+      "alpha": false,
+      "format": "JPEG",
+      "encoded_bytes": 37604
+    }
+  ],
+  "blender_version": "5.2.3 LTS",
+  "seconds": 4.2554573329980485,
+  "piece_id": "p05",
+  "size_limit_bytes": 5000000,
+  "within_limit": true,
+  "attempts": [
+    {
+      "max_tris": 60000,
+      "max_tex": 2048,
+      "glb_bytes": 735472,
+      "usdz_bytes": 3596963,
+      "tris_after": 58798
+    }
+  ],
+  "viewer": "viewer.html",
+  "model_viewer_version": "4.4.0"
+}
