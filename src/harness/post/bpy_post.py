@@ -1,15 +1,24 @@
 """Post-processing executed INSIDE Blender (4.x):
 
     BLENDER_BIN --background --python bpy_post.py -- --in IN.glb --out OUT.glb --meta META.json
-        --width W --height H --depth D [--max-tris 150000] [--max-tex 2048] [--draco-level 6]
+        --width W --height H --depth D [--max-tris 150000] [--max-tex 2048]
+        [--draco] [--draco-level 6]
 
-Steps: import GLB → bake transforms and join meshes → uniform scale so the bounding box on
-the piece's largest axis equals its target measurement → signed relative error per axis →
-origin at the centre of the base (min Z) placed at world origin → Decimate to ≤ max-tris
-triangles → clamp textures to ≤ max-tex px → export GLB with Draco → write META.json.
+Steps: import GLB → bake transforms and join meshes → uniform scale by
+max(target) / max(raw extent) over all three axes (independent of the model's orientation)
+→ origin at the centre of the base (min Z) placed at world origin → Decimate to ≤ max-tris
+triangles → clamp textures to ≤ max-tex px → measure the final geometry (``errors`` follow
+the axis-matching rule below, ``errors_axis`` compares named axes as is) → export GLB
+(Draco only with ``--draco``; off by default because trimesh cannot decode it) → META.json.
 
 Axis mapping (glTF Y-up is converted to Blender Z-up on import): X = width, Y = depth,
 Z = height. Units: glTF metres, targets in cm.
+
+Axis-matching rule for ``errors`` (shared with the evaluation, Task 6): HEIGHT is the
+vertical extent (glTF +Y = Blender Z) compared with ``height_cm``; the two horizontal
+extents are paired with ``width_cm``/``depth_cm`` by sorted size (forgives a rotation about
+the vertical axis, catches a piece lying on its side). The scale factor is
+``max(target_cm) / max(raw_cm)`` over all three axes.
 
 ``bpy`` is imported lazily so that the argument parser can be unit-tested outside Blender.
 Blender docs consulted: https://docs.blender.org/api/4.5/ (bpy.ops.import_scene.gltf,
@@ -44,13 +53,38 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--depth", type=float, required=True)
     parser.add_argument("--max-tris", dest="max_tris", type=int, default=DEFAULT_MAX_TRIS)
     parser.add_argument("--max-tex", dest="max_tex", type=int, default=DEFAULT_MAX_TEX)
+    parser.add_argument("--draco", action="store_true", help="Draco mesh compression (off)")
     parser.add_argument("--draco-level", dest="draco_level", type=int, default=DEFAULT_DRACO_LEVEL)
     return parser.parse_args(argv)
 
 
 def relative_errors(measured_cm: dict[str, float], target_cm: dict[str, float]) -> dict[str, float]:
-    """Signed ``(measured - target) / target`` per axis."""
+    """Signed ``(measured - target) / target`` per NAMED axis (assumes aligned axes)."""
     return {k: (measured_cm[k] - target_cm[k]) / target_cm[k] for k in target_cm}
+
+
+def matched_errors(measured_cm: dict[str, float], target_cm: dict[str, float]) -> dict[str, float]:
+    """Signed errors keyed width/height/depth using the harness axis-matching rule.
+
+    HEIGHT is the vertical extent (glTF +Y, Blender Z after import) compared with
+    ``height_cm`` as is. The two horizontal extents (glTF X/Z, Blender X/Y) are paired with
+    ``width_cm``/``depth_cm`` by sorted size, which forgives a rotation about the vertical
+    axis but still flags a piece lying on its side. Same rule as the evaluation (Task 6).
+    """
+    errors = {"height": (measured_cm["height"] - target_cm["height"]) / target_cm["height"]}
+    horizontal = sorted((measured_cm["width"], measured_cm["depth"]), reverse=True)
+    targets = sorted(("width", "depth"), key=lambda k: target_cm[k], reverse=True)
+    for name, extent in zip(targets, horizontal, strict=True):
+        errors[name] = (extent - target_cm[name]) / target_cm[name]
+    return errors
+
+
+def uniform_scale_factor(raw_cm: dict[str, float], target_cm: dict[str, float]) -> float:
+    """``max(target) / max(raw extent)`` over all three axes (rotation-independent)."""
+    longest = max(raw_cm.values())
+    if longest <= 0:
+        raise ValueError("Caja envolvente degenerada")
+    return max(target_cm.values()) / longest
 
 
 def clamp_size(width: int, height: int, max_px: int) -> tuple[int, int]:
@@ -66,8 +100,8 @@ def clamp_size(width: int, height: int, max_px: int) -> tuple[int, int]:
 
 
 def _clear_scene(bpy) -> None:
-    bpy.ops.object.select_all(action="SELECT")
-    bpy.ops.object.delete()
+    for obj in list(bpy.data.objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
 
 
 def _join_meshes(bpy, Matrix):  # noqa: N803 — mathutils class passed in
@@ -96,6 +130,11 @@ def _join_meshes(bpy, Matrix):  # noqa: N803 — mathutils class passed in
 def _bbox(obj):
     xs, ys, zs = zip(*(v.co[:] for v in obj.data.vertices), strict=True)
     return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
+
+
+def _extents_cm(obj) -> dict[str, float]:
+    (x0, y0, z0), (x1, y1, z1) = _bbox(obj)
+    return {"width": (x1 - x0) * 100, "depth": (y1 - y0) * 100, "height": (z1 - z0) * 100}
 
 
 def _tri_count(obj) -> int:
@@ -145,32 +184,29 @@ def main(argv: list[str]) -> int:
     tris_before = _tri_count(obj)
 
     (x0, y0, z0), (x1, y1, z1) = _bbox(obj)
-    raw_cm = {"width": (x1 - x0) * 100, "depth": (y1 - y0) * 100, "height": (z1 - z0) * 100}
-    main_axis = max(target, key=target.get)
-    if raw_cm[main_axis] <= 0:
-        raise RuntimeError(f"Caja envolvente degenerada en el eje {main_axis}")
-    factor = target[main_axis] / raw_cm[main_axis]
+    raw_cm = _extents_cm(obj)
+    factor = uniform_scale_factor(raw_cm, target)
 
     # Scale about the base centre, then move that point to the world origin.
     base = ((x0 + x1) / 2, (y0 + y1) / 2, z0)
     obj.data.transform(Matrix.Scale(factor, 4) @ Matrix.Translation([-c for c in base]))
     obj.data.update()
 
-    (x0, y0, z0), (x1, y1, z1) = _bbox(obj)
-    measured_cm = {"width": (x1 - x0) * 100, "depth": (y1 - y0) * 100, "height": (z1 - z0) * 100}
-    errors = relative_errors(measured_cm, target)
-
     tris_after = _decimate(bpy, obj, args.max_tris)
     textures = _clamp_textures(bpy, args.max_tex)
 
-    bpy.ops.object.select_all(action="SELECT")
+    # Measured on the final (decimated) geometry that is exported.
+    measured_cm = _extents_cm(obj)
+    errors = matched_errors(measured_cm, target)
+    errors_axis = relative_errors(measured_cm, target)
+
     bpy.ops.export_scene.gltf(
         filepath=args.glb_out,
         export_format="GLB",
         use_selection=False,
         export_apply=True,
         export_yup=True,
-        export_draco_mesh_compression_enable=True,
+        export_draco_mesh_compression_enable=bool(args.draco),
         export_draco_mesh_compression_level=args.draco_level,
     )
 
@@ -180,14 +216,16 @@ def main(argv: list[str]) -> int:
         "target_cm": target,
         "raw_cm": raw_cm,
         "measured_cm": measured_cm,
-        "scale_axis": main_axis,
+        "scale_rule": "max(target_cm) / max(raw_cm)",
         "scale_factor": factor,
+        "errors_rule": "height = vertical extent; width/depth = horizontal extents by size",
         "errors": errors,
+        "errors_axis": errors_axis,
         "tris_before": tris_before,
         "tris_after": tris_after,
         "max_tris": args.max_tris,
         "textures": textures,
-        "draco": True,
+        "draco": bool(args.draco),
         "blender_version": bpy.app.version_string,
         "seconds": time.monotonic() - start,
     }

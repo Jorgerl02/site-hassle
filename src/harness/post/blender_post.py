@@ -32,12 +32,16 @@ class BlenderPostError(RuntimeError):
 class PostResult:
     glb_path: Path
     meta_path: Path
-    errors: dict[str, float]  # signed relative error per axis: width, height, depth
+    # Signed relative error keyed width/height/depth: height = vertical extent, width/depth
+    # = horizontal extents paired by size (same rule as the evaluation; see bpy_post).
+    errors: dict[str, float]
     tris_before: int
     tris_after: int
     textures: list[dict[str, Any]]
     seconds: float
     scale_factor: float | None = None
+    errors_axis: dict[str, float] = field(default_factory=dict)  # per named axis
+    draco: bool = False
     log: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -58,9 +62,10 @@ def build_args(
     *,
     max_tris: int = MAX_TRIS,
     max_texture_px: int = MAX_TEXTURE_PX,
+    draco: bool = False,
 ) -> list[str]:
     """Arguments passed to ``bpy_post.py`` after ``--``."""
-    return [
+    args = [
         "--in", str(glb_in),
         "--out", str(glb_out),
         "--meta", str(meta_path),
@@ -70,6 +75,9 @@ def build_args(
         "--max-tris", str(max_tris),
         "--max-tex", str(max_texture_px),
     ]  # fmt: skip
+    if draco:
+        args.append("--draco")
+    return args
 
 
 def parse_post_meta(meta_path: Path, glb_out: Path, log: str = "") -> PostResult:
@@ -89,6 +97,8 @@ def parse_post_meta(meta_path: Path, glb_out: Path, log: str = "") -> PostResult
             scale_factor=(
                 float(data["scale_factor"]) if data.get("scale_factor") is not None else None
             ),
+            errors_axis={k: float(v) for k, v in (data.get("errors_axis") or {}).items()},
+            draco=bool(data.get("draco", False)),
             log=log,
             raw=data,
         )
@@ -111,8 +121,12 @@ def postprocess(
     blender_bin: Path | None = None,
     max_tris: int = MAX_TRIS,
     max_texture_px: int = MAX_TEXTURE_PX,
+    draco: bool = False,
 ) -> PostResult:
-    """Scale/centre/decimate/compress ``glb_in`` into ``glb_out`` (Draco GLB).
+    """Scale/centre/decimate ``glb_in`` into ``glb_out``.
+
+    ``draco`` is off by default: trimesh (used by the evaluation) cannot decode
+    ``KHR_draco_mesh_compression``.
 
     Writes ``post_meta.json`` and ``post_blender.log`` next to ``glb_out``. Raises
     ``BlenderNotAvailable`` without a binary, ``subprocess.TimeoutExpired`` on timeout and
@@ -123,11 +137,13 @@ def postprocess(
         raise FileNotFoundError(f"No existe el GLB de entrada: {glb_in}")
     glb_out.parent.mkdir(parents=True, exist_ok=True)
     meta_path = glb_out.parent / POST_META_FILENAME
-    meta_path.unlink(missing_ok=True)  # never parse a stale meta from a previous run
+    meta_path.unlink(missing_ok=True)  # never parse stale outputs from a previous run
+    glb_out.unlink(missing_ok=True)
 
     args = build_args(
-        glb_in, glb_out, meta_path, piece, max_tris=max_tris, max_texture_px=max_texture_px
-    )
+        glb_in, glb_out, meta_path, piece,
+        max_tris=max_tris, max_texture_px=max_texture_px, draco=draco,
+    )  # fmt: skip
     run = run_blender_script(BPY_POST_SCRIPT, args, timeout=timeout, blender_bin=blender_bin)
     log = _log_text(run)
     (glb_out.parent / POST_LOG_FILENAME).write_text(log, encoding="utf-8")

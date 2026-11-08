@@ -1,5 +1,12 @@
+"""Parametric spec and variant E tests.
+
+The real-Blender test is opt-in: set ``HARNESS_BLENDER_TEST_BIN=/path/to/blender`` (the
+autouse fixture in conftest removes ``BLENDER_BIN``); it skips when unset.
+"""
+
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -7,7 +14,6 @@ import pytest
 from PIL import Image
 
 from harness.core.blender import BlenderNotAvailable, BlenderRun
-from harness.core.config import Settings
 from harness.core.models import Piece
 from harness.post import bpy_parametric
 from harness.post.parametric_spec import (
@@ -23,7 +29,11 @@ from harness.post.parametric_spec import (
 )
 from harness.prep import clean
 from harness.variants import e_parametric
-from harness.variants.e_parametric import ParametricBuildError, ParametricVariant
+from harness.variants.e_parametric import (
+    ParametricBuildError,
+    ParametricVariant,
+    crop_to_content,
+)
 
 
 def make_piece(
@@ -209,7 +219,9 @@ def _setup_fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, returncode: int
     calls: list[dict] = []
 
     def fake_clean(src: Path, dst: Path, size: int = 1024) -> Path:
-        Image.new("RGB", (8, 8), "white").save(dst)
+        img = Image.new("RGB", (100, 100), "white")
+        img.paste((120, 80, 40), (10, 20, 90, 70))
+        img.save(dst)
         return dst
 
     def fake_run(script: Path, args: list[str], timeout: int = 600, blender_bin=None):
@@ -243,6 +255,8 @@ def test_variant_builds_one_candidate(
     assert calls[0]["blender_bin"] == binary
     spec = read_spec(Path(calls[0]["args"][calls[0]["args"].index("--spec") + 1]))
     assert spec.kind == "table" and Path(spec.texture).is_file()
+    with Image.open(spec.texture) as tex:
+        assert tex.size == (80, 50)  # cropped to the object, no white padding
     assert "table" in result.notes
 
 
@@ -268,10 +282,53 @@ def test_variant_blender_failure_raises_with_log(
     assert (tmp_path / "E" / "cand_1" / "parametric_blender.log").is_file()
 
 
+def _has_white_border(img: Image.Image) -> bool:
+    w, h = img.size
+    px = img.convert("RGB").load()
+    edges = [
+        [px[x, 0] for x in range(w)],
+        [px[x, h - 1] for x in range(w)],
+        [px[0, y] for y in range(h)],
+        [px[w - 1, y] for y in range(h)],
+    ]
+    return any(all(p == (255, 255, 255) for p in edge) for edge in edges)
+
+
+def test_crop_to_content_removes_white_padding(tmp_path: Path) -> None:
+    src = tmp_path / "clean.png"
+    img = Image.new("RGB", (200, 200), "white")
+    img.paste((90, 60, 30), (30, 50, 170, 150))
+    img.putpixel((100, 100), (255, 255, 255))  # white inside the object is kept
+    img.save(src)
+    assert _has_white_border(Image.open(src))
+
+    out = crop_to_content(src, tmp_path / "cropped.png")
+    with Image.open(out) as cropped:
+        assert cropped.size == (140, 100)
+        assert not _has_white_border(cropped)
+
+
+def test_crop_to_content_ignores_near_white_noise(tmp_path: Path) -> None:
+    src = tmp_path / "clean.png"
+    img = Image.new("RGB", (100, 100), (252, 253, 251))  # JPEG-ish off-white background
+    img.paste((10, 10, 10), (40, 40, 60, 60))
+    img.save(src)
+    with Image.open(crop_to_content(src, tmp_path / "c.png")) as cropped:
+        assert cropped.size == (20, 20)
+
+
+def test_crop_to_content_all_white_unchanged(tmp_path: Path) -> None:
+    src = tmp_path / "blank.png"
+    Image.new("RGB", (30, 20), "white").save(src)
+    with Image.open(crop_to_content(src, tmp_path / "c.png")) as out:
+        assert out.size == (30, 20)
+
+
 def test_variant_real_blender(piece: Piece, tmp_path: Path) -> None:
-    binary = Settings.load().blender_bin
-    if binary is None or not binary.is_file():
-        pytest.skip("Blender no disponible (BLENDER_BIN)")
+    value = os.environ.get("HARNESS_BLENDER_TEST_BIN", "").strip()
+    if not value or not Path(value).is_file():
+        pytest.skip("Blender real no solicitado (HARNESS_BLENDER_TEST_BIN)")
+    binary = Path(value)
     photo = tmp_path / "1.jpg"
     Image.new("RGB", (1200, 900), (140, 100, 60)).save(photo)
     texture = tmp_path / "texture.png"

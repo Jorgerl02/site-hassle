@@ -1,6 +1,13 @@
+"""Post-processing tests.
+
+Real-Blender tests are opt-in: set ``HARNESS_BLENDER_TEST_BIN=/path/to/blender`` (the
+autouse fixture in conftest removes ``BLENDER_BIN``); they skip when it is unset.
+"""
+
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -8,7 +15,6 @@ import pytest
 import trimesh
 
 from harness.core.blender import BlenderNotAvailable, BlenderRun
-from harness.core.config import Settings
 from harness.core.models import Piece
 from harness.post import blender_post, bpy_post
 from harness.post.blender_post import BlenderPostError, build_args, parse_post_meta, postprocess
@@ -34,6 +40,15 @@ def test_bpy_post_parses_build_args(piece: Piece, tmp_path: Path) -> None:
     assert (ns.width, ns.height, ns.depth) == (120.0, 75.0, 60.0)
     assert ns.max_tris == 150_000
     assert ns.max_tex == 2048
+    assert ns.draco is False
+    assert "--draco" not in args
+
+
+def test_build_args_draco_opt_in(piece: Piece, tmp_path: Path) -> None:
+    args = build_args(
+        tmp_path / "i.glb", tmp_path / "o.glb", tmp_path / "m.json", piece, draco=True
+    )
+    assert bpy_post.parse_args(args).draco is True
 
 
 def test_build_args_custom_limits(piece: Piece, tmp_path: Path) -> None:
@@ -54,6 +69,36 @@ def test_relative_errors_are_signed() -> None:
     assert errors["width"] == 0.0
     assert errors["depth"] == pytest.approx(0.02)
     assert errors["height"] == pytest.approx(-0.02)
+
+
+TARGET = {"width": 120.0, "depth": 60.0, "height": 75.0}
+
+
+def test_matched_errors_forgive_rotation_about_vertical() -> None:
+    # Model rotated 90° about the vertical: width and depth extents swapped.
+    measured = {"width": 60.0, "depth": 120.0, "height": 75.0}
+    assert bpy_post.matched_errors(measured, TARGET) == pytest.approx(
+        {"width": 0.0, "depth": 0.0, "height": 0.0}
+    )
+    axis = bpy_post.relative_errors(measured, TARGET)
+    assert axis["width"] == pytest.approx(-0.5) and axis["depth"] == pytest.approx(1.0)
+
+
+def test_matched_errors_catch_piece_lying_on_its_side() -> None:
+    # Height and width swapped: the vertical extent must still be compared with height_cm.
+    measured = {"width": 75.0, "depth": 60.0, "height": 120.0}
+    errors = bpy_post.matched_errors(measured, TARGET)
+    assert errors["height"] == pytest.approx(0.6)
+    assert errors["width"] == pytest.approx(-0.375)
+    assert errors["depth"] == pytest.approx(0.0)
+
+
+def test_uniform_scale_factor_uses_largest_extents() -> None:
+    # Rotated raw model: its longest extent is on the named "depth" axis.
+    raw = {"width": 30.0, "depth": 60.0, "height": 37.5}
+    assert bpy_post.uniform_scale_factor(raw, TARGET) == pytest.approx(2.0)
+    with pytest.raises(ValueError):
+        bpy_post.uniform_scale_factor({"width": 0.0, "depth": 0.0, "height": 0.0}, TARGET)
 
 
 @pytest.mark.parametrize(
@@ -78,6 +123,8 @@ def test_parse_post_meta_fixture(tmp_path: Path) -> None:
     assert result.scale_factor == 1.2
     assert result.glb_path == tmp_path / "out.glb"
     assert result.raw["blender_version"] == "4.5.3 LTS"
+    assert result.errors_axis == {"width": 0.0, "depth": 0.02, "height": -0.024}
+    assert result.draco is False
 
 
 def test_scale_ok_false_over_tolerance(tmp_path: Path) -> None:
@@ -133,6 +180,7 @@ def test_postprocess_success(
     assert calls[0]["args"][calls[0]["args"].index("--meta") + 1] == str(
         out.parent / "post_meta.json"
     )
+    assert "--draco" not in calls[0]["args"]
     assert result.glb_path == out
     assert result.tris_after == 149870
     assert "stdout-text" in (out.parent / "post_blender.log").read_text()
@@ -154,8 +202,12 @@ def test_postprocess_missing_output_raises(
 ) -> None:
     fake, _ = _fake_runner(returncode=0, write_outputs=False)
     monkeypatch.setattr(blender_post, "run_blender_script", fake)
+    out = tmp_path / "model_post.glb"
+    out.write_bytes(b"stale")  # left over from a previous run: must not be accepted
+    (tmp_path / "post_meta.json").write_text(FIXTURE_META.read_text())
     with pytest.raises(BlenderPostError, match="no escribió"):
-        postprocess(cube_glb, tmp_path / "model_post.glb", piece)
+        postprocess(cube_glb, out, piece)
+    assert not out.exists()
 
 
 def test_postprocess_missing_input(piece: Piece, tmp_path: Path) -> None:
@@ -175,20 +227,22 @@ def test_postprocess_without_blender_raises(
 
 
 def _blender_bin() -> Path:
-    binary = Settings.load().blender_bin
-    if binary is None or not binary.is_file():
-        pytest.skip("Blender no disponible (BLENDER_BIN)")
-    return binary
+    value = os.environ.get("HARNESS_BLENDER_TEST_BIN", "").strip()
+    if not value or not Path(value).is_file():
+        pytest.skip("Blender real no solicitado (HARNESS_BLENDER_TEST_BIN)")
+    return Path(value)
 
 
 def test_postprocess_real_blender(piece: Piece, tmp_path: Path) -> None:
     binary = _blender_bin()
     src = tmp_path / "in.glb"
-    trimesh.creation.box(extents=(0.5, 0.31, 0.26)).export(src)  # wrong scale on purpose
-    try:
-        result = postprocess(src, tmp_path / "out.glb", piece, blender_bin=binary)
-    except BlenderNotAvailable:
-        pytest.skip("Blender no disponible")
+    # Wrong scale and rotated about the vertical (glTF X = depth, Z = width) on purpose.
+    trimesh.creation.box(extents=(0.3, 0.375, 0.6)).export(src)
+    result = postprocess(src, tmp_path / "out.glb", piece, blender_bin=binary)
     assert result.glb_path.is_file()
-    assert result.errors["width"] == pytest.approx(0.0, abs=1e-4)
+    assert result.scale_factor == pytest.approx(2.0, rel=1e-4)
+    assert result.max_abs_error == pytest.approx(0.0, abs=1e-3)
     assert result.tris_after <= 150_000
+    assert result.draco is False
+    extents = trimesh.load(result.glb_path, force="mesh").extents  # readable without Draco
+    assert sorted(extents) == pytest.approx([0.6, 0.75, 1.2], rel=1e-3)

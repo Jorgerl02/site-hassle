@@ -6,6 +6,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from PIL import Image, ImageChops
+
 from harness.core import storage
 from harness.core.blender import BlenderNotAvailable, run_blender_script
 from harness.core.config import Settings
@@ -18,6 +20,26 @@ SPEC_FILENAME = "parametric_spec.json"
 TEXTURE_FILENAME = "texture.png"
 LOG_FILENAME = "parametric_blender.log"
 LOG_TAIL_CHARS = 4000
+WHITE = (255, 255, 255)
+CROP_THRESHOLD = 8  # per-channel distance from white still considered background
+
+
+def crop_to_content(src: Path, dst: Path, threshold: int = CROP_THRESHOLD) -> Path:
+    """Crop ``src`` to the bounding box of its non-white pixels and save it as ``dst``.
+
+    ``clean_image`` pads the object on a white square with a margin; the parametric UVs map
+    the whole texture onto the piece's bounding box, so the padding must go. If the image
+    is entirely white it is saved unchanged.
+    """
+    with Image.open(src) as img:
+        rgb = img.convert("RGB")
+    diff = ImageChops.difference(rgb, Image.new("RGB", rgb.size, WHITE)).convert("L")
+    bbox = diff.point(lambda v: 255 if v > threshold else 0).getbbox()
+    out = rgb.crop(bbox) if bbox else rgb
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    out.save(dst)
+    return dst
 
 
 class ParametricBuildError(RuntimeError):
@@ -42,9 +64,10 @@ class ParametricVariant:
     def _texture(self, piece: Piece, cand: Path) -> tuple[Path, str]:
         dst = cand / TEXTURE_FILENAME
         try:
-            return clean.clean_image(piece.images[0], dst), "clean_image"
+            cleaned = clean.clean_image(piece.images[0], dst)
         except ValueError:
             return piece.images[0], "original (clean_image no detectó objeto)"
+        return crop_to_content(cleaned, dst), "clean_image + recorte al objeto"
 
     def run(self, piece: Piece, workdir: Path, candidates: int = 2) -> VariantResult:
         # Deterministic: ``candidates`` is ignored, there is exactly one candidate.
