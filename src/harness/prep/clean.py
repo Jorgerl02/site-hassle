@@ -10,7 +10,12 @@ from PIL import Image
 CROP_MARGIN = 0.08  # fraction of the object's larger side
 ALPHA_THRESHOLD = 16  # alpha above this counts as object
 MIN_LONG_SIDE_PX = 1000
-MIN_OBJECT_FRACTION = 0.10
+# The larger side of the object's bounding box (the larger of its two axes) must span at
+# least this fraction of the image's longer side. A bbox criterion instead of a pixel-area
+# one lets sparse silhouettes (floor lamps, coat racks) pass while still rejecting tiny,
+# far-away objects. Requiring it on the short axis too would reject well-framed elongated
+# pieces: a 35x176 cm coat rack (p25, 14 % wide) or a 165x60 cm headboard (p12, 21 % tall).
+MIN_BBOX_FRACTION = 0.25
 BACKGROUND = (255, 255, 255)
 
 
@@ -69,11 +74,22 @@ def validate_input(path: Path) -> list[str]:
             )
         mask = _object_mask(_remove_background(img.convert("RGB")))
 
-    histogram = mask.histogram()
-    fraction = histogram[255] / (mask.width * mask.height)
-    if fraction <= MIN_OBJECT_FRACTION:
-        problems.append(
-            f"Objeto demasiado pequeño o no detectado: {fraction:.0%} del área "
-            f"(≤ {MIN_OBJECT_FRACTION:.0%})"
-        )
+    problems.extend(_object_size_problems(mask))
     return problems
+
+
+def _object_size_problems(mask: Image.Image) -> list[str]:
+    """Check the object's bounding box against ``MIN_BBOX_FRACTION`` of the long side."""
+    bbox = mask.getbbox()
+    if bbox is None:
+        return ["Objeto no detectado: la eliminación de fondo no encuentra ninguna pieza"]
+    left, top, right, bottom = bbox
+    box_w, box_h = right - left, bottom - top
+    long_side = max(mask.size)
+    if max(box_w, box_h) < MIN_BBOX_FRACTION * long_side:
+        return [
+            f"Objeto demasiado pequeño en la foto: caja envolvente {box_w}×{box_h} px "
+            f"({box_w / long_side:.0%} × {box_h / long_side:.0%} del lado mayor de la imagen; "
+            f"su lado mayor debe ocupar ≥ {MIN_BBOX_FRACTION:.0%})"
+        ]
+    return []
