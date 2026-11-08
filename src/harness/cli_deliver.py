@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.markup import escape
 
 from harness.cli import PREFLIGHT_EXIT_CODE, _select_pieces, app, console
 from harness.core import storage
@@ -53,8 +54,22 @@ def _pick_candidate(
             )
         candidate = options_idx[0]
     cand_dir = storage.candidate_dir(workdir, candidate)
+    label = f"{piece_id}/{variant}/cand_{candidate}"
     if not storage.model_post_path(cand_dir).is_file():
-        raise _UserError(f"{piece_id}/{variant}: no existe {storage.model_post_path(cand_dir)}")
+        raise _UserError(f"{label}: no existe {storage.model_post_path(cand_dir)}")
+    try:
+        meta = storage.read_meta(cand_dir)
+    except (OSError, ValueError) as exc:
+        raise _UserError(f"{label}: meta.json ilegible ({exc})") from None
+    post = meta.get("post") if isinstance(meta, dict) else None
+    if not isinstance(post, dict) or not post.get("ok"):
+        reason = (post or {}).get("reason") if isinstance(post, dict) else None
+        detail = f" ({str(reason).splitlines()[-1]})" if reason else ""
+        raise _UserError(
+            f"{label}: el postprocesado no consta como correcto en meta.json{detail}; "
+            f"{storage.model_post_path(cand_dir).name} puede estar obsoleto. Vuelve a "
+            "postprocesar (bakeoff run --post o bakeoff refine) antes de entregar"
+        )
     return variant, candidate, cand_dir
 
 
@@ -101,7 +116,7 @@ def deliver_cmd(
         try:
             var, cand, cand_dir = _pick_candidate(run_root, piece.id, variant, candidate)
         except _UserError as exc:
-            console.print(f"[red]✗[/red] {exc}")
+            console.print(f"[red]✗[/red] {escape(str(exc))}")
             failures += 1
             continue
         console.print(f"[bold]{piece.id}[/bold] · {var}/cand_{cand}")
@@ -114,6 +129,7 @@ def deliver_cmd(
                 max_tex=max_tex,
                 size_limit_bytes=size_limit,
                 out_dir=target,
+                provenance={"run_id": run_id, "variant": var, "candidate": cand},
             )
         except BlenderNotAvailable as exc:
             console.print(f"[red]La entrega necesita Blender:[/red] {exc}")

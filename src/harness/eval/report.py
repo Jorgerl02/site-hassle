@@ -12,7 +12,10 @@ errors with ``kind="infra"`` —, judge error) are left out of the denominator a
 "sin puntuar (infraestructura)". Pieces where the variant does not apply
 (``not_applicable``: E on an organic piece) are left out of that variant's denominator and
 reported as "N/M piezas aplicables".
-Cost and seconds per piece = sum over that piece's candidates, averaged over pieces.
+Cost and seconds per piece = sum over that piece's candidates, averaged over pieces; the cost
+includes refinement spend (``refine_cost_usd``: the extra generations billed by a regeneration
+and retextures), also shown apart in the «Refinado» column with the number of refined
+candidates (``refined``).
 "Escala antes del ajuste" = mean over measured candidates of max |error| after the uniform
 scale only (``errors_before_fit``; the measured error when no fit-to-box ran), so a fitted
 model — whose "Escala" is computed on the fitted geometry — never hides its pre-fit error.
@@ -68,6 +71,8 @@ class VariantSummary:
     generation_cost: float = 0.0  # includes the router share of F
     router_cost: float = 0.0
     judge_cost: float = 0.0
+    refine_cost: float = 0.0  # refinement spend (regeneration extras, retextures)
+    refined_candidates: int = 0
     pre_fit_error_mean: float | None = None  # mean max |error| before fit-to-box
     fit_applied: int = 0  # measured candidates with fit-to-box applied
     fit_measured: int = 0  # measured candidates (denominator of fit_applied)
@@ -124,10 +129,15 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
             },
         )
         status = rec.get("status")
-        c = costs.setdefault(variant, {"generation": 0.0, "router": 0.0, "judge": 0.0})
+        c = costs.setdefault(
+            variant, {"generation": 0.0, "router": 0.0, "judge": 0.0, "refine": 0.0, "refined": 0}
+        )
+        refine_cost = float(rec.get("refine_cost_usd") or 0.0)
         c["generation"] += float(rec.get("cost_usd") or 0.0)
         c["router"] += float(rec.get("router_cost_usd") or 0.0)
         c["judge"] += float(rec.get("judge_cost_usd") or 0.0)
+        c["refine"] += refine_cost
+        c["refined"] += int(bool(rec.get("refined")))
         if status == "not_applicable":
             piece["na"] = True
         if status in NOT_APT_STATUSES and piece["apt"] is None:
@@ -137,7 +147,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
         if rec.get("generation_error"):
             # Failed candidate: its spend (e.g. C's Gemini share) counts for the piece, but it
             # does not make the piece "measured" for the per-piece averages on its own.
-            piece["cost"] += float(rec.get("cost_usd") or 0.0)
+            piece["cost"] += float(rec.get("cost_usd") or 0.0) + refine_cost
             piece["seconds"] += float(rec.get("seconds") or 0.0)
             continue
         geometry = rec.get("geometry")
@@ -152,7 +162,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
             if (value := pre_fit_max_error(rec)) is not None:
                 pre_fit.setdefault(variant, []).append(value)
         piece["has_cand"] = True
-        piece["cost"] += float(rec.get("cost_usd") or 0.0)
+        piece["cost"] += float(rec.get("cost_usd") or 0.0) + refine_cost
         piece["seconds"] += float(rec.get("seconds") or 0.0)
         scores = rec.get("scores")
         if status == "scored" and scores:
@@ -187,6 +197,8 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, VariantSummary]:
         s.generation_cost = c.get("generation", 0.0)
         s.router_cost = c.get("router", 0.0)
         s.judge_cost = c.get("judge", 0.0)
+        s.refine_cost = c.get("refine", 0.0)
+        s.refined_candidates = int(c.get("refined", 0))
         s.pre_fit_error_mean = _mean(pre_fit.get(variant, []))
         s.fit_applied, s.fit_measured = fit_counts.get(variant, [0, 0])
     decide_winners(summaries)
@@ -223,6 +235,12 @@ def _seconds_cell(seconds: float | None) -> str:
 def _pct_cell(s: VariantSummary, category: str | None) -> str:
     apt, n = s.apt_total if category is None else s.apt_by_category.get(category, (0, 0))
     return "—" if not n else f"{_num(s.pct(category), 1, ' %')} ({apt}/{n})"
+
+
+def _refined_cell(s: VariantSummary) -> str:
+    n = s.refined_candidates
+    noun = "candidato" if n == 1 else "candidatos"
+    return f"{n} {noun} de refinado · {_num(s.refine_cost, 2, ' USD')}"
 
 
 def _delta_cell(s: VariantSummary) -> str:
@@ -297,8 +315,8 @@ def render_markdown(
         "",
         "| Variante | Parecido | Geometría | Materiales | Escala | Escala antes del ajuste "
         "| Coste medio por pieza | Tiempo medio por pieza | % mallas cerradas "
-        "| Media de componentes | Sin puntuar (infraestructura) |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Media de componentes | Sin puntuar (infraestructura) | Refinado |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for v in order:
         s = summaries[v]
@@ -307,18 +325,23 @@ def render_markdown(
         out.append(
             f"| {v} | {means} | {_num(pre_fit, 1, ' %')} | {_num(s.cost_per_piece, 2, ' USD')} "
             f"| {_seconds_cell(s.seconds_per_piece)} | {_num(s.watertight_pct, 0, ' %')} "
-            f"| {_num(s.components_mean, 1)} | {s.unscored} |"
+            f"| {_num(s.components_mean, 1)} | {s.unscored} | {_refined_cell(s)} |"
         )
     generation = sum(s.generation_cost for s in summaries.values())
     router = sum(s.router_cost for s in summaries.values())
     judge = sum(s.judge_cost for s in summaries.values())
+    refine = sum(s.refine_cost for s in summaries.values())
     fit_applied = sum(s.fit_applied for s in summaries.values())
     fit_measured = sum(s.fit_measured for s in summaries.values())
     out += [
         "",
-        f"**Coste total:** {_num(generation + judge, 2, ' USD')} = generación "
+        f"**Coste total:** {_num(generation + refine + judge, 2, ' USD')} = generación "
         f"{_num(generation - router, 2, ' USD')} + enrutado VLM (F) {_num(router, 2, ' USD')} "
-        f"+ juez VLM {_num(judge, 2, ' USD')}.",
+        f"+ refinado {_num(refine, 2, ' USD')} + juez VLM {_num(judge, 2, ' USD')}.",
+        "",
+        "«Refinado»: candidatos regenerados o refinados con `bakeoff refine` y su gasto "
+        "extra (generaciones adicionales de la regeneración y retexturizados), incluido en "
+        "el coste medio por pieza.",
         "",
         "Mallas cerradas y componentes: solo candidatos medidos con trimesh (GLB legible).",
         "",

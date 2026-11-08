@@ -192,31 +192,27 @@ class RouterVariant:
         return organic_route_for(piece, self.organic_variant)
 
     def decide(self, piece: Piece) -> tuple[str, dict[str, Any]]:
-        """``(route, router_info)`` with the configured classifier; rules that defer to the
-        VLM (unlabelled piece) fall through to :meth:`classify`."""
+        """``(route, router_info)`` with the configured classifier; ``"rules"`` never calls
+        the VLM."""
         mode = self.resolved_classifier()
         if mode == "rules":
+            # Rules never consult the VLM (no cost): an unlabelled piece takes the organic
+            # route with reason "sin etiqueta", even when a VLM or a key is available.
             decision = rule_classify(
-                piece,
-                vlm_available=self.vlm_available(),
-                organic_variant=self.organic_variant,
+                piece, vlm_available=False, organic_variant=self.organic_variant
             )
-            rules = asdict(decision)
-            if decision.route != ROUTE_VLM:
-                info: dict[str, Any] = {
-                    "csv_rectilinear": piece.rectilinear,
-                    "rectilinear": decision.route == "E",
-                    "motivo": decision.reason,
-                    "source": "rules",
-                    "rule": rules,
-                    "thin": decision.thin,
-                    "cost_usd": 0.0,
-                    "classifier": mode,
-                }
-                return decision.route, info
-            info = {**self.classify(piece), "rule": rules, "thin": decision.thin}
-        else:
-            info = {**self.classify(piece), "thin": is_thin(piece)}
+            info: dict[str, Any] = {
+                "csv_rectilinear": piece.rectilinear,
+                "rectilinear": decision.route == "E",
+                "motivo": decision.reason,
+                "source": "rules",
+                "rule": asdict(decision),
+                "thin": decision.thin,
+                "cost_usd": 0.0,
+                "classifier": mode,
+            }
+            return decision.route, info
+        info = {**self.classify(piece), "thin": is_thin(piece)}
         info["classifier"] = mode
         return ("E" if info["rectilinear"] else self.organic_route(piece)), info
 

@@ -187,3 +187,30 @@ def test_render_markdown_human_without_auto_or_rows() -> None:
     assert "Sin etiquetas del juez automático" in md
     empty = render_markdown("r1", summaries, human=build_human_summary([]))
     assert "ninguna fila valorada" in empty
+
+
+# ---------------------------------------------------------------- eval_id
+
+
+def _stamped_sheet(path: Path, stamps: list[str]) -> Path:
+    lines = ["blind_id,eval_id,apto"] + [f"B00{i},{s},sí" for i, s in enumerate(stamps, 1)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_eval_id_check_accepts_match_warns_unstamped_rejects_other(tmp_path: Path) -> None:
+    from harness.eval.blind_sheet import read_key_eval_id
+    from harness.eval.sheets import check_eval_ids, read_sheet_eval_id
+
+    current = read_key_eval_id(KEY)  # unstamped fixture key: hash of its rows
+    good = _stamped_sheet(tmp_path / "ok.csv", [current, current])
+    warnings: list[str] = []
+    check_eval_ids(KEY, [good, SHEETS[0]], warnings)
+    assert len(warnings) == 1 and "ana.csv: hoja sin eval_id" in warnings[0]
+
+    other = _stamped_sheet(tmp_path / "otra.csv", ["ffff00000000"])
+    with pytest.raises(ValueError, match=f"eval_id ffff00000000.*eval_id {current}"):
+        check_eval_ids(KEY, [other])
+    mixed = _stamped_sheet(tmp_path / "mixta.csv", ["aaa", "bbb"])
+    with pytest.raises(ValueError, match="mezcla filas"):
+        read_sheet_eval_id(mixed)

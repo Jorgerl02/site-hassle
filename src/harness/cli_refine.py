@@ -5,10 +5,11 @@ from __future__ import annotations
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 import typer
+from rich.markup import escape
 
 from harness.cli import (
     PREFLIGHT_EXIT_CODE,
@@ -25,6 +26,7 @@ from harness.core.blender import BlenderNotAvailable
 from harness.core.config import Settings
 from harness.core.models import DEFAULT_SAMPLE_CSV
 from harness.core.registry import available_variants
+from harness.eval.report import format_tolerance
 from harness.post.blender_post import BlenderPostError
 from harness.post.bpy_post import DEFAULT_FIT_GUARD
 from harness.refine.rules import NO_POST_DETAIL
@@ -113,10 +115,11 @@ def refine(
     dentro de --max-rounds necesita una clave que no está en .env.
     """
     from harness.refine import RefineProviders, load_scores_row, refine_candidate
-    from harness.refine.actions import regenerations_in_workdir
+    from harness.refine.actions import not_regenerable_reason, regenerations_in_workdir
     from harness.refine.rules import MAX_EXTRA_CANDIDATES, diagnose, plan
 
-    tolerance = _resolve_tolerance(scale_tolerance)
+    if scale_tolerance is not None:
+        scale_tolerance = _resolve_tolerance(scale_tolerance)
     run_root = storage.run_dir(run_id, runs_root)
     if not run_root.is_dir():
         console.print(f"[red]No existe la ejecución {run_root}[/red]")
@@ -132,10 +135,24 @@ def refine(
     settings = Settings.load()
     registered = set(available_variants())
     problems: list[str] = []
+    tolerances: dict[tuple[str, str, int], float] = {}
     for piece_id, var, idx in targets:
         workdir = storage.variant_dir(run_id, piece_id, var, runs_root)
-        meta = storage.read_meta(storage.candidate_dir(workdir, idx))
-        row = load_scores_row(run_id, piece_id, var, idx, root=runs_root)
+        cand_dir = storage.candidate_dir(workdir, idx)
+        try:
+            meta = storage.read_meta(cand_dir)
+            if not isinstance(meta, dict):
+                raise ValueError("no es un objeto JSON")
+            row = load_scores_row(run_id, piece_id, var, idx, root=runs_root)
+        except (OSError, ValueError) as exc:
+            console.print(
+                f"[red]{piece_id}/{var}/cand_{idx}: no se puede leer meta.json o "
+                f"scores.jsonl ({escape(str(exc))}).[/red] Corrige o elimina el archivo y "
+                "vuelve a intentarlo."
+            )
+            raise typer.Exit(1) from None
+        tolerance, source = _candidate_tolerance(scale_tolerance, row)
+        tolerances[(piece_id, var, idx)] = tolerance
         issues = diagnose(meta, row, tolerance=tolerance, guard=fit_guard)
         common = {
             "regenerations_done": regenerations_in_workdir(workdir),
@@ -145,6 +162,8 @@ def refine(
         allowed = plan(issues, paid_budget=max_rounds, **common)
         needed = plan(issues, paid_budget=None, **common)
         console.print(f"[bold]{piece_id}[/bold] · {var}/cand_{idx}")
+        console.print(f"  tolerancia de escala: {format_tolerance(tolerance)} ({source})")
+        blocked_regen = not_regenerable_reason(var, meta)
         if not issues:
             console.print("  sin problemas detectados")
         for issue in issues:
@@ -155,6 +174,8 @@ def refine(
             note = ""
             if action.kind not in allowed_kinds:
                 note = " — fuera de --max-rounds"
+            elif action.kind == "regenerate" and blocked_regen:
+                note = f" — no regenerable: {blocked_regen} (se omitirá, sin coste)"
             elif action.kind == "regenerate" and var.upper() not in registered:
                 note = " — no regenerable: variante importada (se omitirá)"
             elif action.kind == "regenerate":
@@ -198,7 +219,7 @@ def refine(
                 providers=providers,
                 pieces_csv=sample,
                 root=runs_root,
-                tolerance=tolerance,
+                tolerance=tolerances[(piece_id, var, idx)],
                 fit_guard=fit_guard,
             )
         except REFINE_ERRORS as exc:
@@ -232,6 +253,22 @@ def refine(
     )
     if failed:
         raise typer.Exit(1)
+
+
+def _candidate_tolerance(explicit: float | None, row: dict[str, Any] | None) -> tuple[float, str]:
+    """``(tolerance, Spanish source)``: --scale-tolerance if given, else the one recorded in
+    the candidate's ``scores.jsonl`` row (the one its evaluation used), else ``.env``."""
+    if explicit is not None:
+        return explicit, "--scale-tolerance"
+    recorded = (row or {}).get("scale_tolerance")
+    if recorded is not None:
+        try:
+            value = float(recorded)
+        except (TypeError, ValueError):
+            value = None
+        if value is not None and 0 < value < 1:
+            return value, "registrada en scores.jsonl por bakeoff eval"
+    return _resolve_tolerance(None), "SCALE_TOLERANCE de .env o 3 % por defecto"
 
 
 def _refine_error_message(exc: BaseException) -> str:

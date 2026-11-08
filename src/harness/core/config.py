@@ -18,6 +18,10 @@ class MissingKeyError(RuntimeError):
     """A required API key is not configured (infrastructure, not the candidate's fault)."""
 
 
+class InvalidSettingsError(ValueError):
+    """A value in ``.env`` / the environment is invalid (e.g. ``SCALE_TOLERANCE``)."""
+
+
 class Settings(BaseModel):
     tripo_api_key: str | None = None
     meshy_api_key: str | None = None
@@ -60,7 +64,7 @@ def _parse_tolerance(raw: str | None) -> float:
     except ValueError:
         value = float("nan")
     if not 0 < value < 1:
-        raise ValueError(
+        raise InvalidSettingsError(
             f"SCALE_TOLERANCE debe ser una fracción entre 0 y 1 (p. ej. 0.03 = 3 %); "
             f"recibido {raw!r}"
         )

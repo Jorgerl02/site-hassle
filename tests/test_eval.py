@@ -14,11 +14,12 @@ from PIL import Image
 from harness.core import storage
 from harness.core.blender import BlenderNotAvailable
 from harness.core.models import GeometryMetrics, Piece
-from harness.eval import build_report, evaluate_run
+from harness.eval import build_report, evaluate_run, refine_fields
 from harness.eval.blind_sheet import (
     CandidateRef,
     assign_blind_ids,
     read_blind_key,
+    read_key_eval_id,
     write_blind_sheet,
 )
 from harness.eval.geometry import (
@@ -35,7 +36,13 @@ from harness.eval.judge import (
     scores_from_answer,
 )
 from harness.eval.render import VIEWS, render_views
-from harness.eval.report import DENOMINATOR_NOTE, NOISE_NOTE, read_scores, summarize
+from harness.eval.report import (
+    DENOMINATOR_NOTE,
+    NOISE_NOTE,
+    read_scores,
+    render_markdown,
+    summarize,
+)
 
 VARIANT_NAMES = ("A", "B", "C", "D", "E", "F", "FAKE")
 
@@ -289,6 +296,72 @@ def test_blind_sheet_hides_variant_and_key_recovers(tmp_path: Path) -> None:
     for name in ("FAKE", "variant", ",A,", ",B,", "/A/", "/B/"):
         assert name not in text
     assert read_blind_key(key) == dict(assigned)
+
+
+def test_assign_blind_ids_keeps_existing_and_numbers_new_after_max() -> None:
+    old = [CandidateRef("p01", v, c) for v in ("A", "B") for c in (1, 2)]
+    first = dict(assign_blind_ids(old, seed=3))
+    assert sorted(first) == ["B001", "B002", "B003", "B004"]
+    # B002's candidate is gone; two new candidates appear.
+    gone = first.pop("B002")
+    new_refs = [CandidateRef("p01", "A", 3), CandidateRef("p02", "A", 1)]
+    current = [r for r in old if r != gone] + new_refs
+    second = dict(assign_blind_ids(current, seed=3, existing={**first, "B002": gone}))
+    for blind_id, ref in first.items():
+        assert second[blind_id] == ref  # every earlier id is kept
+    assert "B002" not in second  # never re-dealt
+    assert {second["B005"], second["B006"]} == set(new_refs)
+
+
+def test_write_blind_sheet_stamps_eval_id_and_keeps_retired(tmp_path: Path) -> None:
+    refs = [CandidateRef("p01", "A", 1), CandidateRef("p01", "A", 2)]
+    entries = [("B001", refs[0], [], []), ("B003", refs[1], [], [])]
+    sheet, key = tmp_path / "blind_sheet.csv", tmp_path / "blind_key.csv"
+    retired = {"B002": CandidateRef("p01", "B", 1)}
+    eval_id = write_blind_sheet(sheet, key, entries, eval_id="abc123", retired=retired)
+    assert eval_id == "abc123" and read_key_eval_id(key) == "abc123"
+    assert read_blind_key(key) == {"B001": refs[0], "B002": retired["B002"], "B003": refs[1]}
+    with sheet.open(newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert [r["blind_id"] for r in rows] == ["B001", "B003"]
+    assert {r["eval_id"] for r in rows} == {"abc123"}
+
+
+# ---------- refine spend ----------
+
+
+def test_refine_fields_from_meta(tmp_path: Path) -> None:
+    plain = refine_fields(tmp_path, {"cost_usd": 0.3})
+    assert plain == {"refine_cost_usd": 0.0, "refined": False}
+    regen = {"cost_usd": 0.25, "refine_origin": {"from_candidate": 1, "cost_usd": 0.75}}
+    assert refine_fields(tmp_path, regen) == {"refine_cost_usd": 0.5, "refined": True}
+    retex = {"cost_usd": 0.3, "retexture": {"cost_usd": 0.22}}
+    (tmp_path / "refine.json").write_text("{}", encoding="utf-8")
+    fields = refine_fields(tmp_path, retex)
+    assert fields["refined"] is True and fields["refine_cost_usd"] == pytest.approx(0.22)
+    both = {**regen, "retexture": {"cost_usd": 0.22}}
+    assert refine_fields(None, both)["refine_cost_usd"] == pytest.approx(0.72)
+
+
+def test_report_adds_refine_cost_and_refinado_column() -> None:
+    records = _records("A", {"macizo_mate": (1, 2)})
+    records[0].update(refine_cost_usd=0.5, refined=True)  # regenerated: 0.5 USD extra
+    records.append(
+        {**records[1], "candidate": 2, "refine_cost_usd": 0.22, "refined": True, "cost_usd": 0.5}
+    )
+    records += _records("B", {"macizo_mate": (1, 1)})
+    summaries = summarize(records)
+    a, b = summaries["A"], summaries["B"]
+    assert a.refine_cost == pytest.approx(0.72) and a.refined_candidates == 2
+    assert b.refine_cost == 0.0 and b.refined_candidates == 0
+    # piece 0: 0.5 + 0.5; piece 1: 0.5 + 0.5 + 0.22 → mean 1.11
+    assert a.cost_per_piece == pytest.approx(1.11)
+    text = render_markdown("r1", summaries)
+    assert "| Refinado |" in text
+    assert "2 candidatos de refinado · 0,72 USD" in text
+    assert "0 candidatos de refinado · 0,00 USD" in text
+    assert "+ refinado 0,72 USD" in text
+    assert "**Coste total:** 2,72 USD" in text  # 4 × 0,5 generation + 0,72 refine
 
 
 # ---------- report ----------

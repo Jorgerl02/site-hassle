@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 
 from harness.core import storage
 from harness.core.blender import BlenderNotAvailable
@@ -20,7 +21,10 @@ from harness.eval.blind_sheet import (
     DEFAULT_SEED,
     CandidateRef,
     assign_blind_ids,
+    compute_eval_id,
     copy_blind_renders,
+    read_blind_key,
+    read_key_eval_id,
     write_blind_sheet,
 )
 from harness.eval.geometry import fit_info, measure_candidate, model_for_candidate
@@ -75,8 +79,33 @@ def _run_meta_record(
     }
 
 
+REFINE_FILENAME = "refine.json"  # mirrors harness.refine.REFINE_FILENAME (no import cycle)
+
+
+def refine_fields(cand_dir: Path | None, meta: dict[str, Any]) -> dict[str, Any]:
+    """``refine_cost_usd`` and ``refined`` of a candidate, from its ``meta.json``.
+
+    A regenerated candidate's ``cost_usd`` is its own generation only, while
+    ``refine_origin.cost_usd`` is what the N + 1 generations billed: the difference is
+    refinement spend. A retexture adds ``retexture.cost_usd``. ``refined`` is true for a
+    regenerated candidate or one with a ``refine.json`` (any refinement, even a free one).
+    """
+    extra = 0.0
+    origin = meta.get("refine_origin")
+    if isinstance(origin, dict) and origin.get("cost_usd") is not None:
+        extra += max(0.0, float(origin["cost_usd"]) - float(meta.get("cost_usd") or 0.0))
+    retex = meta.get("retexture")
+    if isinstance(retex, dict):
+        extra += float(retex.get("cost_usd") or 0.0)
+    has_history = cand_dir is not None and (Path(cand_dir) / REFINE_FILENAME).is_file()
+    return {"refine_cost_usd": extra, "refined": isinstance(origin, dict) or has_history}
+
+
 def _failed_candidate_record(
-    ref: CandidateRef, meta: dict[str, Any], by_id: dict[str, Piece]
+    ref: CandidateRef,
+    meta: dict[str, Any],
+    by_id: dict[str, Piece],
+    cand_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Record for a candidate whose generation failed (its ``meta.json`` carries ``error``).
 
@@ -102,9 +131,28 @@ def _failed_candidate_record(
         "cost_usd": float(meta.get("cost_usd") or 0.0),
         "seconds": float(meta.get("seconds") or 0.0),
         "router_cost_usd": float(meta.get("router_cost_usd_share") or 0.0),
+        **refine_fields(cand_dir, meta),
         "judge_cost_usd": 0.0,
         "judge_model": None,
     }
+
+
+def _existing_key(key_path: Path) -> tuple[dict[str, CandidateRef], str | None]:
+    """A previous ``blind_key.csv`` and its ``eval_id`` (empty, None when there is none).
+
+    An unreadable key is set aside as ``blind_key.csv.corrupt`` and ids are dealt afresh."""
+    if not key_path.is_file():
+        return {}, None
+    try:
+        return read_blind_key(key_path), read_key_eval_id(key_path)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        backup = key_path.with_name(key_path.name + ".corrupt")
+        key_path.replace(backup)
+        console.print(
+            f"[yellow]Aviso:[/yellow] {key_path.name} ilegible ({exc!r}); copiado a "
+            f"{backup.name}. Se reparten ids ciegos nuevos: las hojas anteriores no valen."
+        )
+        return {}, None
 
 
 def _default_judge() -> tuple[JSONAsker | None, str | None]:
@@ -150,15 +198,16 @@ def evaluate_run(
     eval_dir = storage.eval_dir(run_id, runs_root)
     candidates = _discover_candidates(run_root)
     records: list[dict[str, Any]] = []
-    for ref, (_cand_dir, meta) in candidates.items():
+    for ref, (cand_dir, meta) in candidates.items():
         if meta.get("error"):
-            records.append(_failed_candidate_record(ref, meta, by_id))
+            records.append(_failed_candidate_record(ref, meta, by_id, cand_dir))
             console.print(f"{ref.piece_id}/{ref.variant}/cand_{ref.candidate}: generación fallida")
     candidates = {ref: v for ref, v in candidates.items() if not v[1].get("error")}
     sheet_entries: list[tuple[str, CandidateRef, list[Path], list[Path]]] = []
     blender_missing: str | None = None
+    existing_key, existing_eval_id = _existing_key(storage.blind_key_path(run_id, runs_root))
 
-    for blind_id, ref in assign_blind_ids(list(candidates), seed):
+    for blind_id, ref in assign_blind_ids(list(candidates), seed, existing=existing_key):
         cand_dir, meta = candidates[ref]
         piece = by_id.get(ref.piece_id)
         reasons: list[str] = []
@@ -173,6 +222,7 @@ def evaluate_run(
             "cost_usd": float(meta.get("cost_usd") or 0.0),
             "seconds": float(meta.get("seconds") or 0.0),
             "router_cost_usd": float(meta.get("router_cost_usd_share") or 0.0),
+            **refine_fields(cand_dir, meta),
             "geometry": None,
             "scores": None,
             "judge_cost_usd": 0.0,
@@ -284,10 +334,17 @@ def evaluate_run(
         "".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in records),
         encoding="utf-8",
     )
+    dealt = {blind_id for blind_id, *_ in sheet_entries}
+    retired = {b: r for b, r in existing_key.items() if b not in dealt}
+    if existing_eval_id is None:  # first key of this run: fix its eval_id
+        rows = {blind_id: ref for blind_id, ref, *_ in sheet_entries}
+        existing_eval_id = compute_eval_id({**retired, **rows}, salt=run_id)
     write_blind_sheet(
         storage.blind_sheet_path(run_id, runs_root),
         storage.blind_key_path(run_id, runs_root),
         sheet_entries,
+        eval_id=existing_eval_id,
+        retired=retired,
     )
     scored = sum(r["status"] == "scored" for r in records)
     console.print(f"Evaluados {len(records)} registros ({scored} puntuados) → {scores_file}")
@@ -318,8 +375,9 @@ def build_report(
         missing = [str(p) for p in sheets if not Path(p).is_file()]
         if missing:
             raise FileNotFoundError(f"No existe la hoja: {', '.join(missing)}")
+        sheet_warnings: list[str] = []
         try:
-            judged = load_sheets(key_path, [Path(p) for p in sheets])
+            judged = load_sheets(key_path, [Path(p) for p in sheets], warnings=sheet_warnings)
         except ValueError as exc:
             if "sin entrada en la clave" not in str(exc):
                 raise
@@ -327,6 +385,8 @@ def build_report(
                 f"{exc}. ¿Es una hoja de otra ejecución? Cada juez debe rellenar una copia de "
                 f"{storage.blind_sheet_path(run_id, runs_root)}"
             ) from exc
+        for warning in sheet_warnings:
+            console.print(f"[yellow]Aviso:[/yellow] {escape(warning)}", highlight=False)
         human = build_human_summary(judged, records)
     summaries = summarize(records)
     tolerances = sorted({float(t) for r in records if (t := r.get("scale_tolerance")) is not None})

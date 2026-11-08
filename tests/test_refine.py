@@ -498,6 +498,50 @@ def test_refine_without_retexturer_or_registered_variant_records_nothing_paid(tm
     assert {i.kind for i in report.issues_after} == {"geometry", "material"}
 
 
+@pytest.mark.parametrize(("variant_name", "extra_meta"), [("E", {}), ("F", {"routed_to": "E"})])
+def test_refine_parametric_candidate_is_not_regenerable(tmp_path, piece, variant_name, extra_meta):
+    root = tmp_path / "runs"
+    cand = make_candidate(
+        root, 1, post_block({"width": 0.4, "height": 0.0, "depth": 0.0}), variant=variant_name
+    )
+    storage.write_meta(cand, {**storage.read_meta(cand), **extra_meta})
+    post = FakePost({"width": 0.4, "height": 0.0, "depth": 0.0})
+    variant = FakeVariant()
+
+    report = refine_candidate(
+        RUN, "p01", variant_name, 1, piece=piece, root=root, providers=providers(post, variant)
+    )
+
+    assert [(s["action"], s["status"]) for s in report.steps] == [("regenerate", "skipped")]
+    assert "no regenerable" in report.steps[0]["detail"]
+    assert report.paid_actions == 0 and report.cost_usd == 0.0 and variant.calls == []
+
+
+def test_refine_fit_box_reposts_from_retextured_model(tmp_path, piece):
+    root = tmp_path / "runs"
+    cand = make_candidate(root, 1, post_block({"width": 0.01, "height": -0.06, "depth": 0.02}))
+    (cand / "model_retex.glb").write_bytes(b"retex")
+    post = FakePost({"width": 0.01, "height": -0.06, "depth": 0.02})
+
+    report = refine_candidate(RUN, "p01", "B", 1, piece=piece, root=root, providers=providers(post))
+
+    assert [s["action"] for s in report.steps] == ["fit_box"]
+    assert post.calls[0]["glb_in"] == cand / "model_retex.glb"
+    assert report.steps[0]["source_glb"] == "model_retex.glb"
+
+
+def test_refine_tolerance_defaults_to_env(tmp_path, piece, monkeypatch):
+    # 6 % residual: a scale issue with the default 3 %, clean with SCALE_TOLERANCE=0.08.
+    monkeypatch.setenv("SCALE_TOLERANCE", "0.08")
+    root = tmp_path / "runs"
+    make_candidate(root, 1, post_block({"width": 0.01, "height": -0.06, "depth": 0.02}))
+    post = FakePost({"width": 0.01, "height": -0.06, "depth": 0.02})
+
+    report = refine_candidate(RUN, "p01", "B", 1, piece=piece, root=root, providers=providers(post))
+
+    assert report.issues_before == [] and report.steps == []
+
+
 def test_refine_records_failed_paid_action(tmp_path, piece):
     root = tmp_path / "runs"
     make_candidate(root, 1, post_block({"width": 0.4, "height": 0.0, "depth": 0.0}))

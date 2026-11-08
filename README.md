@@ -205,8 +205,8 @@ copia sus cinco renders (`front`, `side`, `back`, `three_quarter`, `top`) a
    - `parecido`: 5 mismo producto … 1 no identificable.
    - `geometria`: 5 sin agujeros, patas completas, trasera creíble … 1 rota.
    - `materiales`: 5 color, textura y acabado fieles … 1 sin textura o erróneo.
-   - `escala`: el harness la mide (error de caja envolvente: 5 si < 3 %, 3 si < 10 %, 1 si no);
-     el juez humano puede dejarla en blanco y tomar la de `scores.jsonl` al consolidar.
+   - `escala`: el harness la mide (error de caja envolvente: 5 si < tolerancia, 3 si
+     < 10/3 · tolerancia (3 % / 10 % por defecto), 1 si no); el juez humano puede dejarla en blanco y tomar la de `scores.jsonl` al consolidar.
    - `apto`: `sí` solo si los cuatro ejes son ≥ 4 sin imaginar retoques.
    - `comentario`: el defecto principal en una frase.
    Las definiciones completas de cada nivel están en `src/harness/eval/judge.py` (`RUBRIC_PROMPT`),
@@ -262,6 +262,11 @@ humanos» (tasa de aptos por juez y variante, con la pieza como unidad, igual qu
 automático) y «Acuerdo entre jueces» (% de acuerdo y kappa de Cohen por pareja, incluido el juez
 automático cuando hay puntuaciones del VLM).
 
+- **Ids estables.** Repetir `eval` (p. ej. tras un `refine` que añade `cand_<N+1>`) conserva
+  los `blind_id` ya repartidos en `blind_key.csv`; solo los candidatos nuevos reciben ids nuevos.
+  La hoja y la clave llevan la columna `eval_id`: `report --sheets` rechaza una hoja con otro
+  `eval_id` (otra ejecución o una clave regenerada) y acepta con un aviso las hojas antiguas sin
+  esa columna.
 - Columnas obligatorias: `blind_id` y `apto`; se leen además `parecido`, `geometria`,
   `materiales`, `escala` (1–5, admite coma decimal: `4,5`) y `comentario`. Las demás columnas de
   la hoja (`fotos`, `render_*`) se ignoran.
@@ -279,7 +284,8 @@ La tolerancia de escala es el error relativo máximo por eje de la caja envolven
 eje `escala` valga 5 (y el candidato pueda ser apto). Por defecto es **0,03 (3 %)**; el umbral
 de la nota 3 es 10/3 de la tolerancia (10 % con el 3 %).
 
-- `SCALE_TOLERANCE=0.03` en `.env` la fija para todos los comandos (admite coma decimal).
+- `SCALE_TOLERANCE=0.03` en `.env` la fija para todos los comandos (admite coma decimal). Un
+  valor inválido hace que cualquier comando termine con código 2 y un mensaje, sin traza.
 - `--scale-tolerance 0.05` la cambia para un comando: `run` (postprocesado), `eval` (nota de
   escala y apto) y `refine` (diagnóstico de escala).
 - `eval` guarda la tolerancia usada en cada línea de `scores.jsonl` (`scale_tolerance`) y el
@@ -315,8 +321,11 @@ diagnosticar. Usa el bloque `post` de `meta.json` y, si existe, la fila de `scor
   conserva `model.glb`; `--no-retexture` lo desactiva.
 - **Comprobación previa.** Si una acción de pago dentro de `--max-rounds` necesita una clave que
   falta (`MESHY_API_KEY` para retexturizar; las de la variante para regenerar), `refine` termina
-  con código 2 antes de tocar nada. Las variantes importadas (`MG_*`, `HF_*`) no se pueden
-  regenerar: el paso queda como omitido.
+  con código 2 antes de tocar nada. Las variantes importadas (`MG_*`, `HF_*`), la E y la F
+  enrutada a E (un único candidato determinista) no se pueden regenerar: el paso queda como
+  omitido, sin coste.
+- **Tolerancia.** Por candidato, `--scale-tolerance` si se pasa; si no, la registrada en su fila
+  de `scores.jsonl` (la que usó `eval`); si no, `SCALE_TOLERANCE` de `.env` (3 %). Se imprime cuál.
 - `--dry-run` imprime problemas y plan sin aplicar nada ni escribir archivos.
 - Historial en `cand_<n>/refine.json` (pasos, coste, problemas antes y después). Su coste se
   suma a `total_cost_usd` del run y queda aparte en `refine_cost_usd`.
@@ -338,7 +347,11 @@ Parte de `model_post.glb` del candidato y escribe, por pieza, en `<out-dir>/<pie
 - `model.usdz` para AR Quick Look en iPhone (exportado por Blender, texturas JPEG/PNG).
 - `viewer.html` con `<model-viewer>` 4.4.0: botón «Ver en tu espacio», tamaño real fijo en RA
   y medidas del catálogo.
-- `deliver_meta.json` (tamaños, triángulos, texturas e intentos) y `deliver_blender.log`.
+- `deliver_meta.json` (procedencia: `run_id`, `piece_id`, `variant`, `candidate`; tamaños,
+  triángulos, texturas e intentos) y `deliver_blender.log`.
+
+Se niega a entregar (código 1) un candidato cuyo `meta.json` no registre el postprocesado como
+correcto (`post.ok`): su `model_post.glb` podría ser de un postprocesado anterior.
 
 Sin `--variant` o `--candidate`, se usa el único que tenga `model_post.glb`; si hay varios, el
 comando pide elegir. Imprime tamaños, triángulos y la ruta del visor. Termina con código 1 si

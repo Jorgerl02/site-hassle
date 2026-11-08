@@ -154,17 +154,16 @@ def test_rules_route_organic_and_unlabelled(tmp_path: Path) -> None:
     assert router_meta["motivo"] == "sin etiqueta" and router_meta["rectilinear"] is False
 
 
-def test_rules_defer_unlabelled_to_vlm_when_available(tmp_path: Path) -> None:
+def test_rules_never_consult_vlm_even_when_available(tmp_path: Path) -> None:
     vlm = StubVLM(rectilinear=True)
-    variant, stubs = router(classifier="rules", vlm=vlm)
+    variant, stubs = router(classifier="rules", vlm=vlm, settings=WITH_KEY)
     result = variant.run(make_piece(tmp_path, None), tmp_path / "F")
-    assert vlm.calls == 1 and stubs["E"].calls == 1
+    assert vlm.calls == 0 and stubs["E"].calls == 0 and stubs["C"].calls == 1
     router_meta = result.candidates[0].meta["router"]
-    assert router_meta["source"] == "vlm" and router_meta["rule"]["route"] == ROUTE_VLM
-    assert router_meta["classifier"] == "rules"
-    # A labelled piece never calls the VLM in rules mode.
+    assert router_meta["source"] == "rules" and router_meta["motivo"] == "sin etiqueta"
+    assert router_meta["classifier"] == "rules" and router_meta["cost_usd"] == 0.0
     variant.run(make_piece(tmp_path, False), tmp_path / "F2")
-    assert vlm.calls == 1
+    assert vlm.calls == 0
 
 
 def test_auto_with_key_uses_vlm(tmp_path: Path) -> None:

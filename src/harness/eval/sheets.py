@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from harness.eval.blind_sheet import CandidateRef, read_blind_key
+from harness.eval.blind_sheet import CandidateRef, read_blind_key, read_key_eval_id
 
 AUTO_JUDGE = "juez automático"
 AXES: tuple[str, ...] = ("parecido", "geometria", "materiales", "escala")
@@ -94,13 +94,32 @@ def parse_apto(value: str | None) -> bool | None:
     raise ValueError(f"valor de «apto» no reconocido: {value!r} (usa «sí» o «no»)")
 
 
-def read_sheet(path: Path) -> dict[str, HumanScore]:
-    """Read a filled-in blind sheet; empty cells become ``None``. Accepts ``,`` or ``;``."""
-    name = Path(path).name
+def _sheet_reader(path: Path) -> csv.DictReader:
     text = Path(path).read_text(encoding="utf-8-sig")
     header = text.splitlines()[0] if text else ""
     delimiter = ";" if header.count(";") > header.count(",") else ","
-    reader = csv.DictReader(io.StringIO(text, newline=""), delimiter=delimiter)
+    return csv.DictReader(io.StringIO(text, newline=""), delimiter=delimiter)
+
+
+def read_sheet_eval_id(path: Path) -> str | None:
+    """The sheet's ``eval_id`` stamp; ``None`` for sheets written before the stamp existed.
+
+    Raises ``ValueError`` when the sheet mixes rows of different evaluations."""
+    reader = _sheet_reader(path)
+    if "eval_id" not in (reader.fieldnames or ()):
+        return None
+    stamps = sorted({(row.get("eval_id") or "").strip() for row in reader} - {""})
+    if len(stamps) > 1:
+        raise ValueError(
+            f"{Path(path).name}: mezcla filas de varias evaluaciones (eval_id {', '.join(stamps)})"
+        )
+    return stamps[0] if stamps else None
+
+
+def read_sheet(path: Path) -> dict[str, HumanScore]:
+    """Read a filled-in blind sheet; empty cells become ``None``. Accepts ``,`` or ``;``."""
+    name = Path(path).name
+    reader = _sheet_reader(path)
     missing = sorted(REQUIRED_COLUMNS - set(reader.fieldnames or ()))
     if missing:
         raise ValueError(f"{name}: faltan columnas obligatorias: {', '.join(missing)}")
@@ -144,11 +163,39 @@ def merge(
     return records
 
 
-def load_sheets(key_path: Path, sheet_paths: list[Path]) -> list[JudgedRecord]:
-    """Read the key and every sheet (judge name = file stem) and join them."""
+def check_eval_ids(
+    key_path: Path, sheet_paths: list[Path], warnings: list[str] | None = None
+) -> None:
+    """Reject (``ValueError``) a sheet stamped with another ``eval_id`` than the key's;
+    unstamped (older) sheets are accepted with a warning appended to ``warnings``."""
+    current = read_key_eval_id(key_path)
+    for path in sheet_paths:
+        stamp = read_sheet_eval_id(path)
+        if stamp is None:
+            if warnings is not None:
+                warnings.append(
+                    f"{Path(path).name}: hoja sin eval_id (anterior a la marca); no se puede "
+                    f"comprobar que corresponda a la clave actual (eval_id {current})"
+                )
+        elif stamp != current:
+            raise ValueError(
+                f"{Path(path).name}: la hoja es de otra evaluación (eval_id {stamp}) y la "
+                f"clave actual tiene eval_id {current}; sus blind_id no corresponden a los "
+                "candidatos actuales"
+            )
+
+
+def load_sheets(
+    key_path: Path, sheet_paths: list[Path], *, warnings: list[str] | None = None
+) -> list[JudgedRecord]:
+    """Read the key and every sheet (judge name = file stem) and join them.
+
+    Each sheet's ``eval_id`` is checked against the key first (see :func:`check_eval_ids`).
+    """
     names = [Path(p).stem for p in sheet_paths]
     if len(set(names)) != len(names):
         raise ValueError("dos hojas con el mismo nombre de juez (nombre del archivo)")
+    check_eval_ids(key_path, sheet_paths, warnings)
     sheets = {name: read_sheet(p) for name, p in zip(names, sheet_paths, strict=True)}
     return merge(read_blind_key(key_path), sheets)
 

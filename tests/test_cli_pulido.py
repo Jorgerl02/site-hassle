@@ -267,6 +267,7 @@ def test_report_sheets_t5_fixtures(env: dict[str, Any], tmp_path: Path) -> None:
     both = f"{SHEETS / 'ana.csv'},{SHEETS / 'luis.csv'}"  # luis.csv: ';' + BOM
     result = _invoke("report", "--sheets", both, *common)
     assert result.exit_code == 0, result.output
+    assert "ana.csv: hoja sin eval_id" in result.output  # pre-stamp sheets: accepted, warned
     report = (env["runs"] / "sh/eval/report.md").read_text(encoding="utf-8")
     assert "## Jueces humanos" in report and "| ana |" in report and "| luis |" in report
     assert "### Acuerdo entre jueces" in report
@@ -567,3 +568,186 @@ def test_deliver_upper_cases_variant(env: dict[str, Any]) -> None:
     result = _invoke("deliver", "--pieces", "t01", "--variant", "fake", "--candidate", "1", *common)
     assert result.exit_code == 0, result.output
     assert "t01 · FAKE/cand_1" in result.output
+
+
+# --- final fixes: stable blind ids, refine spend, deliver guard, settings ---------------------
+
+
+def _read_key(runs: Path, run_id: str) -> dict[str, tuple[str, str, str, str]]:
+    with (runs / run_id / "eval/blind_key.csv").open(encoding="utf-8") as fh:
+        return {
+            r["blind_id"]: (r["piece_id"], r["variant"], r["candidate"], r["eval_id"])
+            for r in csv.DictReader(fh)
+        }
+
+
+def _filled_copy(runs: Path, run_id: str, dst: Path) -> Path:
+    with (runs / run_id / "eval/blind_sheet.csv").open(encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    for row in rows:
+        row.update(parecido="4", geometria="4", materiales="4", apto="sí")
+    with dst.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    return dst
+
+
+def test_eval_after_refine_keeps_blind_ids_and_rejects_foreign_sheet(
+    env: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 20 % residual: above the fit guard → geometry issue → FAKE regenerates cand_3.
+    monkeypatch.setattr(cli_module, "postprocess", _fake_postprocess(env["post_calls"], error=0.2))
+    monkeypatch.setattr(
+        blender_post, "postprocess", _fake_postprocess(env["post_calls"], error=0.2)
+    )
+    runs, sample = env["runs"], str(env["sample"])
+    common = ["--run-id", "st", "--runs-root", str(runs)]
+    result = _invoke("run", "--variants", "FAKE", "--sample", sample, "--skip-preflight", *common)
+    assert result.exit_code == 0, result.output
+    _fake_renders(runs, "st")
+    assert _invoke("eval", "--no-render", "--sample", sample, *common).exit_code == 0
+    first = _read_key(runs, "st")
+    assert len(first) == 4 and len({v[3] for v in first.values()}) == 1
+    old_sheet = _filled_copy(runs, "st", tmp_path / "marta.csv")
+
+    result = _invoke(
+        "refine", "--piece", "t01", "--variant", "FAKE", "--candidate", "1",
+        "--max-rounds", "1", "--sample", sample, *common,
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "regenerar (de pago) en cand_1: hecho → cand_3" in result.output
+
+    _fake_renders(runs, "st")
+    assert _invoke("eval", "--no-render", "--sample", sample, *common).exit_code == 0
+    second = _read_key(runs, "st")
+    for blind_id, row in first.items():
+        assert second[blind_id] == row  # same candidate and same eval_id
+    assert second["B005"][:3] == ("t01", "FAKE", "3")
+    records = {(r["piece_id"], r["candidate"]): r for r in _records(runs, "st")}
+    assert records[("t01", 3)]["refined"] is True
+    assert records[("t01", 1)]["refined"] is True  # has refine.json
+    assert records[("t02", 1)]["refined"] is False
+
+    # The sheet dealt before the refinement still matches the key.
+    result = _invoke("report", "--sheets", str(old_sheet), *common)
+    assert result.exit_code == 0, result.output
+    report = (runs / "st/eval/report.md").read_text(encoding="utf-8")
+    assert "| Refinado |" in report and "2 candidatos de refinado" in report
+
+    # A sheet dealt from another run's key is rejected, naming both eval_ids.
+    other = ["--run-id", "ot", "--runs-root", str(runs)]
+    assert (
+        _invoke("run", "--variants", "FAKE", "--no-post", "--sample", sample, *other).exit_code == 0
+    )
+    _fake_renders(runs, "ot")
+    assert _invoke("eval", "--no-render", "--sample", sample, *other).exit_code == 0
+    foreign = _filled_copy(runs, "ot", tmp_path / "luis.csv")
+    foreign_id = next(iter(_read_key(runs, "ot").values()))[3]
+    current_id = second["B001"][3]
+    assert foreign_id != current_id
+    result = _invoke("report", "--sheets", str(foreign), *common)
+    assert result.exit_code == 1
+    assert f"es de otra evaluación (eval_id {foreign_id})" in result.output
+    assert f"clave actual tiene eval_id {current_id}" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_deliver_refuses_without_ok_post_and_records_provenance(env: dict[str, Any]) -> None:
+    runs = env["runs"]
+    common = [*_posted_run(env, "dp"), "--sample", str(env["sample"])]
+    cand = runs / "dp/t01/FAKE/cand_1"
+    meta = json.loads((cand / "meta.json").read_text())
+    meta["post"] = {"ok": False, "reason": "timeout de Blender (600 s)"}
+    (cand / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    result = _invoke("deliver", "--pieces", "t01", "--candidate", "1", *common)
+    assert result.exit_code == 1
+    assert "el postprocesado no consta como correcto" in result.output
+    assert "timeout de Blender" in result.output and env["blender_calls"] == []
+
+    del meta["post"]
+    (cand / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    result = _invoke("deliver", "--pieces", "t01", "--candidate", "1", *common)
+    assert result.exit_code == 1 and "no consta como correcto" in result.output
+
+    result = _invoke("deliver", "--pieces", "t01", "--candidate", "2", *common)
+    assert result.exit_code == 0, result.output
+    deliver_meta = json.loads((runs / "dp/t01/FAKE/cand_2/deliver_meta.json").read_text())
+    assert {k: deliver_meta[k] for k in ("run_id", "piece_id", "variant", "candidate")} == {
+        "run_id": "dp",
+        "piece_id": "t01",
+        "variant": "FAKE",
+        "candidate": 2,
+    }
+
+
+def test_refine_parametric_candidates_are_not_regenerable(env: dict[str, Any]) -> None:
+    runs = env["runs"]
+    _write_candidate(runs, "rp", "t01", "E", BAD_POST)
+    f_cand = _write_candidate(runs, "rp", "t02", "F", BAD_POST)
+    f_meta = json.loads((f_cand / "meta.json").read_text())
+    (f_cand / "meta.json").write_text(json.dumps({**f_meta, "routed_to": "E"}), encoding="utf-8")
+    common = ["--run-id", "rp", "--runs-root", str(runs), "--sample", str(env["sample"])]
+    result = _invoke("refine", "--piece", "all", "--dry-run", *common)
+    assert result.exit_code == 0, result.output
+    assert "no regenerable: variante E (paramétrica)" in result.output
+    assert "no regenerable: F enrutada a E" in result.output
+
+    result = _invoke("refine", "--piece", "all", *common)  # F would need keys if it regenerated
+    assert result.exit_code == 0, result.output
+    assert result.output.count("regenerar (de pago) en cand_1: omitido") == 2
+    assert "0 acción(es) de pago, coste 0,00 USD" in result.output
+
+
+def test_refine_corrupt_candidate_meta_exits_1(env: dict[str, Any]) -> None:
+    runs = env["runs"]
+    cand = _write_candidate(runs, "rc", "t01", "A", BAD_POST)
+    (cand / "meta.json").write_text("{roto", encoding="utf-8")
+    common = ["--run-id", "rc", "--runs-root", str(runs), "--sample", str(env["sample"])]
+    result = _invoke("refine", "--piece", "t01", "--dry-run", *common)
+    assert result.exit_code == 1
+    assert "t01/A/cand_1: no se puede leer meta.json" in result.output
+    assert "Traceback" not in result.output and not isinstance(result.exception, ValueError)
+
+
+def test_refine_prefers_recorded_tolerance_and_says_which(env: dict[str, Any]) -> None:
+    runs = env["runs"]
+    post = {**BAD_POST, "errors": {"width": 0.04}, "errors_before_fit": {"width": 0.04}}
+    _write_candidate(runs, "rt", "t01", "A", post)
+    common = ["--run-id", "rt", "--runs-root", str(runs), "--sample", str(env["sample"])]
+    args = ["refine", "--piece", "t01", "--dry-run", *common]
+    result = _invoke(*args)
+    assert "tolerancia de escala: 3 % (SCALE_TOLERANCE de .env" in result.output
+    assert "problema (escala)" in result.output
+
+    row = {"piece_id": "t01", "variant": "A", "candidate": 1, "scale_tolerance": 0.05}
+    (runs / "rt/eval").mkdir(parents=True, exist_ok=True)
+    (runs / "rt/eval/scores.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    result = _invoke(*args)
+    assert result.exit_code == 0, result.output
+    assert "tolerancia de escala: 5 % (registrada en scores.jsonl" in result.output
+    assert "sin problemas detectados" in result.output
+
+    result = _invoke(*args, "--scale-tolerance", "0.03")
+    assert "tolerancia de escala: 3 % (--scale-tolerance)" in result.output
+    assert "problema (escala)" in result.output
+
+
+def test_invalid_env_tolerance_exits_2_without_traceback(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SCALE_TOLERANCE", "tres")
+    runs, sample = env["runs"], str(env["sample"])
+    _write_candidate(runs, "bad", "t01", "A", BAD_POST)
+    common = ["--run-id", "bad", "--runs-root", str(runs), "--sample", sample]
+    calls = [
+        ["run", "--variants", "FAKE", "--no-post", *common],
+        ["run", "--variants", "FAKE", "--no-post", "--scale-tolerance", "0.05", *common],
+        ["eval", "--no-render", *common],
+        ["refine", "--piece", "t01", *common],
+    ]
+    for args in calls:
+        result = _invoke(*args)
+        assert result.exit_code == 2, (args, result.output)
+        assert "SCALE_TOLERANCE" in result.output and "Traceback" not in result.output
+        assert not isinstance(result.exception, ValueError)

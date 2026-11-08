@@ -11,8 +11,9 @@ candidate the variant is run with ``N + 1`` candidates (N = highest existing ind
 scratch directory next to the candidates and only ``cand_<N+1>`` is moved into the real
 workdir. Existing candidates are never overwritten, and seeded variants (Tripo:
 seed = index) get a new seed; the price is that API variants bill all ``N + 1`` generations
-(acceptable for now; the cost is recorded). Imported variants that are not in the registry
-cannot be regenerated (the step is recorded as skipped). The ``MAX_EXTRA_CANDIDATES`` cap is
+(acceptable for now; the cost is recorded). Imported variants that are not in the registry,
+variant E and F routed to E (one deterministic candidate) cannot be regenerated (the step is
+recorded as skipped and not paid). The ``MAX_EXTRA_CANDIDATES`` cap is
 per piece/variant workdir: it counts the ``cand_*`` metas carrying ``refine_origin`` (plus
 attempts of the current call that billed but left no candidate), whichever candidate starts
 the call. Billed cost and the new index are recorded on the step before post-processing, so a
@@ -21,8 +22,8 @@ later failure does not lose them. Handlers live in ``harness.refine.actions``.
 Retexture writes ``model_retex.glb`` next to ``model.glb`` (which is kept) and re-postprocesses
 it into ``model_post.glb``. Every re-postprocess uses ``fit_box=True`` and refreshes the
 ``post`` block of the candidate's ``meta.json`` (the previous one stays in ``refine.json``).
-Caveat: a later CLI re-post (``harness run --post``) starts from ``model.glb`` and would drop
-the retexture; re-post from ``model_retex.glb`` when it exists. The Meshy data-URI limit
+The free ``fit_box`` re-post starts from ``model_retex.glb`` when it exists (else
+``model.glb``), so it never drops a retexture. The Meshy data-URI limit
 (100 MB) is checked on the raw GLB bytes; the base64 payload is ~1.33× larger.
 """
 
@@ -39,7 +40,8 @@ from typing import Any, Protocol
 
 from harness.clients.meshy import GenerationOutcome
 from harness.core import storage
-from harness.core.models import DEFAULT_SAMPLE_CSV, SCALE_TOLERANCE, Piece, load_pieces
+from harness.core.config import resolve_scale_tolerance
+from harness.core.models import DEFAULT_SAMPLE_CSV, Piece, load_pieces
 from harness.core.variant import Variant
 from harness.post.bpy_post import DEFAULT_FIT_GUARD
 from harness.refine.actions import HANDLERS, RefineContext, regenerations_in_workdir
@@ -188,10 +190,13 @@ def refine_candidate(
     piece: Piece | None = None,
     pieces_csv: Path = DEFAULT_SAMPLE_CSV,
     root: Path = storage.RUNS_ROOT,
-    tolerance: float = SCALE_TOLERANCE,
+    tolerance: float | None = None,
     fit_guard: float = DEFAULT_FIT_GUARD,
 ) -> RefineReport:
-    """Diagnose and fix one candidate; never attempts more than ``max_rounds`` paid actions."""
+    """Diagnose and fix one candidate; never attempts more than ``max_rounds`` paid actions.
+
+    ``tolerance`` None → ``SCALE_TOLERANCE`` from ``.env`` (3 % by default)."""
+    tolerance = resolve_scale_tolerance(tolerance)
     providers = providers or RefineProviders.from_settings()
     piece = piece or _find_piece(piece_id, pieces_csv)
     workdir = Path(root) / run_id / piece_id / variant

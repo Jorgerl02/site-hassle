@@ -196,13 +196,15 @@ def deliver(
     out_dir: Path | None = None,
     timeout: int = DEFAULT_TIMEOUT_S,
     blender_bin: Path | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> DeliverResult:
     """Build ``model_web.glb``, ``model.usdz``, ``viewer.html`` and ``deliver_meta.json``
     from ``<cand_dir>/model_post.glb`` into ``out_dir`` (default: ``cand_dir``).
 
     A GLB above ``size_limit_bytes`` triggers one retry with ``max_tris // 2`` and textures
     ≤ 1024 px; if it is still too big the result is returned with ``within_limit = False``
-    (no exception). Raises ``FileNotFoundError`` without the input GLB,
+    (no exception). ``provenance`` (``run_id``, ``variant``, ``candidate``…) is recorded in
+    ``deliver_meta.json`` next to ``piece_id``. Raises ``FileNotFoundError`` without the input GLB,
     ``BlenderNotAvailable`` without a binary and ``BlenderDeliverError`` on Blender failures.
     """
     cand_dir = Path(cand_dir)
@@ -265,6 +267,7 @@ def deliver(
         log=log,
         raw=meta,
     )
+    meta.update({k: v for k, v in (provenance or {}).items() if v is not None})
     meta.update(
         {
             "piece_id": piece.id,

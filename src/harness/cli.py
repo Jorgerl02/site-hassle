@@ -9,10 +9,11 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from typer.core import TyperGroup
 
 from harness.core import storage
 from harness.core.blender import BlenderNotAvailable
-from harness.core.config import Settings, resolve_scale_tolerance
+from harness.core.config import InvalidSettingsError, Settings, resolve_scale_tolerance
 from harness.core.errors import error_kind
 from harness.core.models import DEFAULT_SAMPLE_CSV, Piece, VariantResult, load_pieces
 from harness.core.registry import get_variant
@@ -46,9 +47,28 @@ VARIANTS_NEEDING_BLENDER = frozenset({"E"})
 # F routes rectilinear pieces to E but falls back to the organic route without Blender.
 VARIANTS_PREFERRING_BLENDER = frozenset({"F"})
 
-app = typer.Typer(help="Bake-off de pipelines foto→3D.", no_args_is_help=True)
+SETTINGS_EXIT_CODE = 2
+
 console = Console(soft_wrap=True)  # long paths stay copyable (no hard wraps)
 err_console = Console(stderr=True, soft_wrap=True)
+
+
+class _SettingsAwareGroup(TyperGroup):
+    """An invalid ``.env`` value (e.g. ``SCALE_TOLERANCE``) read anywhere under a command
+    — CLI code or deep inside the harness — ends with a Spanish message and exit 2, never
+    with a traceback."""
+
+    def invoke(self, ctx: Any) -> Any:
+        try:
+            return super().invoke(ctx)
+        except InvalidSettingsError as exc:
+            err_console.print(f"[red]Configuración inválida (.env):[/red] {exc}", markup=True)
+            raise typer.Exit(SETTINGS_EXIT_CODE) from None
+
+
+app = typer.Typer(
+    help="Bake-off de pipelines foto→3D.", no_args_is_help=True, cls=_SettingsAwareGroup
+)
 
 
 class _PostStep:
@@ -307,6 +327,8 @@ def _resolve_tolerance(value: float | None) -> float:
     """``--scale-tolerance`` (or ``SCALE_TOLERANCE`` from ``.env``) validated, as a float."""
     try:
         return resolve_scale_tolerance(value)
+    except InvalidSettingsError:
+        raise  # a bad .env, not a bad flag: handled by the group (exit 2, no traceback)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--scale-tolerance") from exc
 
