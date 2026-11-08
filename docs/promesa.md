@@ -1,6 +1,6 @@
 # Qué prometemos al cliente
 
-Este documento fija qué piezas aceptamos, con qué precisión las entregamos y qué foto necesitamos. Los números salen del piloto de 16 piezas (`outputs/README.md`, rondas 4 a 6) y de las puntuaciones en `outputs/25_juez_claude_p04.csv`. El juez fue Claude sin ciego, con la rúbrica de la spec: una pieza es **apta** si parecido, geometría, materiales y escala puntúan 4 o más.
+Este documento fija qué piezas aceptamos, con qué precisión las entregamos y qué foto necesitamos. Los números salen del piloto de 16 piezas: rondas 4 y 5 de `outputs/README.md`, y las puntuaciones de E con `panel_table` en `outputs/25_juez_claude_p04.csv`. El juez fue Claude sin ciego, con la rúbrica de la spec: una pieza es **apta** si parecido, geometría, materiales y escala puntúan 4 o más.
 
 ## La promesa
 
@@ -10,7 +10,7 @@ La última frase es la parte que nos protege: en el piloto la mitad de las pieza
 
 ## Categorías cubiertas
 
-Mejor candidato por pieza, acumulado de las rondas 4 a 6:
+Mejor candidato por pieza, acumulado de las rondas 4 y 5 y de las puntuaciones de E con `panel_table` (`outputs/25_juez_claude_p04.csv`):
 
 | Categoría | Aptas | Piezas aptas | Qué falla en el resto |
 |---|---|---|---|
@@ -32,10 +32,10 @@ Las piezas que salen aptas lo hacen por tres vías:
 | Categoría | Resultado | Por qué la excluimos |
 |---|---|---|
 | Metal, cromo | 0 aptas (p17 lámpara cromada: 31,5 % de error, cromo perdido) | Los generadores pierden el reflejo y deforman los arcos |
-| Vidrio | 0 aptas | Mismo problema que el metal: los renders y los generadores no conservan transparencia ni reflejo |
+| Vidrio | Sin probar en el piloto | Excluido por el mismo motivo que el metal (reflejo y transparencia) |
 | Tubo fino, patas finas | 0 aptas (p24 perchero: 19,5 % de error) | La forma sale, pero las proporciones no; además la foto suele no pasar la validación |
 
-Una pieza de estas categorías se rechaza al dar de alta, antes de gastar créditos.
+Una pieza de estas categorías se rechaza al dar de alta, antes de gastar créditos (lo aplica el validador de requisitos de foto de la tarea 1; hoy es una regla documentada, no un bloqueo en el CLI).
 
 ## Piezas finas y rectilíneas: solo con la variante E
 

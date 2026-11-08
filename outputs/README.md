@@ -131,6 +131,19 @@ Tres palancas aplicadas a p01, p02, p08, p10 y p14, las que en la ronda 4 se que
 
 Acumulado del piloto de 16 piezas, mejor candidato por pieza: **macizo 3 de 8, tapizado 4 de 8, 44 % en total** frente al 12 % de la ronda 4 y al 60 % del umbral. Las que siguen fallando lo hacen por material o textura (p08, p10, p09, p13, p15 con Hunyuan) o por geometría inventada (p04, p06, p16, p03), no por escala.
 
+## Sexta ronda: ¿todo desde Blender? Arquetipo de paneles sobre 4 piezas rectilíneas
+
+Nuevo arquetipo `panel_table` en la variante E (paneles laterales o pares en L, balda opcional) y un archivo `data/parametric_overrides.json` para forzar arquetipo y parámetros por pieza. E corrió sobre p03, p04, p07 y p08 a coste cero. Hoja de contacto: `contact/E_paneles.jpg`; renders en `renders/E_<pieza>_three_quarter.png`.
+
+| Pieza | Arquetipo | Veredicto | Por qué |
+|---|---|---|---|
+| p07 mesa de travertino | paneles + balda | **apta** | Geometría exacta y la piedra real proyectada |
+| p08 mesita | caja | no | Convincente de frente; falta el zócalo y el tablero muestra un artefacto |
+| p03 zapatero | caja | no | Convincente de frente; sin patas y los laterales repiten el frontal |
+| p04 mesa de teca | pares de paneles en L | no | Los tablones inclinados del original no se reproducen con cajas |
+
+Acumulado del piloto de 16 piezas, mejor candidato por pieza: **macizo 4 de 8, tapizado 4 de 8, 50 %**. Lectura: Blender paramétrico resuelve lo que es realmente una composición de cajas (cabeceros, mesa de paneles) y se queda en "parecido pero no igual" en cuanto hay patas torneadas, zócalos, tablones inclinados o detalles. Para subir más haría falta arquetipos con patas y zócalo, y un extractor de parámetros desde la foto.
+
 ## Observaciones de la prueba
 
 1. **`validate_input` rechaza 9 de 30 primeras fotos** por "objeto ≤ 10 % del área": lámparas, percheros, mesas auxiliares y piezas altas y finas (p01, p17, p20, p23, p24, p25, p29, p30). El umbral del 10 % de píxeles es demasiado estricto para producto fino; conviene bajarlo o medir por caja envolvente. Hoy las variantes no bloquean por esto, pero el validador de la etapa 1 del pipeline lo haría.
