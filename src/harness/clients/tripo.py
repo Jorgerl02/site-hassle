@@ -43,7 +43,10 @@ USD_PER_CREDIT = 0.01
 MULTIVIEW_SLOTS = ("front", "left", "back", "right")
 ONGOING_STATUSES = frozenset({"queued", "running"})
 SUCCESS_STATUS = "success"
-RETRYABLE_STATUS_CODES = frozenset({408, 429})
+RETRYABLE_STATUS_CODES = frozenset({408, 429})  # plus every 5xx (idempotent calls only)
+# Task creation is billed: retry only when the request certainly created nothing.
+NON_IDEMPOTENT_RETRY_STATUS_CODES = frozenset({429})
+NON_IDEMPOTENT_RETRY_EXCEPTIONS = (httpx.ConnectError, httpx.ConnectTimeout)
 MAX_RETRIES = 3
 REQUEST_TIMEOUT_S = 60.0
 _MIME_TYPES = {
@@ -129,25 +132,40 @@ class TripoClient:
 
     # -- HTTP helpers -------------------------------------------------------------------
 
-    def _send(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
-        """Send with retries on 408/429/5xx and transport errors (``max_retries`` retries)."""
+    def _send(
+        self, method: str, url: str, *, idempotent: bool = True, **kwargs: Any
+    ) -> tuple[httpx.Response, int]:
+        """Send with up to ``max_retries`` retries; returns ``(response, attempts)``.
+
+        Idempotent calls (upload, polling, download) retry on 408/429/5xx and any transport
+        error. Non-idempotent calls (task creation, which is billed) retry only when the
+        request certainly did not create anything: HTTP 429 or a connect error/timeout.
+        """
+        retry_exc = httpx.TransportError if idempotent else NON_IDEMPOTENT_RETRY_EXCEPTIONS
         for attempt in range(self.max_retries + 1):
             last = attempt == self.max_retries
             try:
                 response = self._http.request(method, url, **kwargs)
             except httpx.TransportError as exc:
-                if last:
-                    raise TripoError(f"Error de red con Tripo: {exc}") from exc
+                if last or not isinstance(exc, retry_exc):
+                    raise TripoError(f"Error de red con Tripo ({method} {url}): {exc!r}") from exc
             else:
                 code = response.status_code
-                transient = code in RETRYABLE_STATUS_CODES or code >= 500
+                if idempotent:
+                    transient = code in RETRYABLE_STATUS_CODES or code >= 500
+                else:
+                    transient = code in NON_IDEMPOTENT_RETRY_STATUS_CODES
                 if not transient or last:
-                    return response
+                    return response, attempt + 1
             self._sleep(self.backoff_s * 2**attempt)
         raise AssertionError("unreachable")  # pragma: no cover
 
-    def _api(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        response = self._send(method, f"{self.base_url}{path}", headers=self._auth, **kwargs)
+    def _api_call(
+        self, method: str, path: str, *, idempotent: bool = True, **kwargs: Any
+    ) -> tuple[dict[str, Any], int]:
+        response, attempts = self._send(
+            method, f"{self.base_url}{path}", idempotent=idempotent, headers=self._auth, **kwargs
+        )
         try:
             body = response.json()
         except ValueError:
@@ -159,7 +177,10 @@ class TripoClient:
         data = body.get("data")
         if not isinstance(data, dict):
             raise TripoError(f"Respuesta de Tripo sin 'data' en {method} {path}", body)
-        return data
+        return data, attempts
+
+    def _api(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+        return self._api_call(method, path, **kwargs)[0]
 
     # -- API steps ----------------------------------------------------------------------
 
@@ -192,19 +213,21 @@ class TripoClient:
             request["texture_seed"] = seed
         return request
 
-    def create_task(self, request: dict[str, Any]) -> str:
-        data = self._api("POST", "/task", json=request)
+    def create_task(self, request: dict[str, Any]) -> tuple[str, int]:
+        """Create the (billed) task; returns ``(task_id, attempts)``. Not retried on
+        5xx/408/read errors, so a lost response can never produce a second paid task."""
+        data, attempts = self._api_call("POST", "/task", idempotent=False, json=request)
         task_id = data.get("task_id")
         if not task_id:
             raise TripoError("Tripo no devolvió task_id", data)
-        return str(task_id)
+        return str(task_id), attempts
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         return self._api("GET", f"/task/{task_id}")
 
     def download(self, url: str, dst: Path) -> Path:
         # Signed storage URL: no Authorization header.
-        response = self._send("GET", url)
+        response, _ = self._send("GET", url)
         if response.is_error:
             raise TripoError(f"Descarga del GLB falló ({response.status_code})", url)
         dst = Path(dst)
@@ -231,7 +254,7 @@ class TripoClient:
         upload_s = self._clock() - start
 
         request = self.build_request(used, tokens, seed)
-        task_id = self.create_task(request)
+        task_id, create_attempts = self.create_task(request)
         created_at = self._clock()
 
         history: list[dict[str, Any]] = []
@@ -276,6 +299,7 @@ class TripoClient:
             "images": [str(p) for p in used],
             "images_ignored": [str(p) for p in images[len(used) :]],
             "request": request,
+            "create_attempts": create_attempts,
             "status_history": history,
             "final_status": task,
             "model_url_field": next(

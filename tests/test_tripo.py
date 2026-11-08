@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 from PIL import Image
 from pytest_httpx import HTTPXMock
@@ -94,6 +95,7 @@ def test_generate_single_image_full_cycle(httpx_mock: HTTPXMock, tmp_path: Path)
     assert outcome.meta["task_id"] == TASK_ID
     assert [h["status"] for h in outcome.meta["status_history"]] == ["queued", "running", "success"]
     assert outcome.meta["model_url_field"] == "pbr_model"
+    assert outcome.meta["create_attempts"] == 1
 
     upload = httpx_mock.get_request(method="POST", url=UPLOAD_URL)
     assert upload.headers["Authorization"] == "Bearer tsk_test"
@@ -213,6 +215,74 @@ def test_non_transient_api_error_is_not_retried(httpx_mock: HTTPXMock, tmp_path:
         make_client().generate([write_photo(tmp_path / "1.jpg")], tmp_path / "m.glb")
 
     assert info.value.payload["code"] == 2004
+
+
+def mock_upload_only(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="POST", url=UPLOAD_URL, json=fixture("upload"))
+
+
+def mock_poll_and_download(httpx_mock: HTTPXMock) -> None:
+    httpx_mock.add_response(method="GET", url=POLL_URL, json=fixture("task_success"))
+    httpx_mock.add_response(method="GET", url=GLB_URL, content=GLB_BYTES)
+
+
+def test_create_task_5xx_is_not_retried(httpx_mock: HTTPXMock, tmp_path: Path) -> None:
+    mock_upload_only(httpx_mock)
+    httpx_mock.add_response(method="POST", url=TASK_URL, status_code=503)
+
+    with pytest.raises(TripoError, match="503"):
+        make_client().generate([write_photo(tmp_path / "1.jpg")], tmp_path / "m.glb")
+
+    assert len(httpx_mock.get_requests(method="POST", url=TASK_URL)) == 1
+
+
+def test_create_task_read_timeout_is_not_retried(httpx_mock: HTTPXMock, tmp_path: Path) -> None:
+    mock_upload_only(httpx_mock)
+    httpx_mock.add_exception(httpx.ReadTimeout("lost response"), method="POST", url=TASK_URL)
+
+    with pytest.raises(TripoError, match="ReadTimeout"):
+        make_client().generate([write_photo(tmp_path / "1.jpg")], tmp_path / "m.glb")
+
+    assert len(httpx_mock.get_requests(method="POST", url=TASK_URL)) == 1
+
+
+def test_create_task_429_is_retried(httpx_mock: HTTPXMock, tmp_path: Path) -> None:
+    mock_upload_only(httpx_mock)
+    httpx_mock.add_response(
+        method="POST", url=TASK_URL, status_code=429, json={"code": 2000, "message": "limit"}
+    )
+    httpx_mock.add_response(method="POST", url=TASK_URL, json=fixture("create_task"))
+    mock_poll_and_download(httpx_mock)
+
+    outcome = make_client().generate([write_photo(tmp_path / "1.jpg")], tmp_path / "m.glb")
+
+    assert len(httpx_mock.get_requests(method="POST", url=TASK_URL)) == 2
+    assert outcome.meta["create_attempts"] == 2
+
+
+def test_create_task_connect_error_is_retried(httpx_mock: HTTPXMock, tmp_path: Path) -> None:
+    mock_upload_only(httpx_mock)
+    httpx_mock.add_exception(httpx.ConnectError("refused"), method="POST", url=TASK_URL)
+    httpx_mock.add_response(method="POST", url=TASK_URL, json=fixture("create_task"))
+    mock_poll_and_download(httpx_mock)
+
+    outcome = make_client().generate([write_photo(tmp_path / "1.jpg")], tmp_path / "m.glb")
+
+    assert outcome.meta["create_attempts"] == 2
+    assert outcome.glb_path.read_bytes() == GLB_BYTES
+
+
+def test_poll_5xx_is_still_retried(httpx_mock: HTTPXMock, tmp_path: Path) -> None:
+    mock_upload_only(httpx_mock)
+    httpx_mock.add_response(method="POST", url=TASK_URL, json=fixture("create_task"))
+    httpx_mock.add_response(method="GET", url=POLL_URL, status_code=502)
+    mock_poll_and_download(httpx_mock)
+
+    outcome = make_client().generate([write_photo(tmp_path / "1.jpg")], tmp_path / "m.glb")
+
+    assert len(httpx_mock.get_requests(method="GET", url=POLL_URL)) == 2
+    assert outcome.meta["create_attempts"] == 1
+    assert outcome.glb_path.exists()
 
 
 def test_generate_requires_images(tmp_path: Path) -> None:
