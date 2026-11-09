@@ -6,6 +6,11 @@ photo of every piece in ``data/sample.csv`` and compares it with
 ``rectilinear`` (all pieces), ``support`` (pieces labelled rectilinear) and ``kind``. Both
 with the piece names/descriptions and name-blind (photo + dimensions only).
 
+``rectilinear`` in the labels means "buildable by the parametric route E": it is
+``data/sample.csv``'s column except p06 and p22, a round/oval top on one central column,
+which became buildable with E's ``pedestal`` kind (2026-11-09). The accuracy against the
+original column is printed too.
+
     HARNESS_INTERPRET_EVAL=1 uv run python scripts/eval_interpret.py [--mode both|names|blind]
         [--mask-cache DIR]
 
@@ -24,11 +29,22 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from platform_worker.interpret import Interpretation, SilhouetteInterpreter, rembg_mask
+from platform_worker.interpret import (
+    Interpretation,
+    SilhouetteInterpreter,
+    check_dimensions,
+    merge_answers,
+    rembg_mask,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_CSV = ROOT / "data" / "sample.csv"
 LABELS_CSV = ROOT / "tests" / "fixtures" / "platform" / "interpret_labels.csv"
+# The owner's real failure (2026-11-09): a round travertine top on one cylindrical pedestal,
+# entered as kind=mesa, rectilinear=null, support=patas, 60 × 30 × 25 cm (W × H × D).
+PEDESTAL_PHOTO = ROOT / "tests" / "fixtures" / "platform" / "travertine_pedestal.png"
+PEDESTAL_CUSTOMER = {"kind": "mesa", "rectilinear": None, "support": "patas"}
+PEDESTAL_DIMS = {"width_cm": 60.0, "height_cm": 30.0, "depth_cm": 25.0}
 
 # Targets of the task brief.
 TARGET_RECTILINEAR_NAMES = 0.85
@@ -42,11 +58,13 @@ class Row:
     id: str
     truth: dict[str, object]
     pred: Interpretation
+    warnings: list[str]
 
 
 @dataclass(frozen=True)
 class Scores:
     rectilinear: float
+    rectilinear_csv: float  # against data/sample.csv's original column
     support: float
     kind: float
     rows: list[Row]
@@ -105,20 +123,24 @@ def evaluate(
     rows: list[Row] = []
     for piece in pieces:
         first = ROOT / piece["images"].split(";")[0]
+        dims = {k: float(piece[k]) for k in ("width_cm", "height_cm", "depth_cm")}
         pred = interpreter.interpret(
             [first],
-            width_cm=float(piece["width_cm"]),
-            height_cm=float(piece["height_cm"]),
-            depth_cm=float(piece["depth_cm"]),
+            **dims,
             name=piece["name"] if use_names else "",
             notes=piece["description"] if use_names else "",
         )
-        rows.append(Row(piece["id"], labels[piece["id"]], pred))
+        rows.append(Row(piece["id"], labels[piece["id"]], pred, check_dimensions(pred, **dims)))
     rect_ok = [r.pred.rectilinear == r.truth["rectilinear"] for r in rows]
+    csv_ok = [
+        r.pred.rectilinear == (piece["rectilinear"] == "true")
+        for r, piece in zip(rows, pieces, strict=True)
+    ]
     sup_ok = [r.pred.support == r.truth["support"] for r in rows if r.truth["rectilinear"]]
     kind_ok = [r.pred.kind == r.truth["kind"] for r in rows]
     return Scores(
         rectilinear=sum(rect_ok) / len(rect_ok),
+        rectilinear_csv=sum(csv_ok) / len(csv_ok),
         support=sum(sup_ok) / len(sup_ok) if sup_ok else 0.0,
         kind=sum(kind_ok) / len(kind_ok),
         rows=rows,
@@ -143,12 +165,44 @@ def print_report(title: str, scores: Scores) -> None:
             f"{sup}{_mark(sup_ok)} {kind}{_mark(p.kind == t['kind'])} "
             f"{p.confidence:4.2f}  {' | '.join(p.reasons)}"
         )
+    warned = [f"{r.id} ({len(r.warnings)})" for r in scores.rows if r.warnings]
+    print(f"dimension warnings (false positives on catalogue data): {', '.join(warned) or '-'}")
     n_rect = sum(1 for r in scores.rows if r.truth["rectilinear"])
     print(
         f"rectilinear {scores.rectilinear:.0%} ({round(scores.rectilinear * len(scores.rows))}"
-        f"/{len(scores.rows)})  support on rectilinear {scores.support:.0%} "
+        f"/{len(scores.rows)}; {scores.rectilinear_csv:.0%} against sample.csv)  "
+        f"support on rectilinear {scores.support:.0%} "
         f"({round(scores.support * n_rect)}/{n_rect})  kind {scores.kind:.0%}"
     )
+
+
+@dataclass(frozen=True)
+class PedestalCase:
+    pred: Interpretation
+    warnings: list[str]
+    merged: dict[str, object]
+
+
+def evaluate_pedestal(masker: Callable[[Path], np.ndarray]) -> PedestalCase:
+    """The owner's travertine pedestal table with the customer's real answers."""
+    pred = SilhouetteInterpreter(masker=masker).interpret([PEDESTAL_PHOTO], **PEDESTAL_DIMS)
+    return PedestalCase(
+        pred, check_dimensions(pred, **PEDESTAL_DIMS), merge_answers(PEDESTAL_CUSTOMER, pred)
+    )
+
+
+def print_pedestal(case: PedestalCase) -> None:
+    p = case.pred
+    print("\n== travertine_pedestal.png (customer: mesa, rectilinear null, patas, 60×30×25) ==")
+    print(
+        f"rectilinear={p.rectilinear} ({p.confidence:.2f}) support={p.support} "
+        f"({p.support_confidence:.2f}) top_shape={p.top_shape} base_ratio={p.base_ratio} "
+        f"photo_aspect={p.photo_aspect}"
+    )
+    print(f"reasons: {' | '.join(p.reasons)}")
+    for warning in case.warnings:
+        print(f"warning: {warning}")
+    print(f"merge_answers: {case.merged}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -162,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         print_report("with name + notes", evaluate(pieces, labels, masker, use_names=True))
     if args.mode in ("both", "blind"):
         print_report("name-blind", evaluate(pieces, labels, masker, use_names=False))
+    print_pedestal(evaluate_pedestal(masker))
     return 0
 
 
