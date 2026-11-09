@@ -15,3 +15,7 @@ outputs/contact/
 outputs/deliver/*/model_web.glb
 outputs/deliver/*/model.usdz
 outputs/deliver/*/deliver_blender.log
+platform/.env*
+!platform/.env.example
+platform/node_modules/
+platform/.next/
