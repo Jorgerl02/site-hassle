@@ -5,7 +5,7 @@ import { notFound } from "next/navigation";
 import { AdminHeader } from "@/components/admin/AdminHeader";
 import { ReviewForm } from "@/components/admin/ReviewForm";
 import { MAX_ATTEMPT, getReviewDetail, requireAdmin } from "@/lib/admin";
-import { STATUS_LABEL } from "@/lib/piece-status";
+import { PIECE_STATUS_LABEL } from "@/lib/pieces";
 
 export const metadata: Metadata = {
   title: "Revisar pieza",
@@ -33,7 +33,7 @@ export default async function ReviewDetailPage({ params }: { params: Promise<{ i
             {piece.name}
           </Heading>
           <Badge colorPalette={inReview ? "clay" : "gray"} data-testid="piece-status">
-            {STATUS_LABEL[piece.status]}
+            {PIECE_STATUS_LABEL[piece.status]}
           </Badge>
         </Flex>
         <Flex gap="2" wrap="wrap" color="fg.muted" mb="8">

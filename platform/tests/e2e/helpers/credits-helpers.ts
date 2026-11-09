@@ -37,10 +37,15 @@ export async function deleteTestUser(admin: SupabaseClient, user: TestUser | und
 
 /** Signs the browser in through the app's own magic-link callback, without sending email. */
 export async function signIn(page: Page, admin: SupabaseClient, user: TestUser): Promise<void> {
-  const { data, error } = await admin.auth.admin.generateLink({ type: "magiclink", email: user.email });
-  if (error || !data.properties?.hashed_token) throw new Error(`generateLink: ${error?.message}`);
-  await page.goto(`/auth/callback?token_hash=${encodeURIComponent(data.properties.hashed_token)}&type=magiclink`);
-  await page.waitForURL(/\/panel$/);
+  // Auth limits token verifications per IP (429 on /verify): retry with a fresh link.
+  for (let attempt = 1; ; attempt++) {
+    const { data, error } = await admin.auth.admin.generateLink({ type: "magiclink", email: user.email });
+    if (error || !data.properties?.hashed_token) throw new Error(`generateLink: ${error?.message}`);
+    await page.goto(`/auth/callback?token_hash=${encodeURIComponent(data.properties.hashed_token)}&type=magiclink`);
+    if (/\/panel(\?|$)/.test(page.url())) return;
+    if (attempt === 4) throw new Error(`sign-in failed for ${user.email}: landed on ${page.url()}`);
+    await page.waitForTimeout(10_000 * attempt);
+  }
 }
 
 /** Same call the Stripe webhook makes: `grant_credits(user, n, 'purchase', session)`. */

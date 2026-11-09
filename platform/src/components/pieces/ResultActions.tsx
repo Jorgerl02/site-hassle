@@ -4,6 +4,7 @@ import { Alert, Button, Dialog, Flex, Field, Link, Portal, Stack, Text, Textarea
 import NextLink from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
+import { trackOnce } from "@/lib/analytics";
 import { downloadPiece, rejectPiece, requestNewVersion, type ActionResult } from "@/app/piezas/[id]/actions";
 
 type DialogKind = "download" | "version" | "reject" | null;
@@ -41,11 +42,12 @@ export function ResultActions({ pieceId, balance, versionsLeft }: ResultActionsP
   const [noCredits, setNoCredits] = useState(false);
   const [pending, startTransition] = useTransition();
 
-  function run(action: () => Promise<ActionResult<object>>) {
+  function run(action: () => Promise<ActionResult<object>>, onSuccess?: () => void) {
     setError(null);
     startTransition(async () => {
       const result = await action();
       if (result.ok) {
+        onSuccess?.();
         setOpen(null);
         router.refresh();
         return;
@@ -76,7 +78,11 @@ export function ResultActions({ pieceId, balance, versionsLeft }: ResultActionsP
             </Text>
           ),
           confirm: "Usar 1 crédito y descargar",
-          onConfirm: () => run(() => downloadPiece(pieceId)),
+          onConfirm: () =>
+            run(
+              () => downloadPiece(pieceId),
+              () => trackOnce("piece_approved", `piece_approved:${pieceId}`),
+            ),
         };
       case "version":
         return {

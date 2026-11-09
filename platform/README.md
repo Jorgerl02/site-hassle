@@ -19,7 +19,12 @@ pnpm dev                     # http://localhost:3000
 | `pnpm start` | Sirve el build |
 | `pnpm lint` | ESLint |
 | `pnpm test` | Tests unitarios (Vitest, `tests/unit`) |
-| `pnpm test:e2e` | Tests de extremo a extremo (Playwright, `tests/e2e`); hace build y arranca en el puerto 3100 |
+| `pnpm test:e2e` | Tests de extremo a extremo (Playwright, `tests/e2e`) contra el proyecto alojado de Supabase. Hace `pnpm build` y arranca **un** servidor en el puerto 3150 (o reutiliza el que ya escuche ahí), y los ejecuta en serie (`workers: 1`): Supabase Auth responde 429 si llegan muchos inicios de sesión a la vez. `full-flow.spec.ts` lanza el worker real con Blender (≈ 45 s) |
+| `pnpm stripe:setup` | Crea o actualiza en Stripe el producto y los tres precios (`pieza_1`, `pieza_10`, `pieza_30`); idempotente |
+
+Desde la raíz del repo hay atajos de `just`: `just platform-dev`, `just platform-test`, `just platform-e2e` y `just worker`.
+
+Si reutilizas un servidor ya arrancado en el 3150 para los e2e, arráncalo con `WORKER_SHARED_SECRET=e2e-worker-secret` (el mismo que usa el test del recorrido completo) o el aviso del worker fallará.
 
 Lighthouse móvil de la landing (con `pnpm start` corriendo):
 
@@ -30,24 +35,51 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 
 ## Claves (`.env.local`)
 
-| Variable | Dónde se usa |
-|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clientes de Supabase (navegador, servidor y proxy) |
-| `SUPABASE_SERVICE_ROLE_KEY` | `createAdminClient()`, solo servidor; salta RLS |
-| `NEXT_PUBLIC_SITE_URL` | **Obligatoria en producción.** Origen público: enlaces mágicos, `metadataBase`, canonical y sitemap. Sin ella, los metadatos apuntan a `http://localhost:3000` |
-| `STRIPE_*`, `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | Pagos (Tarea 5) |
-| `RESEND_API_KEY`, `NEXT_PUBLIC_META_PIXEL_ID`, `NEXT_PUBLIC_GA_ID` | Opcionales |
+| Variable | Obligatoria | Dónde se usa |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Sí | Clientes de Supabase (navegador, servidor y proxy) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Sí | `createAdminClient()`, solo servidor; salta RLS |
+| `NEXT_PUBLIC_SITE_URL` | **Sí en producción** | Origen público: enlaces mágicos, enlaces de los correos, `metadataBase`, canonical y sitemap. Sin ella todo apunta a `http://localhost:3000` |
+| `STRIPE_SECRET_KEY` | Para cobrar | Checkout. Sin ella, `/creditos` muestra «Pagos no configurados» |
+| `STRIPE_WEBHOOK_SECRET` | Para cobrar | Firma del webhook `/api/stripe/webhook` (sin ella responde 503) |
+| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | No (reservada) | No la usa el código actual (Checkout alojado) |
+| `RESEND_API_KEY` | No | Correos. Sin ella cada aviso es un no-op que se anota en el log |
+| `NOTIFY_FROM_EMAIL` | Con Resend | Remitente en un dominio verificado en Resend, p. ej. `Pieza 3D <avisos@tudominio.es>`. Vacío: remitente de pruebas de Resend (solo entrega al dueño de la cuenta) |
+| `ADMIN_NOTIFY_EMAIL` | No | Quién recibe «Pieza en revisión» |
+| `WORKER_SHARED_SECRET` | No | Activa `POST /api/internal/notify` (lo llama el worker). El mismo valor va en el `.env` de la raíz |
+| `NEXT_PUBLIC_META_PIXEL_ID`, `NEXT_PUBLIC_GA_ID` | No | Meta Pixel y GA4. Vacías: no se carga ningún script de terceros |
+
+## Avisos por correo
+
+- **Pieza lista (cliente):** al pulsar «Mostrar al cliente» en `/admin/revision/[id]`, la acción llama a `notifyPieceReady(pieceId)` después de responder (`after()`): «Tu pieza «…» está lista» con el enlace a `/piezas/[id]`. Lleva `Idempotency-Key: piece-ready/{id}` (Resend no lo repite en 24 h).
+- **Pieza en revisión (admin):** el worker, al dejar una pieza en `review`, hace `POST {NOTIFY_URL}` con `Authorization: Bearer {WORKER_SHARED_SECRET}` y `{ pieceId, status: "review" }`; la ruta `/api/internal/notify` manda el correo a `ADMIN_NOTIFY_EMAIL`. Sin `NOTIFY_URL` o sin secreto, el worker no avisa; un aviso fallido nunca hace fallar la pieza.
+- Todo vive en `src/lib/notify.ts` (API REST de Resend con `fetch`, sin SDK). Ningún aviso lanza excepciones.
+
+## Analítica para anuncios
+
+`src/components/Analytics.tsx` (en el layout raíz) carga Meta Pixel y GA4 solo si hay id, con `lazyOnload`, y envía una vista de página por navegación. Eventos del embudo (`src/lib/analytics.ts`):
+
+| Evento | Cuándo | Meta | GA4 |
+|---|---|---|---|
+| `signup` | Primer inicio de sesión: `/auth/callback` redirige a `/panel?registro=1` | `CompleteRegistration` | `sign_up` |
+| `piece_created` | El formulario aterriza en la nueva pieza (`/piezas/nueva` → `/piezas/[id]`) | `PieceCreated` (personalizado) | `piece_created` |
+| `piece_approved` | Descarga con crédito correcta (`ResultActions`) | `PieceApproved` (personalizado) | `piece_approved` |
+| `purchase` | Aviso «Pago recibido» de `/creditos?ok=1` con la sesión verificada | `Purchase` con importe y EUR | `purchase` con `transaction_id` |
+
+Cada evento se envía una vez por navegador y clave (`localStorage`). La fuente de verdad del embudo son las tablas, no los píxeles: ver `docs/anuncios.md`.
 
 ## Estructura
 
-- `src/app/` — rutas: `/` (landing), `/entrar` (enlace mágico), `/auth/callback`, `/panel`. Las tareas siguientes añaden `/piezas`, `/creditos` y `/admin`.
+- `src/app/` — rutas: `/` (landing), `/entrar` (enlace mágico), `/auth/callback`, `/panel`, `/piezas/nueva`, `/piezas/[id]`, `/creditos`, `/admin/revision` (solo `profiles.is_admin`), `/api/stripe/webhook` y `/api/internal/notify`.
 - `src/proxy.ts` — en Next.js 16 `middleware.ts` se llama `proxy.ts`. Refresca la sesión de Supabase en cada petición y guarda `utm_*` y `ref` en la cookie `sh_attr` (90 días, último clic).
 - `src/lib/supabase/` — `createClient()` (navegador), `createServerClient()` (cookies; RSC, server actions y route handlers), `createAdminClient()` (service role, `server-only`).
 - `src/lib/auth.ts` — `requireUser()` redirige a `/entrar` sin sesión y devuelve `{ user, profile }`.
 - `src/lib/pricing.ts` — paquetes de créditos (`PACKS`) y `formatEur()` (espacio de no separación antes de «€»).
 - `src/lib/format.ts` — `formatDimensions(ancho, alto, fondo)` → «50 × 48,5 × 50 cm» y `formatCm()`.
 - `src/lib/attribution.ts` — lectura de UTM y de la cookie de atribución; al registrarse se envía como `data.attribution` y el trigger `handle_new_user` la copia a `profiles.attribution`.
-- `src/lib/database.types.ts` — stub escrito a mano; la Tarea 4 lo sustituye por los tipos generados.
+- `src/lib/database.types.ts` — tipos generados de Supabase más un bloque de alias al final (`Profile`, `Piece`…); consérvalo al regenerar.
+- `src/lib/pieces.ts` — etiquetas de estado (`PIECE_STATUS_LABEL`), lecturas de la pieza del cliente y URLs firmadas.
+- `src/lib/notify.ts`, `src/lib/analytics.ts` — avisos por correo y eventos del embudo.
 - `src/theme.ts` — tema de Chakra (paleta arena y arcilla; Fraunces para titulares, Inter para texto).
 - `public/examples/` — fotos y GLB del piloto que enseña la landing. Los USDZ no se versionan: Quick Look en iOS genera el USDZ a partir del GLB.
 
@@ -56,8 +88,64 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 - **Cache Components está desactivado** (`next.config.ts`). Con él activo, la hidratación de los estilos de Chakra/Emotion dentro del shell prerenderizado provocaba un error de hidratación que congelaba la página unos segundos después de cargar (Next 16.4.5, React 19.3, Chakra 3.38). Hay un test e2e («stays responsive after hydration») que lo vigila si se vuelve a activar.
 - `model-viewer` se carga con `import()` solo cuando la tarjeta del ejemplo se acerca a la pantalla, y usa `ar-scale="fixed"` para que la realidad aumentada respete el tamaño real.
 - El enlace mágico usa PKCE: hay que abrirlo en el mismo navegador donde se pidió. `/auth/callback` acepta también `token_hash` + `type` por si se cambia la plantilla del correo.
-- En Supabase → Authentication → URL Configuration hay que añadir `http://localhost:3000/auth/callback` y la URL de producción a las Redirect URLs.
+
+## El worker en el Mac
+
+El worker (Python, en la raíz del repo) reclama las piezas en cola, genera el modelo con el harness y Blender, y las deja en `review`:
+
+```bash
+# en la raíz del repo; .env con SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY y BLENDER_BIN
+uv run platform-worker run                     # bucle; Ctrl+C para parar (o: just worker)
+uv run platform-worker run --once              # una pieza y termina
+uv run platform-worker piece <id>              # reintento manual de una pieza
+```
+
+- `PROVIDER` vacío: solo se generan piezas rectilíneas (ruta E paramétrica); las orgánicas quedan como fallidas con el motivo. Para orgánicas, `PROVIDER=tripo` (con `TRIPO_API_KEY`) o `PROVIDER=fal` (con `FAL_KEY`). `fake` es solo para pruebas.
+- Aviso al admin: `NOTIFY_URL=https://<dominio>/api/internal/notify` y `WORKER_SHARED_SECRET` (el mismo de Vercel) en el `.env` de la raíz.
+- Mientras el Mac esté apagado, las piezas esperan en `queued`. Al arrancar, el worker devuelve a la cola las piezas huérfanas en `generating` de más de 30 min.
+- Para dejarlo corriendo: una ventana de terminal con `just worker`, o un `launchd` (pendiente; no incluido).
+
+## Stripe: de pruebas a producción
+
+En pruebas (sandbox):
+
+1. Pega `STRIPE_SECRET_KEY=sk_test_…` en `.env.local` y ejecuta `pnpm stripe:setup` (crea «Piezas 3D» y los precios `pieza_1` 9 €, `pieza_10` 69 €, `pieza_30` 169 €, IVA incluido).
+2. `stripe listen --forward-to localhost:3000/api/stripe/webhook` y pega el `whsec_…` que imprime como `STRIPE_WEBHOOK_SECRET`; reinicia `pnpm dev`.
+3. `/creditos` → «Comprar» → tarjeta `4242 4242 4242 4242` → vuelves a `/creditos?ok=1…` con el saldo sumado y una fila «Compra».
+
+Para producción:
+
+1. Activa la cuenta de Stripe (datos fiscales y bancarios) y, si toca, Stripe Tax o el IVA en los precios (los precios ya son `tax_behavior: inclusive`).
+2. Con la clave **live** (`sk_live_…`) en local, una vez: `STRIPE_SECRET_KEY=sk_live_… pnpm stripe:setup` (avisa de que es PRODUCCIÓN).
+3. Dashboard → Developers → Webhooks → endpoint `https://<dominio>/api/stripe/webhook` con los eventos `checkout.session.completed` y `checkout.session.async_payment_succeeded`; copia su `whsec_…`.
+4. En Vercel (Production): `STRIPE_SECRET_KEY=sk_live_…` y `STRIPE_WEBHOOK_SECRET=whsec_…`; redeploy.
+5. Compra real de 9 € con tu tarjeta y comprueba saldo, fila en `purchases` y el pago en Stripe.
 
 ## Despliegue (no desplegar sin autorización de Jorge)
 
-Vercel con la raíz del proyecto en `platform/`, las variables de la tabla anterior y `NEXT_PUBLIC_SITE_URL` con el dominio final. Supabase alojado (`oyntcaxzskzntiyzxquy`). El worker corre en el Mac de Jorge (`uv run platform-worker`).
+1. **Vercel:** nuevo proyecto desde el repo con *Root Directory* `platform/`, framework Next.js, `pnpm install` / `pnpm build` (por defecto). Región de funciones cercana a Supabase (`dub1`, Dublín, junto a eu-west-1).
+2. **Variables** (Production y Preview): todas las de la tabla de claves. `NEXT_PUBLIC_SITE_URL=https://<dominio>` sin barra final. `SUPABASE_SERVICE_ROLE_KEY`, `STRIPE_*`, `RESEND_API_KEY` y `WORKER_SHARED_SECRET` nunca con prefijo `NEXT_PUBLIC_`.
+3. **Supabase Auth (URLs):** `supabase/config.toml` solo tiene `localhost`. Añade el dominio y súbelo:
+   ```toml
+   [auth]
+   site_url = "https://<dominio>"
+   additional_redirect_urls = ["https://<dominio>/auth/callback", "http://localhost:3000/auth/callback", "http://localhost:3000/**"]
+   ```
+   y `supabase config push` desde la raíz (proyecto enlazado `oyntcaxzskzntiyzxquy`). También se puede hacer en Dashboard → Authentication → URL Configuration. Sin esto, los enlaces mágicos de producción acaban en `localhost`.
+4. **Correo de Auth:** el SMTP por defecto de Supabase envía muy pocos correos por hora; antes de anuncios configura SMTP propio (p. ej. Resend → Supabase → Authentication → SMTP) con el mismo dominio verificado, y revisa la plantilla del enlace mágico en español.
+5. **Resend:** verifica el dominio (DNS SPF/DKIM), crea la clave y define `RESEND_API_KEY`, `NOTIFY_FROM_EMAIL` y `ADMIN_NOTIFY_EMAIL`.
+6. **Worker:** en el `.env` de la raíz del Mac, `NOTIFY_URL=https://<dominio>/api/internal/notify` y el mismo `WORKER_SHARED_SECRET`; `just worker`.
+7. **Stripe live:** ver la sección anterior.
+8. **Admin:** `update profiles set is_admin = true where email = '<tu correo>';` en el SQL editor.
+
+### Lista de comprobación antes de anuncios
+
+- [ ] `NEXT_PUBLIC_SITE_URL` y Redirect URLs de Supabase con el dominio de producción (`supabase config push`).
+- [ ] SMTP propio en Supabase Auth y plantilla del enlace mágico en español.
+- [ ] Stripe en live: precios creados con `pnpm stripe:setup`, webhook con los dos eventos, compra real de prueba hecha.
+- [ ] Resend con dominio verificado; recibes «Pieza en revisión» y el cliente «Tu pieza está lista».
+- [ ] `NEXT_PUBLIC_META_PIXEL_ID` y/o `NEXT_PUBLIC_GA_ID`; eventos comprobados con Meta Pixel Helper / GA DebugView.
+- [ ] **Fotos de la landing:** `public/examples/` usa fotos de catálogos de terceros del piloto. Sustitúyelas por fotos propias o con permiso escrito.
+- [ ] Textos legales: aviso legal, privacidad y cookies (el píxel de Meta y GA necesitan consentimiento en la UE: banner de cookies antes de cargarlos).
+- [ ] Worker corriendo en el Mac con `PROVIDER` decidido (sin proveedor, las piezas orgánicas fallan).
+- [ ] Un recorrido completo en producción desde el móvil: registro, pieza, revisión, visor con RA, compra y descarga.

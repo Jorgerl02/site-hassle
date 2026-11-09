@@ -60,7 +60,7 @@ export async function signInAs(page: Page, db: Db, email: string): Promise<void>
   if (cached) {
     await page.context().addCookies(cached);
     await page.goto("/panel");
-    if (page.url().endsWith("/panel")) return;
+    if (/\/panel(\?|$)/.test(page.url())) return;
   }
   // The hosted project shares Auth limits with the other suites running in
   // parallel: a link is occasionally refused, so try a fresh one.
@@ -68,9 +68,9 @@ export async function signInAs(page: Page, db: Db, email: string): Promise<void>
     const { data, error } = await db.auth.admin.generateLink({ type: "magiclink", email });
     if (error || !data.properties?.hashed_token) throw new Error(`generateLink: ${error?.message}`);
     await page.goto(`/auth/callback?token_hash=${data.properties.hashed_token}&type=magiclink`);
-    if (page.url().endsWith("/panel")) break;
-    if (attempt === 3) throw new Error(`sign-in failed for ${email}: landed on ${page.url()}`);
-    await page.waitForTimeout(2_000 * attempt);
+    if (/\/panel(\?|$)/.test(page.url())) break;
+    if (attempt === 4) throw new Error(`sign-in failed for ${email}: landed on ${page.url()}`);
+    await page.waitForTimeout(10_000 * attempt); // 429 over_request_rate_limit on /verify
   }
   sessions.set(email, (await page.context().cookies()).filter((c) => c.name.startsWith("sb-")));
 }

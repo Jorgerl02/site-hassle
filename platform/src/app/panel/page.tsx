@@ -1,6 +1,7 @@
 import { Box, Button, Container, Flex, Heading, Link, Stack, Text } from "@chakra-ui/react";
 import type { Metadata } from "next";
 import NextLink from "next/link";
+import { TrackEvent } from "@/components/Analytics";
 import { AppHeader } from "@/components/pieces/AppHeader";
 import { PieceCard } from "@/components/pieces/PieceCard";
 import { requireUser } from "@/lib/auth";
@@ -12,9 +13,15 @@ export const metadata: Metadata = {
   robots: { index: false },
 };
 
-export default async function PanelPage() {
+export default async function PanelPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   // Redirects to /entrar before anything streams when there is no session.
   const { user } = await requireUser();
+  // `/auth/callback` adds `?registro=1` on the first sign-in of an account.
+  const firstSignIn = (await searchParams).registro === "1";
   const supabase = await createServerClient();
   const [{ data: pieces }, balance] = await Promise.all([
     supabase
@@ -31,6 +38,7 @@ export default async function PanelPage() {
   return (
     <>
       <AppHeader />
+      {firstSignIn ? <TrackEvent event="signup" onceKey={`signup:${user.id}`} cleanParam="registro" /> : null}
       <Container as="main" maxW="5xl" px={{ base: 4, md: 8 }} py={{ base: 8, md: 12 }}>
         <Flex justify="space-between" align="center" gap="4" wrap="wrap" mb="6">
           <Heading as="h1" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500">

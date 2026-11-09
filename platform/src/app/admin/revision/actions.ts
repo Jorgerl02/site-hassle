@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
+import { notifyPieceReady } from "@/lib/notify";
 import { MAX_ATTEMPT, NOT_DELIVERABLE_MESSAGE, adminDb, isDeliverable, isUuid, requireAdmin } from "@/lib/admin";
 const MAX_TEXT = 2000;
 
@@ -96,6 +98,8 @@ export async function showToClient(pieceId: string, modelId?: string): Promise<v
   }
   if (!isDeliverable(selected[0])) throw new ReviewError(NOT_DELIVERABLE_MESSAGE);
   await updateReviewPiece(piece.id, piece.attempt, { status: "ready", review_note: null, reject_reason: null });
+  // Customer email after the response; never throws (no-op without RESEND_API_KEY).
+  after(() => notifyPieceReady(piece.id));
 }
 
 /** «Regenerar»: back to the queue with the next attempt and an internal note. */

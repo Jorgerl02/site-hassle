@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 from PIL import Image, ImageOps
 
 from harness.core.models import Piece
@@ -35,6 +36,7 @@ from harness.prep.clean import clean_image
 from harness.variants.e_parametric import ParametricVariant
 from harness.variants.f_router import rule_classify
 from platform_worker import intake
+from platform_worker.config import load_settings
 from platform_worker.providers.base import Provider
 
 ORGANIC_CANDIDATES = 2
@@ -73,6 +75,7 @@ NO_PHOTOS_ERROR = (
     "No se recibieron fotos de la pieza. Vuelve a subir al menos una foto para continuar."
 )
 PROVIDER_MAX_PX = 2048  # raw-photo fallback for providers (fal base64 limit ≈ 6 MB)
+NOTIFY_TIMEOUT_SECONDS = 10.0
 
 log = logging.getLogger(__name__)
 
@@ -323,6 +326,36 @@ def _deliver_candidate(
     }
 
 
+def notify_status(
+    piece_id: str,
+    status: str,
+    *,
+    settings: dict[str, str | None] | None = None,
+    client: httpx.Client | None = None,
+) -> bool:
+    """POST ``{pieceId, status}`` to the web's ``/api/internal/notify`` (admin heads-up on
+    ``review``). Only when ``NOTIFY_URL`` and ``WORKER_SHARED_SECRET`` are set; returns
+    whether the web accepted it. Never raises: a lost notice must not fail a finished piece."""
+    env = settings if settings is not None else load_settings()
+    url, secret = env.get("NOTIFY_URL"), env.get("WORKER_SHARED_SECRET")
+    if not url or not secret:
+        return False
+    try:
+        post = client.post if client is not None else httpx.post
+        response = post(
+            url,
+            json={"pieceId": piece_id, "status": status},
+            headers={"Authorization": f"Bearer {secret}"},
+            timeout=NOTIFY_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        log.warning("No se pudo avisar a la web de la pieza %s (%s): %s", piece_id, status, exc)
+        return False
+    log.info("Aviso enviado a la web: pieza %s en %s", piece_id, status)
+    return True
+
+
 def _fail(db: Any, piece_id: str, message: str) -> str:
     """Mark the piece ``failed``; a DB error here is logged, never raised (the piece then
     stays ``generating`` and the stale sweep requeues it)."""
@@ -470,6 +503,7 @@ def process_piece(
                 }
             )
         db.update_piece(piece_id, status=STATUS_REVIEW, error=None)
+        notify_status(piece_id, STATUS_REVIEW)
         return STATUS_REVIEW
     except Exception as exc:
         (work / "error.log").write_text(traceback.format_exc(), encoding="utf-8")

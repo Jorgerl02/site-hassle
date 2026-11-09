@@ -64,3 +64,27 @@ lint:
 # glb (opcional): GLB PBR texturizado para comprobar que los renders muestran el color base
 blender-test bin glb="":
     HARNESS_BLENDER_TEST_BIN="{{bin}}" HARNESS_TEXTURED_GLB="{{glb}}" uv run pytest -q tests/test_post.py tests/test_parametric.py tests/test_eval.py tests/test_deliver.py
+
+# --- Plataforma (ver platform/README.md) ---
+
+# Web en desarrollo (http://localhost:3000)
+platform-dev:
+    pnpm --dir platform dev
+
+# Tests de la web: unitarios, lint y build
+platform-test:
+    pnpm --dir platform test
+    pnpm --dir platform lint
+    pnpm --dir platform build
+
+# Tests de extremo a extremo (Playwright, en serie, contra Supabase alojado; usa Blender real)
+platform-e2e:
+    pnpm --dir platform test:e2e
+
+# Worker de la plataforma en bucle (provider vacío = PROVIDER de .env; p. ej. just worker tripo)
+worker provider="":
+    if [ -n "{{provider}}" ]; then \
+        uv run platform-worker run --provider "{{provider}}"; \
+    else \
+        uv run platform-worker run; \
+    fi

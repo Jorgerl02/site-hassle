@@ -1,6 +1,7 @@
 import { Badge, Box, Button, Container, Flex, Grid, Heading, Stack, Text } from "@chakra-ui/react";
 import type { Metadata } from "next";
 import NextLink from "next/link";
+import { TrackEvent } from "@/components/Analytics";
 import { requireUser } from "@/lib/auth";
 import { formatCount, formatCreditDelta, formatCredits, getLedger, supabaseFulfillmentDeps, type LedgerClient } from "@/lib/credits";
 import { formatEur, HIGHLIGHT_LABEL, PACKS, type Pack } from "@/lib/pricing";
@@ -32,26 +33,33 @@ function param(value: string | string[] | undefined): string | undefined {
 
 type ReturnState = "paid" | "pending" | null;
 
+interface ReturnInfo {
+  state: ReturnState;
+  /** Amount actually paid in euros, for the `purchase` conversion. */
+  value?: number;
+}
+
 /**
  * Back from Checkout the webhook may not have arrived yet: fulfil from the
  * session itself (idempotent with the webhook), only for the signed-in owner.
  * Returns null unless the session was retrieved and belongs to the user.
  */
-async function confirmReturn(sessionId: string | undefined, userId: string): Promise<ReturnState> {
+async function confirmReturn(sessionId: string | undefined, userId: string): Promise<ReturnInfo> {
   const stripe = getStripe();
-  if (!stripe || !sessionId?.startsWith("cs_")) return null;
+  if (!stripe || !sessionId?.startsWith("cs_")) return { state: null };
   try {
     const session = await stripe.checkout.sessions.retrieve(sessionId);
-    if (session.client_reference_id !== userId) return null;
-    if (session.payment_status === "unpaid") return "pending";
+    if (session.client_reference_id !== userId) return { state: null };
+    if (session.payment_status === "unpaid") return { state: "pending" };
     const result = await fulfillCheckoutSession(
       session,
       supabaseFulfillmentDeps(() => createAdminClient() as unknown as LedgerClient),
     );
-    return result.handled ? "paid" : null;
+    if (!result.handled) return { state: null };
+    return { state: "paid", value: session.amount_total != null ? session.amount_total / 100 : undefined };
   } catch (error) {
     console.error("[stripe] return confirmation failed", error);
-    return null;
+    return { state: null };
   }
 }
 
@@ -59,7 +67,9 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
   // Redirects to /entrar before anything streams when there is no session.
   const { user } = await requireUser();
   const params = await searchParams;
-  const returnState = param(params.ok) === "1" ? await confirmReturn(param(params.session_id), user.id) : null;
+  const sessionId = param(params.session_id);
+  const returned: ReturnInfo = param(params.ok) === "1" ? await confirmReturn(sessionId, user.id) : { state: null };
+  const returnState = returned.state;
   const paymentError = param(params.error) === "pago";
 
   const supabase = await createServerClient();
@@ -90,7 +100,14 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
               Créditos
             </Heading>
             {returnState === "paid" ? (
-              <Notice tone="success">Pago recibido. Tus créditos ya están en tu saldo.</Notice>
+              <>
+                <Notice tone="success">Pago recibido. Tus créditos ya están en tu saldo.</Notice>
+                <TrackEvent
+                  event="purchase"
+                  onceKey={`purchase:${sessionId}`}
+                  params={{ value: returned.value, currency: "EUR", transactionId: sessionId }}
+                />
+              </>
             ) : null}
             {returnState === "pending" ? (
               <Notice tone="success">

@@ -49,10 +49,10 @@ export async function signIn(page: Page, db: SupabaseClient, email: string): Pro
     const { data, error } = await db.auth.admin.generateLink({ type: "magiclink", email });
     if (error || !data.properties?.hashed_token) throw new Error(`generateLink: ${error?.message}`);
     await page.goto(`/auth/callback?token_hash=${data.properties.hashed_token}&type=magiclink`);
-    if (/\/panel$/.test(page.url()) || attempt === 4) break;
+    if (/\/panel(\?|$)/.test(page.url()) || attempt === 4) break;
     await page.waitForTimeout(10_000 * attempt); // 429 over_request_rate_limit on /verify
   }
-  await expect(page).toHaveURL(/\/panel$/);
+  await expect(page).toHaveURL(/\/panel(\?|$)/);
 }
 
 // 1×1 white PNG: enough for signed URLs and <img> to resolve.

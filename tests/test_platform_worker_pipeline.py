@@ -621,3 +621,23 @@ def test_raw_photo_fallback_is_downscaled_jpeg(tmp_path: Path, monkeypatch) -> N
     [out] = pipeline._organic_images([big], tmp_path / "work")
     with Image.open(out) as img:
         assert img.format == "JPEG" and max(img.size) == pipeline.PROVIDER_MAX_PX
+
+
+def test_review_sends_the_notice_once(tmp_path: Path, monkeypatch) -> None:
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pipeline, "notify_status", lambda pid, status, **kw: sent.append((pid, status))
+    )
+    db, storage, row = setup(tmp_path)
+    assert run(db, storage, row, tmp_path) == "review"
+    assert sent == [(PIECE_ID, "review")]
+
+
+def test_needs_photos_sends_no_notice(tmp_path: Path, monkeypatch) -> None:
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pipeline, "notify_status", lambda pid, status, **kw: sent.append((pid, status))
+    )
+    db, storage, row = setup(tmp_path, kind="lampara")
+    assert run(db, storage, row, tmp_path) == "needs_photos"
+    assert sent == []
