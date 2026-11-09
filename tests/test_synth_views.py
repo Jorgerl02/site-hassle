@@ -10,8 +10,11 @@ from typing import Any
 
 import pytest
 from PIL import Image
+from pytest_httpx import HTTPXMock
 
 from harness.clients.gemini_image import DEFAULT_MODEL, GeminiImageClient, GeminiImageError
+from harness.clients.tripo import DEFAULT_BASE_URL as TRIPO_BASE_URL
+from harness.clients.tripo import TripoClient, TripoSettings
 from harness.core import pricing
 from harness.core.models import Piece
 from harness.prep import clean
@@ -271,8 +274,16 @@ def test_generate_views_skips_failed_view(tmp_path: Path, piece: Piece) -> None:
 class StubTripo:
     calls: list[dict[str, Any]] = field(default_factory=list)
 
-    def generate(self, images: list[Path], dst_glb: Path, *, seed: int | None = None):
-        self.calls.append({"images": list(images), "seed": seed})
+    def generate(
+        self,
+        images: list[Path],
+        dst_glb: Path,
+        *,
+        seed: int | None = None,
+        views: dict[str, Path] | None = None,
+    ):
+        assert views is not None and not images, "variant C must send labelled views only"
+        self.calls.append({"images": list(views.values()), "views": dict(views), "seed": seed})
         dst_glb.parent.mkdir(parents=True, exist_ok=True)
         dst_glb.write_bytes(b"glTF")
         return SimpleNamespace(
@@ -308,7 +319,8 @@ def test_variant_c_end_to_end(tmp_path: Path, piece: Piece, photo: Path) -> None
     assert variant.name == "C" and result.variant == "C"
     assert [c.index for c in result.candidates] == [1, 2]
     assert [c["seed"] for c in tripo.calls] == [1, 2]
-    assert [p.stem for p in tripo.calls[0]["images"]] == ["front", "left", "back", "right"]
+    assert list(tripo.calls[0]["views"]) == ["front", "left", "back", "right"]
+    assert all(p.stem == v for v, p in tripo.calls[0]["views"].items())
 
     image_cost = 4 * pricing.GEMINI_IMAGE_USD
     assert sum(c.cost_usd for c in result.candidates) == pytest.approx(2 * 0.25 + image_cost)
@@ -342,7 +354,7 @@ def test_variant_c_left_dropped_sends_clean_photo(
         piece, tmp_path / "C", candidates=1
     )
     meta = json.loads((tmp_path / "C" / "cand_1" / "meta.json").read_text())
-    assert tripo.calls[0]["images"] == [Path(meta["clean_image"])]
+    assert tripo.calls[0]["views"] == {"front": Path(meta["clean_image"])}
     assert meta["views_degraded"] is True
     assert meta["views_passed"] == ["front"]
     assert meta["view_checks"]["left"]["ok"] is False
@@ -379,11 +391,18 @@ class FlakyTripo(StubTripo):
         super().__init__()
         self.fail_seeds = fail_seeds
 
-    def generate(self, images: list[Path], dst_glb: Path, *, seed: int | None = None):
+    def generate(
+        self,
+        images: list[Path],
+        dst_glb: Path,
+        *,
+        seed: int | None = None,
+        views: dict[str, Path] | None = None,
+    ):
         if seed in self.fail_seeds:
-            self.calls.append({"images": list(images), "seed": seed})
+            self.calls.append({"images": list((views or {}).values()), "seed": seed})
             raise RuntimeError(f"tarea {seed} fallida")
-        return super().generate(images, dst_glb, seed=seed)
+        return super().generate(images, dst_glb, seed=seed, views=views)
 
 
 def test_variant_c_keeps_paid_candidates_when_a_later_one_fails(
@@ -410,3 +429,56 @@ def test_variant_c_raises_when_every_candidate_fails(
             piece, tmp_path / "C", candidates=2
         )
     assert json.loads((tmp_path / "C" / "cand_1" / "meta.json").read_text())["error"]
+
+
+# --- variant C against a real TripoClient (HTTP mocked) -------------------------------------
+
+
+def test_variant_c_sends_labelled_multiview_to_tripo(
+    tmp_path: Path, piece: Piece, photo: Path, httpx_mock: HTTPXMock
+) -> None:
+    task_id = "1ec04ced-4b87-44f6-a296-beee80777941"
+    glb_url = "https://tripo-data.example.com/out/model_pbr.glb"
+    tripo_fixtures = Path(__file__).parent / "fixtures" / "tripo"
+    for view in VIEW_NAMES:  # uploads happen in slot order: front, left, back, right
+        httpx_mock.add_response(
+            method="POST",
+            url=f"{TRIPO_BASE_URL}/files",
+            json={"code": 0, "data": {"file_token": f"tok-{view}"}},
+        )
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{TRIPO_BASE_URL}/generation/multiview-to-model",
+        json={"code": 0, "data": {"task_id": task_id}},
+    )
+    httpx_mock.add_response(
+        method="GET",
+        url=f"{TRIPO_BASE_URL}/tasks/{task_id}",
+        json=json.loads((tripo_fixtures / "task_success.json").read_text()),
+    )
+    httpx_mock.add_response(method="GET", url=glb_url, content=b"glTF-fake")
+    tripo = TripoClient("tsk_test", settings=TripoSettings(), sleep=lambda s: None)
+    gemini = GeminiImageClient(client=fake_sdk(**outputs()))
+
+    result = SynthTripoVariant(tripo=tripo, image_client=gemini).run(
+        piece, tmp_path / "C", candidates=1
+    )
+
+    uploads = httpx_mock.get_requests(method="POST", url=f"{TRIPO_BASE_URL}/files")
+    assert [
+        f'filename="{v}.png"'.encode() in u.content
+        for v, u in zip(VIEW_NAMES, uploads, strict=True)
+    ] == [True] * 4
+    assert not httpx_mock.get_requests(url=f"{TRIPO_BASE_URL}/generation/image-to-model")
+    [create] = httpx_mock.get_requests(url=f"{TRIPO_BASE_URL}/generation/multiview-to-model")
+    body = json.loads(create.content)
+    assert body["inputs"] == [
+        {"front": "tok-front"},
+        {"left": "tok-left"},
+        {"back": "tok-back"},
+        {"right": "tok-right"},
+    ]
+    assert body["model_seed"] == 1
+    assert result.candidates[0].glb_path.read_bytes() == b"glTF-fake"
+    meta = json.loads((tmp_path / "C" / "cand_1" / "meta.json").read_text())
+    assert meta["tripo_meta"]["task_type"] == "multiview_to_model"
