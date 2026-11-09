@@ -24,10 +24,11 @@ supabase gen types typescript --project-id oyntcaxzskzntiyzxquy > supabase/datab
 | `20261109000001_init.sql` | Enums `piece_kind`, `piece_status`, `credit_reason`; tablas `profiles`, `pieces`, `piece_photos`, `piece_models`, `credit_ledger`, `purchases`; triggers `handle_new_user` y `set_updated_at`; RLS y privilegios por columna. |
 | `20261109000002_functions.sql` | `credit_balance`, `pieces_created_today`, `daily_piece_limit` (3), trigger `enforce_daily_piece_limit`, `approve_piece`, `request_new_version`, `reject_piece`, `claim_next_piece`, `requeue_stale_pieces`, `grant_credits`; vista `admin_review_queue`. |
 | `20261109000003_storage.sql` | Buckets `photos` (privado, 20 MB, JPEG/PNG/WebP), `previews` (público), `models` y `renders` (privados) y políticas de `photos`. |
+| `20261109000004_review_queue_selected.sql` | `admin_review_queue` elige, dentro del último intento, el candidato `selected`; el cliente solo ve los `piece_models` del intento actual de la pieza. |
 
 ### Quién puede qué
 
-- **Cliente** (clave anónima + JWT del usuario): lee sus filas de `profiles`, `pieces`, `piece_photos`, `credit_ledger` y `purchases`; lee `piece_models` de sus piezas solo cuando están en `ready`, `approved` o `rejected` (nunca en revisión). Inserta piezas propias en `queued` (solo las columnas del formulario: `id`, `user_id`, `name`, `kind`, medidas, `rectilinear`, `notes`, `status`; `user_id` toma `auth.uid()` por defecto) y fotos de piezas propias en `queued` con `storage_path` `{user_id}/{piece_id}/…`. De `profiles` solo puede actualizar `attribution`. Todo cambio de estado pasa por `approve_piece`, `request_new_version` y `reject_piece`.
+- **Cliente** (clave anónima + JWT del usuario): lee sus filas de `profiles`, `pieces`, `piece_photos`, `credit_ledger` y `purchases`; lee `piece_models` de sus piezas solo cuando están en `ready`, `approved` o `rejected` (nunca en revisión) y solo los del intento actual (`attempt` de la pieza). Inserta piezas propias en `queued` (solo las columnas del formulario: `id`, `user_id`, `name`, `kind`, medidas, `rectilinear`, `notes`, `status`; `user_id` toma `auth.uid()` por defecto) y fotos de piezas propias en `queued` con `storage_path` `{user_id}/{piece_id}/…`. De `profiles` solo puede actualizar `attribution`. Todo cambio de estado pasa por `approve_piece`, `request_new_version` y `reject_piece`.
 - **Worker y admin** (clave de servicio, se salta RLS): todo lo demás, incluidas `claim_next_piece`, `requeue_stale_pieces`, `grant_credits` y la vista `admin_review_queue`, que el cliente no puede ejecutar ni leer.
 
 ### Funciones
@@ -46,7 +47,9 @@ Los errores se lanzan con el código como mensaje; PostgREST lo devuelve en `mes
 | `requeue_stale_pieces(p_minutes = 30)` → int | servicio | Devuelve a `queued` las `generating` con `claimed_at` más antiguo que `p_minutes`; devuelve cuántas. |
 | `grant_credits(p_user, p_delta, p_reason, p_session)` → int | servicio | Inserta en el libro; idempotente por `p_session` (`stripe_session_id` único); con `p_session` nulo siempre suma. Devuelve el saldo. |
 
-El trigger `enforce_daily_piece_limit` solo actúa con JWT `authenticated`: el worker y el admin (servicio) pueden crear o reencolar sin límite.
+El trigger `enforce_daily_piece_limit` solo actúa con JWT `authenticated`: el worker y el admin (servicio) pueden crear o reencolar sin límite. Ojo: las piezas creadas por el servicio a nombre de un usuario sí cuentan para su cupo diario (el recuento incluye todas sus piezas del día).
+
+La vista `admin_review_queue` usa `p.*`: Postgres fija la lista de columnas al crearla, así que hay que recrearla (en una migración nueva, con `create or replace view` añadiendo las columnas al final o `drop` + `create`) cada vez que `pieces` gane columnas; si no, no aparecerán.
 
 ### Storage
 

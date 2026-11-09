@@ -405,33 +405,56 @@ def test_reject_piece(svc: httpx.Client, a: User) -> None:
 # ---------------------------------------------------------------- worker queue
 
 
-def test_claim_next_piece_takes_oldest_then_another(svc: httpx.Client, a: User) -> None:
+def skip_if_foreign_work(svc: httpx.Client, users: dict[str, User]) -> None:
+    """Queue tests act on the whole project: never touch pieces that are not ours."""
+    ids = ",".join(u.id for u in users.values())
+    r = svc.get(
+        "/rest/v1/pieces",
+        params={
+            "select": "id",
+            "status": "in.(queued,generating)",
+            "user_id": f"not.in.({ids})",
+            "limit": "1",
+        },
+    )
+    assert r.status_code == 200, r.text
+    if r.json():
+        pytest.skip("Hay piezas reales en cola o generándose; no se tocan desde los tests")
+
+
+def test_claim_next_piece_takes_oldest_then_another(
+    svc: httpx.Client, users: dict[str, User], a: User
+) -> None:
+    skip_if_foreign_work(svc, users)
     older = insert_piece(svc, a.id, created_at=iso_ago(60 * 24 * 365))
     newer = insert_piece(svc, a.id, created_at=iso_ago(60 * 24 * 364))
     ours = {older["id"], newer["id"]}
 
     claimed: list[str] = []
     foreign: list[str] = []
-    for _ in range(50):  # other queued pieces in the project may be older than ours
-        r = rpc(svc, "claim_next_piece")
-        assert r.status_code == 200, r.text
-        row = r.json()
-        if not row or row.get("id") is None:
-            break
-        assert row["status"] == "generating" and row["claimed_at"] is not None
-        if row["id"] in ours:
+    try:
+        for _ in range(10):
+            r = rpc(svc, "claim_next_piece")
+            assert r.status_code == 200, r.text
+            row = r.json()
+            if not row or row.get("id") is None:
+                break
+            if row["id"] not in ours:  # appeared after the skip check
+                foreign.append(row["id"])
+                continue
+            assert row["status"] == "generating" and row["claimed_at"] is not None
             claimed.append(row["id"])
             if len(claimed) == 2:
                 break
-        else:
-            foreign.append(row["id"])
-    for piece_id in foreign:  # put back what was not ours
-        patch_piece(svc, piece_id, status="queued", claimed_at=None)
+    finally:
+        for piece_id in foreign:  # put back what was not ours
+            patch_piece(svc, piece_id, status="queued", claimed_at=None)
 
     assert claimed == [older["id"], newer["id"]]
 
 
-def test_requeue_stale_pieces(svc: httpx.Client, a: User) -> None:
+def test_requeue_stale_pieces(svc: httpx.Client, users: dict[str, User], a: User) -> None:
+    skip_if_foreign_work(svc, users)
     stale = insert_piece(svc, a.id, status="generating", claimed_at=iso_ago(40))
     fresh = insert_piece(svc, a.id, status="generating", claimed_at=iso_ago(5))
     r = rpc(svc, "requeue_stale_pieces")
@@ -491,31 +514,36 @@ def test_user_cannot_see_or_act_on_another_users_piece(svc: httpx.Client, a: Use
 def test_models_hidden_until_ready_and_admin_queue_is_service_only(
     svc: httpx.Client, a: User
 ) -> None:
-    piece = insert_piece(svc, a.id, status="review")
-    svc.post(
-        "/rest/v1/piece_models",
-        json={
+    piece = insert_piece(svc, a.id, status="review", attempt=2)
+
+    def model(attempt: int, candidate: int, selected: bool) -> dict[str, Any]:
+        return {
             "piece_id": piece["id"],
-            "attempt": 1,
-            "provider": "parametric",
-            "candidate": 0,
-            "preview_path": f"{piece['id']}/1/model_preview.glb",
+            "attempt": attempt,
+            "provider": f"p{attempt}{candidate}",
+            "candidate": candidate,
+            "selected": selected,
+            "preview_path": f"{piece['id']}/{attempt}/model_preview.glb",
             "max_error": 0.4,
-        },
-    ).raise_for_status()
+        }
+
+    # Attempt 1 (old), then two candidates of attempt 2: the selected one was created first.
+    for row in (model(1, 0, True), model(2, 0, True), model(2, 1, False)):
+        svc.post("/rest/v1/piece_models", json=row).raise_for_status()
 
     assert a.client.get(f"/rest/v1/piece_models?piece_id=eq.{piece['id']}").json() == []
     r = svc.get(f"/rest/v1/admin_review_queue?id=eq.{piece['id']}")
     assert r.status_code == 200, r.text
     rows = r.json()
-    assert len(rows) == 1 and rows[0]["provider"] == "parametric"
-    assert rows[0]["preview_path"] == f"{piece['id']}/1/model_preview.glb"
+    assert len(rows) == 1 and rows[0]["provider"] == "p20" and rows[0]["selected"] is True
+    assert rows[0]["preview_path"] == f"{piece['id']}/2/model_preview.glb"
 
     r = a.client.get("/rest/v1/admin_review_queue")
     assert r.status_code in (401, 403), r.text
 
     patch_piece(svc, piece["id"], status="ready")
-    assert len(a.client.get(f"/rest/v1/piece_models?piece_id=eq.{piece['id']}").json()) == 1
+    visible = a.client.get(f"/rest/v1/piece_models?piece_id=eq.{piece['id']}").json()
+    assert sorted(m["provider"] for m in visible) == ["p20", "p21"]  # current attempt only
 
 
 # ---------------------------------------------------------------- Storage
@@ -548,6 +576,30 @@ def test_photos_bucket_is_private_per_user_prefix(svc: httpx.Client, a: User, b:
             "/storage/v1/object/photos",
             json={"prefixes": [f"{a.id}/{piece_id}/1.jpg", f"{b.id}/{piece_id}/1.jpg"]},
         )
+
+
+def test_previews_are_public_by_url(svc: httpx.Client) -> None:
+    path = f"test_{uuid.uuid4().hex}/1/model_preview.glb"
+    r = svc.post(f"/storage/v1/object/previews/{path}", content=b"x")
+    assert r.status_code == 200, r.text
+    try:
+        r = httpx.get(f"{URL}/storage/v1/object/public/previews/{path}", timeout=30)
+        assert r.status_code == 200 and r.content == b"x", r.text
+    finally:
+        svc.request("DELETE", "/storage/v1/object/previews", json={"prefixes": [path]})
+
+
+def test_renders_are_not_writable_by_users(svc: httpx.Client, a: User) -> None:
+    path = f"test_{uuid.uuid4().hex}/1/front.png"
+    try:
+        r = a.client.post(
+            f"/storage/v1/object/renders/{path}",
+            content=b"x",
+            headers={"Content-Type": "image/png"},
+        )
+        assert r.status_code >= 400, r.text
+    finally:
+        svc.request("DELETE", "/storage/v1/object/renders", json={"prefixes": [path]})
 
 
 def test_buckets_exist_with_expected_visibility(svc: httpx.Client) -> None:
