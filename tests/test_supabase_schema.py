@@ -720,6 +720,16 @@ def test_claim_skips_recent_piece_without_photos(
     patch_piece(
         svc, deferred["id"], not_before=(datetime.now(UTC) + timedelta(hours=1)).isoformat()
     )
+    # Only the panel thumbnail arrived: not a photo, so it waits like a photo-less piece.
+    thumb_only = insert_piece(svc, a.id, created_at=iso_ago(60 * 24 * 200))
+    patch_piece(svc, thumb_only["id"], created_at=iso_ago(1))
+    svc.post(
+        "/rest/v1/piece_photos",
+        json={
+            "piece_id": thumb_only["id"],
+            "storage_path": f"{a.id}/{thumb_only['id']}/thumb.jpg",
+        },
+    ).raise_for_status()
     ready = insert_piece(svc, a.id, created_at=iso_ago(2))
     svc.post(
         "/rest/v1/piece_photos",
@@ -730,8 +740,8 @@ def test_claim_skips_recent_piece_without_photos(
     assert r.json()["id"] == ready["id"]
     r = rpc(svc, "claim_next_piece")
     assert r.json() is None or r.json().get("id") is None, r.text
-    assert get_piece(svc, waiting["id"])["status"] == "queued"
-    assert get_piece(svc, deferred["id"])["status"] == "queued"
+    for piece in (waiting, deferred, thumb_only):
+        assert get_piece(svc, piece["id"])["status"] == "queued"
 
 
 def test_attribution_is_not_client_writable(svc: httpx.Client, a: User) -> None:

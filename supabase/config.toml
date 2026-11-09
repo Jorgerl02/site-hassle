@@ -4,9 +4,16 @@ project_id = "site-hassle"
 site_url = "http://localhost:3000"
 additional_redirect_urls = ["http://localhost:3000/auth/callback", "http://localhost:3000/**"]
 
-# Magic link without PKCE: the link carries a token hash that /auth/callback verifies with
-# verifyOtp, so it works when opened in another browser than the one that asked for it.
-# Apply with `supabase config push --project-ref oyntcaxzskzntiyzxquy`.
+# Sign-in links without PKCE: they carry a token hash that /auth/callback verifies with
+# verifyOtp, so they work in any browser. A first sign-in gets the «confirmation» email
+# (type=signup); later ones the «magic_link» email (type=magiclink). Both need custom SMTP
+# (free tier with the default email provider refuses template changes). Apply with
+# `supabase config push --project-ref oyntcaxzskzntiyzxquy`.
 [auth.email.template.magic_link]
 subject = "Tu enlace para entrar en Pieza 3D"
 content_path = "./supabase/templates/magic_link.html"
+
+[auth.email.template.confirmation]
+subject = "Confirma tu correo y entra en Pieza 3D"
+content_path = "./supabase/templates/confirmation.html"
+

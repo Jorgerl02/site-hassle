@@ -77,7 +77,10 @@ class FakeDB:
         old = bool(created) and datetime.fromisoformat(created) < datetime.now(UTC) - timedelta(
             minutes=10
         )
-        return bool(self.photos.get(p["id"])) or old
+        photos = [
+            r for r in self.photos.get(p["id"], []) if "/thumb." not in r.get("storage_path", "")
+        ]
+        return bool(photos) or old
 
     def claim_next(self):
         # Same as claim_next_piece() in SQL: oldest claimable → generating, claimed_at, error null.
