@@ -7,15 +7,17 @@ import { getCurrentUser } from "@/lib/auth";
 import { SignInForm } from "./SignInForm";
 
 export const metadata: Metadata = {
-  title: "Sign in",
-  description: "Sign in with your email to create your first 3D piece.",
+  title: "Log in",
+  description: "Log in to your Pieza 3D account with your email.",
   robots: { index: false },
   alternates: { canonical: "/entrar" },
 };
 
 export default async function SignInPage() {
-  // Already signed in: nothing to do here.
-  if (await getCurrentUser()) redirect("/panel");
+  // Already signed in to an account: nothing to do here. An anonymous trial may
+  // log in to an existing account (its pieces move there, see `sendMagicLink`).
+  const current = await getCurrentUser();
+  if (current && !current.user.is_anonymous) redirect("/panel");
 
   return (
     <>
@@ -24,9 +26,9 @@ export default async function SignInPage() {
         <Stack gap="8">
           <Stack gap="3">
             <Heading as="h1" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500">
-              Sign in with your email
+              Log in with your email
             </Heading>
-            <Text color="fg.muted">Create your first piece and see it in 3D for free.</Text>
+            <Text color="fg.muted">We&apos;ll email you a link to log in. No password needed.</Text>
           </Stack>
           {/* useSearchParams needs a boundary to keep the page in the static shell. */}
           <Suspense fallback={null}>

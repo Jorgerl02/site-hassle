@@ -197,8 +197,9 @@ test("the customer sees the free viewer and cannot download without credits", as
   await expect(measures).toContainText("165 cm");
   await expect(measures).toContainText("60 cm");
 
-  await page.getByRole("button", { name: "Download (1 credit)" }).click();
-  await expect(page.getByText("You need 1 credit")).toBeVisible();
+  await page.getByRole("button", { name: "Download GLB + USDZ (1 credit)" }).click();
+  await expect(page.getByTestId("packs-dialog")).toBeVisible();
+  await page.getByRole("button", { name: "Not now" }).click();
   const { data: piece } = await db.from("pieces").select("status").eq("id", pieceId!).single();
   expect(piece?.status).toBe("ready");
 });
@@ -237,7 +238,7 @@ test("with a credit the customer downloads the GLB and the USDZ", async ({ page,
 
   await signInAs(page, db, customer!.email);
   await page.goto(`/piezas/${pieceId}`);
-  await page.getByRole("button", { name: "Download (1 credit)" }).click();
+  await page.getByRole("button", { name: "Download GLB + USDZ (1 credit)" }).click();
   await page.getByRole("button", { name: "Use 1 credit and download" }).click();
   await expect(page.getByTestId("piece-status")).toHaveText("Downloaded", { timeout: 15_000 });
 

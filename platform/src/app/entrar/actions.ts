@@ -3,6 +3,8 @@
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { ATTRIBUTION_COOKIE, readAttributionCookie } from "@/lib/attribution";
+import { getCurrentUser } from "@/lib/auth";
+import { setClaimCookie } from "@/lib/claim";
 import { createServerClient } from "@/lib/supabase/server";
 
 export type SignInState =
@@ -26,6 +28,10 @@ export async function sendMagicLink(_prev: SignInState, formData: FormData): Pro
   if (!EMAIL_RE.test(email)) {
     return { status: "error", message: "Enter a valid email address.", email };
   }
+
+  // An anonymous trial logging in to an account: its pieces move there on the callback.
+  const current = await getCurrentUser();
+  if (current?.user.is_anonymous) await setClaimCookie(current.user.id);
 
   const attribution = readAttributionCookie((await cookies()).get(ATTRIBUTION_COOKIE)?.value);
   const supabase = await createServerClient();

@@ -1,13 +1,12 @@
-import { Badge, Box, Button, Container, Grid, Heading, List, Stack, Text } from "@chakra-ui/react";
-import NextLink from "next/link";
+import { Badge, Box, Container, Grid, Heading, List, Stack, Text } from "@chakra-ui/react";
 import { DAILY_PIECE_LIMIT, formatEur, HIGHLIGHT_LABEL, MAX_EXTRA_VERSIONS, PACKS } from "@/lib/pricing";
+import { StartCta } from "./StartCta";
 
 const RULES = [
   "You only pay for the pieces you download, after seeing them.",
   `Requesting another version of the same piece is free (up to ${MAX_EXTRA_VERSIONS}).`,
   "If a piece fails or isn't useful to you, you don't spend a credit.",
-  "Credits you buy never expire.",
-  "No refunds: that's why you see every piece in full before you spend a credit.",
+  "Used credits are non-refundable · unused credits never expire. That's why you see every piece in full before you spend a credit.",
 ];
 
 export function Pricing() {
@@ -53,12 +52,16 @@ export function Pricing() {
                 {pack.credits === 1 ? "One downloaded piece" : `${formatEur(pack.perPieceCents)} per piece`}
               </Text>
               <Box flex="1" />
-              <Button asChild colorPalette={pack.highlighted ? "clay" : "ink"} variant={pack.highlighted ? "solid" : "outline"} rounded="full">
-                <NextLink href="/entrar">Start for free</NextLink>
-              </Button>
             </Stack>
           ))}
         </Grid>
+
+        <Stack mt={{ base: 8, md: 10 }} gap="2" align={{ base: "stretch", sm: "flex-start" }}>
+          <StartCta source="landing_pricing" />
+          <Text fontSize="sm" color="fg.muted">
+            No credit card required · Free preview &amp; AR
+          </Text>
+        </Stack>
 
         <List.Root mt={{ base: 8, md: 10 }} gap="2" color="fg.muted" ps="5">
           {RULES.map((rule) => (
@@ -66,7 +69,7 @@ export function Pricing() {
           ))}
         </List.Root>
         <Text mt="4" fontSize="sm" color="fg.muted">
-          VAT included. Buy credits when you want to download; no card needed to get started.
+          VAT included. Buy credits only when you want to download.
         </Text>
       </Container>
     </Box>

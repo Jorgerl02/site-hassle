@@ -10,7 +10,7 @@ export interface Example {
   widthCm: number;
   heightCm: number;
   depthCm: number;
-  /** Interactive 3D viewer; iOS Quick Look derives the USDZ from the GLB. */
+  /** Interactive 3D viewer; iOS Quick Look uses `/examples/<id>.usdz` when deployed. */
   model?: { glb: string };
 }
 

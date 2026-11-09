@@ -42,8 +42,8 @@ test("creates a piece from the form and shows it queued", async ({ page }) => {
   await signInAs(page, db, owner.email);
   await page.waitForLoadState("networkidle");
   expect(hydrationErrors).toEqual([]);
-  await page.getByRole("link", { name: "New piece" }).click();
-  await expect(page).toHaveURL(/\/piezas\/nueva$/);
+  await page.getByRole("link", { name: "Turn a photo into a 3D model" }).click();
+  await expect(page).toHaveURL(/\/piezas\/nueva\?source=panel$/);
 
   // Client-side validation runs before anything is uploaded.
   await page.getByRole("button", { name: "Create piece" }).click();
@@ -106,14 +106,15 @@ test("asks for a credit, then downloads with one", async ({ page }) => {
   await signInAs(page, db, owner.email);
   await page.goto(`/piezas/${pieceId}`);
 
-  await page.getByRole("button", { name: "Download (1 credit)" }).click();
-  await expect(page.getByText("You need 1 credit")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Buy credits" }).last()).toHaveAttribute("href", "/creditos");
+  await expect(page.getByTestId("header-credits")).toContainText("0 credits · Buy");
+  await page.getByRole("button", { name: "Download GLB + USDZ (1 credit)" }).click();
+  await expect(page.getByTestId("packs-dialog")).toBeVisible();
+  await page.getByRole("button", { name: "Not now" }).click();
 
   const { error } = await db.rpc("grant_credits", { p_user: owner.id, p_delta: 1, p_reason: "grant" });
   expect(error).toBeNull();
   await page.reload();
-  await page.getByRole("button", { name: "Download (1 credit)" }).click();
+  await page.getByRole("button", { name: "Download GLB + USDZ (1 credit)" }).click();
   await page.getByRole("button", { name: "Use 1 credit and download" }).click();
 
   await expect(page.getByTestId("piece-status")).toHaveText("Downloaded", { timeout: 15_000 });

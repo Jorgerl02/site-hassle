@@ -1,4 +1,6 @@
 import { Box, Container, Grid, Heading, HStack, Stack, Text } from "@chakra-ui/react";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import Image from "next/image";
 import { EXAMPLES, exampleDimensions, modelSrc, photoSrc, type Example } from "@/lib/examples";
 import { LazyModel } from "./LazyModel";
@@ -26,6 +28,11 @@ export function Examples() {
   );
 }
 
+/** `/examples/<id>.usdz` when that file is in `public/examples/` (checked at build time). */
+function usdzFor(id: string): string | undefined {
+  return existsSync(path.join(process.cwd(), "public", "examples", `${id}.usdz`)) ? `/examples/${id}.usdz` : undefined;
+}
+
 function ExampleCard({ example }: { example: Example }) {
   const alt3d = `3D model: ${example.name.toLowerCase()}`;
   return (
@@ -42,7 +49,7 @@ function ExampleCard({ example }: { example: Example }) {
         </Box>
         <Box flex="1">
           {example.model ? (
-            <LazyModel glb={example.model.glb} poster={modelSrc(example.id)} alt={alt3d} />
+            <LazyModel glb={example.model.glb} poster={modelSrc(example.id)} alt={alt3d} usdz={usdzFor(example.id)} />
           ) : (
             <Box position="relative" aspectRatio="1" rounded="lg" overflow="hidden" bg="white">
               <Image src={modelSrc(example.id)} alt={alt3d} fill sizes="(max-width: 768px) 45vw, 240px" style={{ objectFit: "contain" }} />

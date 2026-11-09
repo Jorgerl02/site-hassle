@@ -4,6 +4,8 @@ import NextLink from "next/link";
 import { TrackEvent } from "@/components/Analytics";
 import { AppHeader } from "@/components/pieces/AppHeader";
 import { PieceCard } from "@/components/pieces/PieceCard";
+import { SaveAccountCard } from "@/components/pieces/SaveAccount";
+import { sourceOf } from "@/lib/attribution";
 import { requireUser } from "@/lib/auth";
 import { getBalance, signedThumbUrls } from "@/lib/pieces";
 import { createServerClient } from "@/lib/supabase/server";
@@ -19,7 +21,8 @@ export default async function PanelPage({
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
 }) {
   // Redirects to /entrar before anything streams when there is no session.
-  const { user } = await requireUser();
+  const { user, profile } = await requireUser();
+  const anonymous = user.is_anonymous === true;
   // `/auth/callback` adds `?registro=1` on the first sign-in of an account.
   const firstSignIn = (await searchParams).registro === "1";
   const supabase = await createServerClient();
@@ -38,18 +41,31 @@ export default async function PanelPage({
   return (
     <>
       <AppHeader />
-      {firstSignIn ? <TrackEvent event="signup" onceKey={`signup:${user.id}`} cleanParam="registro" /> : null}
+      {firstSignIn && !anonymous ? (
+        <TrackEvent event="signup" onceKey={`signup:${user.id}`} params={{ source: sourceOf(profile?.attribution) }} cleanParam="registro" />
+      ) : null}
       <Container as="main" maxW="5xl" px={{ base: 4, md: 8 }} py={{ base: 8, md: 12 }}>
         <Flex justify="space-between" align="center" gap="4" wrap="wrap" mb="6">
           <Heading as="h1" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500">
             Your pieces
           </Heading>
           <Button asChild colorPalette="clay" rounded="full">
-            <NextLink href="/piezas/nueva">New piece</NextLink>
+            <NextLink href="/piezas/nueva?source=panel">Turn a photo into a 3D model</NextLink>
           </Button>
         </Flex>
 
+        {anonymous ? (
+          <Box mb="6">
+            <SaveAccountCard
+              next="/panel"
+              title="Save your pieces"
+              body="You're on a free trial without an account. Add your email to keep your pieces, get notified and download them."
+            />
+          </Box>
+        ) : null}
+
         <Flex
+          display={anonymous ? "none" : "flex"}
           bg="bg.subtle"
           rounded="xl"
           px="4"

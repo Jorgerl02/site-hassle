@@ -1,8 +1,10 @@
 "use client";
 
-import { Button, Field, Input, Stack, Text } from "@chakra-ui/react";
+import { Button, Field, Input, Link, Stack, Text } from "@chakra-ui/react";
+import NextLink from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useActionState } from "react";
+import { GoogleButton } from "@/components/pieces/GoogleButton";
 import { sendMagicLink, type SignInState } from "./actions";
 
 const CALLBACK_ERRORS: Record<string, string> = {
@@ -27,30 +29,37 @@ export function SignInForm() {
   const error = state.status === "error" ? state.message : callbackError;
 
   return (
-    <form action={formAction} noValidate>
-      <Stack gap="4">
-        <Field.Root invalid={Boolean(error)}>
-          <Field.Label>Email</Field.Label>
-          <Input
-            name="email"
-            type="email"
-            autoComplete="email"
-            inputMode="email"
-            placeholder="you@yourstore.com"
-            required
-            size="lg"
-            bg="bg.panel"
-            defaultValue={state.status === "error" ? state.email : undefined}
-          />
-          {error ? <Field.ErrorText>{error}</Field.ErrorText> : null}
-        </Field.Root>
-        <Button type="submit" size="lg" colorPalette="clay" rounded="full" loading={pending} loadingText="Sending…">
-          Email me a sign-in link
-        </Button>
-        <Text fontSize="sm" color="fg.subtle">
-          No password needed: we email you a link to sign in. If it&apos;s your first time, we&apos;ll create your account.
-        </Text>
-      </Stack>
-    </form>
+    <Stack gap="3">
+      <GoogleButton next="/panel" link={false} />
+      <form action={formAction} noValidate>
+        <Stack gap="4">
+          <Field.Root invalid={Boolean(error)}>
+            <Field.Label>Email</Field.Label>
+            <Input
+              name="email"
+              type="email"
+              autoComplete="email"
+              inputMode="email"
+              placeholder="you@yourstore.com"
+              required
+              size="lg"
+              bg="bg.panel"
+              defaultValue={state.status === "error" ? state.email : undefined}
+            />
+            {error ? <Field.ErrorText>{error}</Field.ErrorText> : null}
+          </Field.Root>
+          <Button type="submit" size="lg" colorPalette="clay" rounded="full" loading={pending} loadingText="Sending…">
+            Email me a login link
+          </Button>
+          <Text fontSize="sm" color="fg.subtle">
+            New here? You don&apos;t need an account to start:{" "}
+            <Link asChild color="clay.fg" fontWeight="600">
+              <NextLink href="/piezas/nueva?source=login_page">turn a photo into a 3D model</NextLink>
+            </Link>
+            .
+          </Text>
+        </Stack>
+      </form>
+    </Stack>
   );
 }

@@ -1,3 +1,5 @@
+import { groupThousands } from "@/lib/format";
+
 export type PackId = "pieza_1" | "pieza_10" | "pieza_30";
 
 export interface Pack {
@@ -27,6 +29,9 @@ export const HIGHLIGHT_LABEL = "Most popular";
 /** Pieces a free account can create per day (mirrors `daily_piece_limit` in SQL). */
 export const DAILY_PIECE_LIMIT = 3;
 
+/** Pieces an anonymous trial (no email yet) can create per day (mirrors `anonymous_daily_piece_limit`). */
+export const ANONYMOUS_DAILY_PIECE_LIMIT = 1;
+
 /** Extra versions a customer can request per piece. */
 export const MAX_EXTRA_VERSIONS = 2;
 
@@ -34,9 +39,6 @@ export function getPack(id: string): Pack | undefined {
   return PACKS.find((p) => p.id === id);
 }
 
-function groupThousands(digits: string): string {
-  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}
 
 /**
  * English euro formatting: «€69», «€6.90», «€1,000», «-€6.90». Symbol first,

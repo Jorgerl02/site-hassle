@@ -3,15 +3,15 @@ import type { Metadata } from "next";
 import NextLink from "next/link";
 import { TrackEvent } from "@/components/Analytics";
 import { requireUser } from "@/lib/auth";
-import { formatCount, formatCreditDelta, formatCredits, getLedger, supabaseFulfillmentDeps, type LedgerClient } from "@/lib/credits";
+import { SaveAccountCard } from "@/components/pieces/SaveAccount";
+import { confirmCheckoutReturn, type ReturnInfo } from "@/lib/checkout-return";
+import { formatCount, formatCreditDelta, formatCredits, getLedger, type LedgerClient } from "@/lib/credits";
 import { formatEur, HIGHLIGHT_LABEL, PACKS, WAIVER_TEXT, type Pack } from "@/lib/pricing";
 
 import { PRODUCT_NAME } from "@/lib/site";
-import { fulfillCheckoutSession, getStripe, isStripeConfigured } from "@/lib/stripe";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { isStripeConfigured } from "@/lib/stripe";
 import { createServerClient } from "@/lib/supabase/server";
 import { startCheckout } from "./actions";
-
 
 export const metadata: Metadata = {
   title: "Credits",
@@ -33,44 +33,14 @@ function param(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-type ReturnState = "paid" | "pending" | null;
-
-interface ReturnInfo {
-  state: ReturnState;
-  /** Amount actually paid in euros, for the `purchase` conversion. */
-  value?: number;
-}
-
-/**
- * Back from Checkout the webhook may not have arrived yet: fulfil from the
- * session itself (idempotent with the webhook), only for the signed-in owner.
- * Returns null unless the session was retrieved and belongs to the user.
- */
-async function confirmReturn(sessionId: string | undefined, userId: string): Promise<ReturnInfo> {
-  const stripe = getStripe();
-  if (!stripe || !sessionId?.startsWith("cs_")) return { state: null };
-  try {
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    if (session.client_reference_id !== userId) return { state: null };
-    if (session.payment_status === "unpaid") return { state: "pending" };
-    const result = await fulfillCheckoutSession(
-      session,
-      supabaseFulfillmentDeps(() => createAdminClient() as unknown as LedgerClient),
-    );
-    if (!result.handled) return { state: null };
-    return { state: "paid", value: session.amount_total != null ? session.amount_total / 100 : undefined };
-  } catch (error) {
-    console.error("[stripe] return confirmation failed", error);
-    return { state: null };
-  }
-}
-
 export default async function CreditsPage({ searchParams }: { searchParams: SearchParams }) {
   // Redirects to /entrar before anything streams when there is no session.
   const { user } = await requireUser();
+  const anonymous = user.is_anonymous === true;
   const params = await searchParams;
   const sessionId = param(params.session_id);
-  const returned: ReturnInfo = param(params.ok) === "1" ? await confirmReturn(sessionId, user.id) : { state: null };
+  const returned: ReturnInfo =
+    param(params.ok) === "1" ? await confirmCheckoutReturn(sessionId, user.id) : { state: null };
   const returnState = returned.state;
   const paymentError = param(params.error) === "pago";
   const waiverError = param(params.error) === "desistimiento";
@@ -126,7 +96,12 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
             <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="xl" p={{ base: 6, md: 8 }}>
               <Text color="fg.muted">Your balance</Text>
               <Flex align="baseline" gap="3" mt="1">
-                <Text data-testid="credit-balance" fontFamily="heading" fontSize={{ base: "6xl", md: "7xl" }} lineHeight="1">
+                <Text
+                  data-testid="credit-balance"
+                  fontFamily="heading"
+                  fontSize={{ base: "6xl", md: "7xl" }}
+                  lineHeight="1"
+                >
                   {formatCount(ledger.balance)}
                 </Text>
                 <Text fontSize="lg" color="fg.muted">
@@ -144,32 +119,50 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
               Buy credits
             </Heading>
             {/* One form: each "Buy" submits its pack; the waiver checkbox is required (native validation, checked again on the server). */}
-            <Stack asChild gap="6">
-              <form action={startCheckout}>
-                <Grid templateColumns={{ base: "1fr", md: "repeat(3, 1fr)" }} gap={{ base: 4, md: 6 }} alignItems="stretch">
-                  {PACKS.map((pack) => (
-                    <PackCard key={pack.id} pack={pack} paymentsEnabled={paymentsEnabled} />
-                  ))}
-                </Grid>
-                {paymentsEnabled ? (
-                  <Flex asChild gap="3" align="flex-start" fontSize="sm" cursor="pointer">
-                    <label>
-                      <input
-                        type="checkbox"
-                        name="waiver"
-                        required
-                        data-testid="waiver"
-                        style={{ marginTop: "0.2rem", width: "1rem", height: "1rem", accentColor: "#9A5132", flexShrink: 0 }}
-                      />
-                      <Text as="span">{WAIVER_TEXT}</Text>
-                    </label>
-                  </Flex>
-                ) : null}
-              </form>
-            </Stack>
+            {anonymous ? (
+              <SaveAccountCard
+                next="/creditos"
+                title="Save your account to buy credits"
+                body="Credits, receipts and invoices go to your email. Your pieces stay as they are."
+              />
+            ) : (
+              <Stack asChild gap="6">
+                <form action={startCheckout}>
+                  <Grid
+                    templateColumns={{ base: "1fr", md: "repeat(3, 1fr)" }}
+                    gap={{ base: 4, md: 6 }}
+                    alignItems="stretch"
+                  >
+                    {PACKS.map((pack) => (
+                      <PackCard key={pack.id} pack={pack} paymentsEnabled={paymentsEnabled} />
+                    ))}
+                  </Grid>
+                  {paymentsEnabled ? (
+                    <Flex asChild gap="3" align="flex-start" fontSize="sm" cursor="pointer">
+                      <label>
+                        <input
+                          type="checkbox"
+                          name="waiver"
+                          required
+                          data-testid="waiver"
+                          style={{
+                            marginTop: "0.2rem",
+                            width: "1rem",
+                            height: "1rem",
+                            accentColor: "#9A5132",
+                            flexShrink: 0,
+                          }}
+                        />
+                        <Text as="span">{WAIVER_TEXT}</Text>
+                      </label>
+                    </Flex>
+                  ) : null}
+                </form>
+              </Stack>
+            )}
             <Text fontSize="sm" color="fg.muted" textWrap="pretty">
-              VAT included. Credits you buy never expire. No refunds: that&apos;s why you see every piece in full, with
-              its dimensions and in augmented reality, before you spend a credit.
+              VAT included. Used credits are non-refundable · unused credits never expire. That&apos;s why you see every
+              piece in full, with its dimensions and in augmented reality, before you spend a credit.
             </Text>
           </Stack>
 
@@ -180,7 +173,14 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
             {ledger.entries.length === 0 ? (
               <Text color="fg.muted">No activity yet.</Text>
             ) : (
-              <Stack as="ul" listStyleType="none" gap="0" borderTopWidth="1px" borderColor="border" data-testid="ledger">
+              <Stack
+                as="ul"
+                listStyleType="none"
+                gap="0"
+                borderTopWidth="1px"
+                borderColor="border"
+                data-testid="ledger"
+              >
                 {ledger.entries.map((entry) => (
                   <Flex
                     as="li"
@@ -198,7 +198,8 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
                         {entry.label}
                         {entry.pieceName ? (
                           <Text as="span" fontWeight="400" color="fg.muted">
-                            {" "}· {entry.pieceName}
+                            {" "}
+                            · {entry.pieceName}
                           </Text>
                         ) : null}
                       </Text>

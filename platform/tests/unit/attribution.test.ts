@@ -49,3 +49,28 @@ describe("attribution cookie", () => {
     expect(readAttributionCookie('{"utm_source":5,"ref":"ok"}')).toEqual({ ref: "ok" });
   });
 });
+
+describe("source", () => {
+  it("is an attribution key the proxy keeps", async () => {
+    const { parseAttribution } = await import("@/lib/attribution");
+    expect(parseAttribution(new URLSearchParams("source=landing_hero"))).toEqual({ source: "landing_hero" });
+  });
+
+  it("sourceOf prefers source, then utm_source, then direct", async () => {
+    const { sourceOf } = await import("@/lib/attribution");
+    expect(sourceOf({ source: "landing_pricing", utm_source: "meta" })).toBe("landing_pricing");
+    expect(sourceOf({ utm_source: "meta" })).toBe("meta");
+    expect(sourceOf(null)).toBe("direct");
+    expect(sourceOf("x")).toBe("direct");
+  });
+});
+
+describe("mergeAttribution", () => {
+  it("keeps the ad when only a CTA source arrives, and lets a new ad replace everything", async () => {
+    const { mergeAttribution } = await import("@/lib/attribution");
+    const ad = { utm_source: "meta", utm_campaign: "c1" };
+    expect(mergeAttribution(ad, { source: "landing_hero" })).toEqual({ ...ad, source: "landing_hero" });
+    expect(mergeAttribution({ ...ad, source: "landing_hero" }, { utm_source: "google" })).toEqual({ utm_source: "google" });
+    expect(mergeAttribution(null, { source: "x" })).toEqual({ source: "x" });
+  });
+});

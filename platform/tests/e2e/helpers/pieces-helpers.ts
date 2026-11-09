@@ -41,7 +41,7 @@ export async function deletePieceTestUser(db: Db, user: PieceTestUser | undefine
   for (const { id } of pieces ?? []) {
     const { data: photos } = await db.storage.from("photos").list(`${user.id}/${id}`);
     if (photos?.length) await db.storage.from("photos").remove(photos.map((o) => `${user.id}/${id}/${o.name}`));
-    await db.storage.from("previews").remove([`${id}/1/model_preview.glb`]);
+    await db.storage.from("previews").remove([`${id}/1/model_preview.glb`, `${id}/1/model_preview.usdz`]);
     await db.storage.from("models").remove([`${id}/1/model_web.glb`, `${id}/1/model.usdz`]);
   }
   await db.auth.admin.deleteUser(user.id);
@@ -82,9 +82,12 @@ const PREVIEW_GLB = readFileSync(path.join(process.cwd(), "../tests/fixtures/pla
  * the worker's paths, inserts the selected `piece_models` row and moves the
  * piece to `ready`.
  */
-export async function simulateWorkerReady(db: Db, pieceId: string): Promise<void> {
+export async function simulateWorkerReady(db: Db, pieceId: string, options: { previewUsdz?: boolean } = {}): Promise<void> {
   const base = `${pieceId}/1`;
   const uploads = [
+    ...(options.previewUsdz
+      ? [db.storage.from("previews").upload(`${base}/model_preview.usdz`, Buffer.from("usdz"), { contentType: "model/vnd.usdz+zip", upsert: true })]
+      : []),
     db.storage.from("previews").upload(`${base}/model_preview.glb`, PREVIEW_GLB, { contentType: "model/gltf-binary", upsert: true }),
     db.storage.from("models").upload(`${base}/model_web.glb`, PREVIEW_GLB, { contentType: "model/gltf-binary", upsert: true }),
     db.storage.from("models").upload(`${base}/model.usdz`, Buffer.from("usdz"), { contentType: "model/vnd.usdz+zip", upsert: true }),

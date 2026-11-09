@@ -10,6 +10,8 @@ export const ATTRIBUTION_KEYS = [
   "utm_content",
   "utm_term",
   "ref",
+  // The CTA that started the trial (`/piezas/nueva?source=landing_hero`, an ad…).
+  "source",
 ] as const;
 
 export type AttributionKey = (typeof ATTRIBUTION_KEYS)[number];
@@ -52,4 +54,26 @@ export function readAttributionCookie(value: string | undefined | null): Attribu
   } catch {
     return null;
   }
+}
+
+/** Funnel source of a profile: `attribution.source`, else `utm_source`, else `direct`. */
+export function sourceOf(attribution: unknown): string {
+  if (typeof attribution === "object" && attribution !== null && !Array.isArray(attribution)) {
+    const record = attribution as Record<string, unknown>;
+    for (const key of ["source", "utm_source"]) {
+      const value = clean(record[key]);
+      if (value) return value;
+    }
+  }
+  return "direct";
+}
+
+/**
+ * Last touch: a URL with campaign keys (`utm_*`, `ref`) replaces the stored
+ * attribution; one with only `source` (an internal CTA) keeps the campaign and
+ * updates the source.
+ */
+export function mergeAttribution(previous: Attribution | null, fresh: Attribution): Attribution {
+  const campaign = Object.keys(fresh).some((key) => key !== "source");
+  return campaign || !previous ? fresh : { ...previous, ...fresh };
 }

@@ -118,7 +118,7 @@ describe("validatePieceInput", () => {
       const result = validatePieceInput(input({ photos: [photo({ name: "catalogo.pdf", type })] }));
       expect(result).toMatchObject({
         ok: false,
-        errors: { photos: "“catalogo.pdf” isn’t a supported photo: use JPG, PNG or WebP." },
+        errors: { photos: "“catalogo.pdf” isn't a supported photo: use JPG, PNG or WebP." },
       });
     }
     for (const type of ["image/png", "image/webp"]) {

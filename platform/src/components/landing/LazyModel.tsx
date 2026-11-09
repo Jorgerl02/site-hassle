@@ -8,15 +8,18 @@ interface LazyModelProps {
   glb: string;
   poster: string;
   alt: string;
+  /** Preview USDZ for iOS Quick Look (`/examples/<id>.usdz`), only when the file is deployed. */
+  usdz?: string;
 }
 
 /**
  * Shows the poster until the card nears the viewport, then loads
  * model-viewer (and three.js) on demand. `ar-scale="fixed"` keeps the real
- * size in AR, which is the whole point of the product. No `ios-src`: Quick Look
- * gets a USDZ that model-viewer generates from the GLB.
+ * size in AR, which is the whole point of the product. `ios-src` points at a
+ * small preview USDZ when there is one: without it model-viewer converts the
+ * GLB on the fly and Safari drops the tap, so Quick Look never opens.
  */
-export function LazyModel({ glb, poster, alt }: LazyModelProps) {
+export function LazyModel({ glb, poster, alt, usdz }: LazyModelProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(false);
 
@@ -40,6 +43,7 @@ export function LazyModel({ glb, poster, alt }: LazyModelProps) {
       {active ? (
         <model-viewer
           src={glb}
+          {...(usdz ? { "ios-src": usdz } : {})}
           poster={poster}
           alt={alt}
           camera-controls

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
-import { DAILY_LIMIT_MESSAGE, isUuid, sqlErrorCode } from "@/lib/pieces";
+import { dailyLimitMessage, isUuid, sqlErrorCode } from "@/lib/pieces";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { MAX_PHOTOS, validatePieceInput, type PieceField } from "@/lib/validation";
@@ -76,7 +76,9 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
     status: "queued",
   });
   if (pieceError) {
-    if (sqlErrorCode(pieceError) === "daily_limit") return { ok: false, message: DAILY_LIMIT_MESSAGE };
+    if (sqlErrorCode(pieceError) === "daily_limit") {
+      return { ok: false, message: dailyLimitMessage(current.user.is_anonymous === true) };
+    }
     console.error("createPiece: insert piece failed", pieceError.message);
     return { ok: false, message: "We couldn't create the piece. Please try again in a few minutes." };
   }

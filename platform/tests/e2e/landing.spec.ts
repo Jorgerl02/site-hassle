@@ -4,10 +4,11 @@ test.describe("landing", () => {
   test("loads with English metadata and the main headline", async ({ page }) => {
     const response = await page.goto("/");
     expect(response?.status()).toBe(200);
-    await expect(page).toHaveTitle(/true-to-scale/);
+    await expect(page).toHaveTitle(/Photo to 3D model for furniture/);
     await expect(page.locator("html")).toHaveAttribute("lang", "en");
-    await expect(page.getByRole("heading", { level: 1 })).toContainText("true to scale");
-    await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /catalogue photo/);
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("True-to-scale 3D models of your furniture from one photo");
+    await expect(page.getByText("Photo to 3D model for furniture stores")).toBeVisible();
+    await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /Photo to 3D model/);
     await expect(page.locator('meta[property="og:locale"]')).toHaveAttribute("content", "en_GB");
   });
 
@@ -43,11 +44,25 @@ test.describe("landing", () => {
     await expect(page.locator("#examples article")).toHaveCount(7);
   });
 
-  test("primary CTA leads to /entrar", async ({ page }) => {
+  test("one start action, three times in the page, straight to the form without an account", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("link", { name: "Try a piece for free" }).click();
+    const ctas = page.getByRole("main").getByRole("link", { name: "Turn a photo into a 3D model" });
+    await expect(ctas).toHaveCount(3);
+    for (const [i, source] of ["landing_hero", "landing_pricing", "landing_footer"].entries()) {
+      await expect(ctas.nth(i)).toHaveAttribute("href", `/piezas/nueva?source=${source}`);
+    }
+    await expect(page.getByText("No credit card required · Free preview & AR").first()).toBeVisible();
+    await ctas.first().click();
+    await expect(page).toHaveURL(/\/piezas\/nueva\?source=landing_hero$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Turn a photo into a 3D model" })).toBeVisible();
+    await expect(page.getByLabel("Add photos")).toBeAttached();
+  });
+
+  test("/entrar is only «Log in» in the header", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("banner").getByRole("link", { name: "Log in" }).click();
     await expect(page).toHaveURL(/\/entrar$/);
-    await expect(page.getByRole("heading", { level: 1, name: "Sign in with your email" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Log in with your email" })).toBeVisible();
     await expect(page.getByLabel("Email")).toBeVisible();
   });
 
@@ -69,8 +84,8 @@ test.describe("landing", () => {
     await expect(page.locator("model-viewer").first()).toBeAttached({ timeout: 15_000 });
     await expect(page.locator("model-viewer").first()).toHaveAttribute("ar-scale", "fixed");
     await expect(page.locator("model-viewer").first()).toHaveAttribute("ar-modes", "webxr scene-viewer quick-look");
-    // The USDZ files are not deployed: Quick Look must derive them from the GLB.
-    await expect(page.locator("model-viewer[ios-src]")).toHaveCount(0);
+    // iOS Quick Look gets an explicit preview USDZ (a generated one loses the tap on Safari).
+    await expect(page.locator("model-viewer").first()).toHaveAttribute("ios-src", /^\/examples\/p\d+\.usdz$/);
   });
 
   test("stores utm and ref in the attribution cookie", async ({ page, context }) => {

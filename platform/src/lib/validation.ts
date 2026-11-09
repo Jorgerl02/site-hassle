@@ -1,4 +1,5 @@
 import { Constants, type PieceKind } from "@/lib/database.types";
+import { groupThousands } from "@/lib/format";
 
 /** Same limits as the `photos` bucket (Task 1) and the worker validator. */
 export const MAX_PHOTOS = 4;
@@ -100,12 +101,12 @@ function formatMb(bytes: number): string {
 }
 
 function formatInt(n: number): string {
-  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return groupThousands(String(Math.round(n)));
 }
 
 function photoError(photo: PhotoMeta): string | null {
   if (!(PHOTO_TYPES as readonly string[]).includes(photo.type)) {
-    return `“${photo.name}” isn’t a supported photo: use JPG, PNG or WebP.`;
+    return `“${photo.name}” isn't a supported photo: use JPG, PNG or WebP.`;
   }
   if (photo.size > MAX_PHOTO_BYTES) {
     return `“${photo.name}” is ${formatMb(photo.size)} MB; the limit is ${formatMb(MAX_PHOTO_BYTES)} MB.`;

@@ -5,12 +5,19 @@
  *
  * Funnel events and how each platform receives them:
  *
- * | Event            | Meta Pixel                      | GA4              |
- * |------------------|---------------------------------|------------------|
- * | `signup`         | `CompleteRegistration`          | `sign_up`        |
- * | `piece_created`  | custom `PieceCreated`           | `piece_created`  |
- * | `piece_approved` | custom `PieceApproved`          | `piece_approved` |
- * | `purchase`       | `Purchase` (value, currency)    | `purchase`       |
+ * | Event              | Meta Pixel                      | GA4                |
+ * |--------------------|---------------------------------|--------------------|
+ * | `landing_view`     | custom `LandingView`            | `landing_view`     |
+ * | `piece_started`    | custom `PieceStarted`           | `piece_started`    |
+ * | `preview_opened`   | custom `PreviewOpened`          | `preview_opened`   |
+ * | `ar_opened`        | custom `AROpened`               | `ar_opened`        |
+ * | `download_clicked` | custom `DownloadClicked`        | `download_clicked` |
+ * | `signup`           | `CompleteRegistration`          | `sign_up`          |
+ * | `purchase`         | `Purchase` (value, currency)    | `purchase`         |
+ * | `piece_approved`   | custom `PieceApproved`          | `piece_approved`   |
+ *
+ * Every event may carry `source` (the CTA or ad that started the trial, also
+ * stored in `profiles.attribution.source`), sent as a custom parameter.
  *
  * The vendors' queue stubs are created on first use, so events fired before
  * the scripts finish loading are kept and sent in order. Nothing is created or
@@ -20,12 +27,22 @@
 
 import { measurementAllowed, readConsent } from "@/lib/consent";
 
-export type AnalyticsEvent = "signup" | "piece_created" | "piece_approved" | "purchase";
+export type AnalyticsEvent =
+  | "landing_view"
+  | "piece_started"
+  | "preview_opened"
+  | "ar_opened"
+  | "download_clicked"
+  | "signup"
+  | "purchase"
+  | "piece_approved";
 
 export interface EventParams {
   value?: number;
   currency?: string;
   transactionId?: string;
+  /** Funnel source (`?source=` of the CTA, else `utm_source`, else `direct`). */
+  source?: string;
 }
 
 export const META_PIXEL_ID = process.env.NEXT_PUBLIC_META_PIXEL_ID?.trim() || undefined;
@@ -49,18 +66,38 @@ declare global {
 }
 
 const META_EVENT: Record<AnalyticsEvent, { standard: boolean; name: string }> = {
+  landing_view: { standard: false, name: "LandingView" },
+  piece_started: { standard: false, name: "PieceStarted" },
+  preview_opened: { standard: false, name: "PreviewOpened" },
+  ar_opened: { standard: false, name: "AROpened" },
+  download_clicked: { standard: false, name: "DownloadClicked" },
   signup: { standard: true, name: "CompleteRegistration" },
-  piece_created: { standard: false, name: "PieceCreated" },
-  piece_approved: { standard: false, name: "PieceApproved" },
   purchase: { standard: true, name: "Purchase" },
+  piece_approved: { standard: false, name: "PieceApproved" },
 };
 
 const GA_EVENT: Record<AnalyticsEvent, string> = {
+  landing_view: "landing_view",
+  piece_started: "piece_started",
+  preview_opened: "preview_opened",
+  ar_opened: "ar_opened",
+  download_clicked: "download_clicked",
   signup: "sign_up",
-  piece_created: "piece_created",
-  piece_approved: "piece_approved",
   purchase: "purchase",
+  piece_approved: "piece_approved",
 };
+
+/** `?source=` of the URL, else `utm_source`, else `direct` (letters, digits, `_-.` only, 60 chars). */
+export function sourceFromSearch(search: string | URLSearchParams): string {
+  const params = typeof search === "string" ? new URLSearchParams(search) : search;
+  return cleanSource(params.get("source")) ?? cleanSource(params.get("utm_source")) ?? "direct";
+}
+
+export function cleanSource(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const clean = value.trim().replace(/[^\w.-]/g, "").slice(0, 60);
+  return clean || null;
+}
 
 let initialised = false;
 
@@ -117,12 +154,14 @@ export function track(event: AnalyticsEvent, params: EventParams = {}): boolean 
   if (!measurementActive()) return false;
   initAnalytics();
   const money = params.value !== undefined ? { value: params.value, currency: params.currency ?? "EUR" } : {};
+  const source = params.source ? { source: params.source } : {};
   const meta = META_EVENT[event];
   // eventID lets Meta deduplicate the purchase (e.g. against a future Conversions API call).
   const metaOptions = params.transactionId ? [{ eventID: params.transactionId }] : [];
-  window.fbq?.(meta.standard ? "track" : "trackCustom", meta.name, money, ...metaOptions);
+  window.fbq?.(meta.standard ? "track" : "trackCustom", meta.name, { ...money, ...source }, ...metaOptions);
   window.gtag?.("event", GA_EVENT[event], {
     ...money,
+    ...source,
     ...(params.transactionId ? { transaction_id: params.transactionId } : {}),
   });
   return true;
@@ -151,22 +190,16 @@ export function trackOnce(event: AnalyticsEvent, onceKey: string, params?: Event
   }
 }
 
-const PIECE_PAGE = /^\/piezas\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * Funnel events inferred from a client navigation: creating a piece is the
- * only way from `/piezas/nueva` to a piece page (the form redirects there).
- */
-export function eventForNavigation(from: string | null, to: string): AnalyticsEvent | null {
-  if (from === "/piezas/nueva" && PIECE_PAGE.test(to)) return "piece_created";
-  return null;
-}
-
 /**
  * First sign-in of a magic-link account: Supabase confirms the email on that
  * same verification, so `email_confirmed_at` and `last_sign_in_at` coincide.
+ * An anonymous trial that adds its email confirms it on the link click, so the
+ * conversion also counts (its `last_sign_in_at` is refreshed by the callback).
  */
-export function isFirstSignIn(user: { email_confirmed_at?: string | null; last_sign_in_at?: string | null } | null | undefined): boolean {
+export function isFirstSignIn(
+  user: { email_confirmed_at?: string | null; last_sign_in_at?: string | null; is_anonymous?: boolean } | null | undefined,
+): boolean {
+  if (user?.is_anonymous) return false;
   if (!user?.email_confirmed_at || !user.last_sign_in_at) return false;
   const gap = Date.parse(user.last_sign_in_at) - Date.parse(user.email_confirmed_at);
   return Number.isFinite(gap) && Math.abs(gap) < 60_000;

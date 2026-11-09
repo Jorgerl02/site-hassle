@@ -63,6 +63,9 @@ export default defineConfig({
       RESEND_API_KEY: "",
       NEXT_PUBLIC_META_PIXEL_ID: E2E_META_PIXEL_ID,
       NEXT_PUBLIC_GA_ID: E2E_GA_ID,
+      // The Google button is built in so its wiring is tested; the OAuth request itself is intercepted
+      // (`google-auth.spec.ts`). Without the flag the button is absent (unit test `google-auth.test.ts`).
+      NEXT_PUBLIC_GOOGLE_AUTH_ENABLED: "true",
     },
   },
 });

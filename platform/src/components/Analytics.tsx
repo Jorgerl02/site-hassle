@@ -2,12 +2,11 @@
 
 import { usePathname } from "next/navigation";
 import Script from "next/script";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   GA_ID,
   META_PIXEL_ID,
   analyticsEnabled,
-  eventForNavigation,
   initAnalytics,
   measurementActive,
   trackOnce,
@@ -42,19 +41,12 @@ function useMeasurementAllowed(): boolean {
  */
 export function Analytics() {
   const pathname = usePathname();
-  const previous = useRef<string | null>(null);
   const allowed = useMeasurementAllowed();
 
   useEffect(() => {
-    // The navigation is remembered even without consent, so `piece_created`
-    // is not misread after a later acceptance.
-    const from = previous.current;
-    previous.current = pathname;
     if (!allowed) return;
     initAnalytics();
     trackPageView(pathname);
-    const event = eventForNavigation(from, pathname);
-    if (event) trackOnce(event, `${event}:${pathname}`);
   }, [pathname, allowed]);
 
   if (!allowed || !analyticsEnabled()) return null;
@@ -92,8 +84,9 @@ export function TrackEvent({
   const value = params?.value;
   const currency = params?.currency;
   const transactionId = params?.transactionId;
+  const source = params?.source;
   useEffect(() => {
-    trackOnce(event, onceKey, { value, currency, transactionId });
+    trackOnce(event, onceKey, { value, currency, transactionId, source });
     if (cleanParam) {
       const url = new URL(window.location.href);
       if (url.searchParams.has(cleanParam)) {
@@ -101,6 +94,6 @@ export function TrackEvent({
         window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
       }
     }
-  }, [event, onceKey, value, currency, transactionId, cleanParam]);
+  }, [event, onceKey, value, currency, transactionId, source, cleanParam]);
   return null;
 }

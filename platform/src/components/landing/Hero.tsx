@@ -1,9 +1,9 @@
 import { Box, Button, Container, Flex, Grid, Heading, HStack, Stack, Text } from "@chakra-ui/react";
 import Image from "next/image";
-import NextLink from "next/link";
 import { formatEur, PACKS } from "@/lib/pricing";
 import { modelSrc, photoSrc } from "@/lib/examples";
 import { formatDimensions } from "@/lib/format";
+import { StartCta } from "./StartCta";
 
 const cheapest = Math.min(...PACKS.map((p) => p.perPieceCents));
 
@@ -24,24 +24,26 @@ export function Hero() {
               letterSpacing="-0.02em"
               textWrap="balance"
             >
-              Upload a photo and the dimensions. Download the piece in 3D, true to scale.
+              True-to-scale 3D models of your furniture from one photo
             </Heading>
             <Text fontSize={{ base: "lg", md: "xl" }} color="fg.muted" maxW="34em" textWrap="pretty">
-              A model ready for your website and for augmented reality on any phone. You see all of it before you
-              pay: you only pay for the pieces you download.
+              Photo to 3D model for furniture stores: upload a catalogue photo and the dimensions, and get a model
+              ready for your website and for augmented reality on any phone. You only pay for the files you download.
             </Text>
             <Flex gap="3" wrap="wrap">
-              <Button asChild size="xl" colorPalette="clay" rounded="full" px="7">
-                <NextLink href="/entrar">Try a piece for free</NextLink>
-              </Button>
+              <StartCta source="landing_hero" />
               <Button asChild size="xl" variant="ghost" colorPalette="ink" rounded="full">
                 <a href="#examples">See examples</a>
               </Button>
             </Flex>
-            <Text fontSize="sm" color="fg.subtle" maxW="34em">
-              Viewing the result is free. Downloading the piece as GLB and USDZ costs 1 credit (from{" "}
-              {formatEur(cheapest)}).
-            </Text>
+            <Stack gap="1">
+              <Text fontSize="sm" fontWeight="600" color="fg.muted">
+                No credit card required · Free preview &amp; AR
+              </Text>
+              <Text fontSize="sm" color="fg.subtle" maxW="34em">
+                Downloading the piece as GLB and USDZ costs 1 credit (from {formatEur(cheapest)}).
+              </Text>
+            </Stack>
           </Stack>
 
           <Box bg="bg.panel" rounded="2xl" borderWidth="1px" borderColor="border" p={{ base: 4, md: 6 }} shadow="sm">

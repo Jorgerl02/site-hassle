@@ -4,6 +4,12 @@ project_id = "site-hassle"
 site_url = "https://pieza-3d.vercel.app"
 additional_redirect_urls = ["https://pieza-3d.vercel.app/auth/callback", "https://pieza-3d.vercel.app/**", "https://*-rodriguezlorajorge-6960s-projects.vercel.app/auth/callback", "http://localhost:3000/auth/callback", "http://localhost:3000/**", "http://localhost:3150/**"]
 
+# Anonymous free trial: the landing CTA signs the visitor in anonymously (no email) so he can
+# create a piece; the email is asked while it generates (optional) or at download. Manual
+# linking lets an anonymous user attach Google (`linkIdentity`) when that provider is set up.
+enable_anonymous_sign_ins = true
+enable_manual_linking = true
+
 # Sign-in links without PKCE: they carry a token hash that /auth/callback verifies with
 # verifyOtp, so they work in any browser. A first sign-in gets the «confirmation» email
 # (type=signup); later ones the «magic_link» email (type=magiclink). Both need custom SMTP
@@ -17,3 +23,12 @@ content_path = "./supabase/templates/magic_link.html"
 subject = "Confirm your email and sign in to Pieza 3D"
 content_path = "./supabase/templates/confirmation.html"
 
+
+# «Continue with Google» (README «Google sign-in»). Do not push this section until both env
+# vars exist in the shell that runs `supabase config push`; until then strip it like the
+# template sections. `enable_manual_linking` (above) lets an anonymous trial link Google.
+[auth.external.google]
+enabled = true
+client_id = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID)"
+secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
+skip_nonce_check = false

@@ -22,9 +22,9 @@ const sans = Inter({
 });
 
 const description =
-  "Upload a catalogue photo and the dimensions of your furniture and get a true-to-scale 3D model, ready for your website and for augmented reality at home. Viewing is free; you only pay for the pieces you download.";
+  "Photo to 3D model for furniture: upload a catalogue photo and the dimensions and get a true-to-scale 3D model for your website and AR. No credit card required; you only pay for the pieces you download.";
 
-const title = `${PRODUCT_NAME}: true-to-scale 3D furniture from a single photo`;
+const title = `Photo to 3D model for furniture, true to scale with AR · ${PRODUCT_NAME}`;
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl()),

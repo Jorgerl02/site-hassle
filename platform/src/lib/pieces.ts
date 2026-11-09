@@ -2,7 +2,7 @@ import "server-only";
 import type { PostgrestError } from "@supabase/supabase-js";
 import { notFound } from "next/navigation";
 import type { Piece, PieceModel, PieceStatus } from "@/lib/database.types";
-import { DAILY_PIECE_LIMIT } from "@/lib/pricing";
+import { ANONYMOUS_DAILY_PIECE_LIMIT, DAILY_PIECE_LIMIT } from "@/lib/pricing";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { supabaseUrl } from "@/lib/supabase/env";
 import { createServerClient } from "@/lib/supabase/server";
@@ -29,6 +29,13 @@ export const SETTLED_STATUSES: readonly PieceStatus[] = ["ready", "approved", "r
 export const MODEL_STATUSES: readonly PieceStatus[] = ["ready", "approved", "rejected"];
 
 export const DAILY_LIMIT_MESSAGE = `You've reached today's limit of ${DAILY_PIECE_LIMIT} pieces. You can create more tomorrow.`;
+
+/** Anonymous trials get 1 free piece a day; saving the account raises it to 3. */
+export const ANONYMOUS_DAILY_LIMIT_MESSAGE = `You've used today's free piece (${ANONYMOUS_DAILY_PIECE_LIMIT} a day without an account). Save your account or log in to create up to ${DAILY_PIECE_LIMIT} a day.`;
+
+export function dailyLimitMessage(anonymous: boolean): string {
+  return anonymous ? ANONYMOUS_DAILY_LIMIT_MESSAGE : DAILY_LIMIT_MESSAGE;
+}
 
 /**
  * Columns the customer may read: exactly the column-level SELECT grant of
@@ -129,6 +136,22 @@ function encodePath(path: string): string {
 export function previewUrl(model: Pick<PieceModel, "preview_path"> | null): string | null {
   if (!model?.preview_path) return null;
   return `${supabaseUrl()}/storage/v1/object/public/previews/${encodePath(model.preview_path)}`;
+}
+
+/**
+ * Public preview USDZ for iOS Quick Look, next to the preview GLB
+ * (`…/model_preview.usdz`), or null when the worker did not upload one
+ * (pieces made before it did): a HEAD request decides.
+ */
+export async function previewUsdzUrl(model: Pick<PieceModel, "preview_path"> | null): Promise<string | null> {
+  if (!model?.preview_path?.endsWith(".glb")) return null;
+  const url = `${supabaseUrl()}/storage/v1/object/public/previews/${encodePath(model.preview_path.replace(/\.glb$/, ".usdz"))}`;
+  try {
+    const response = await fetch(url, { method: "HEAD", cache: "no-store" });
+    return response.ok ? url : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Signed URLs (1 h) of the renders. Call only after checking the piece is the user's. */

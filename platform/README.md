@@ -57,6 +57,29 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 | `WORKER_SHARED_SECRET` | No | Activa `POST /api/internal/notify` (lo llama el worker). El mismo valor va en el `.env` de la raíz |
 | `NEXT_PUBLIC_META_PIXEL_ID`, `NEXT_PUBLIC_GA_ID` | No | Meta Pixel y GA4. Vacías: no se carga ningún script de terceros ni aparece el aviso de cookies |
 | `NEXT_PUBLIC_CONTACT_EMAIL` | Sí en producción | Correo de contacto de `/privacy` (derechos RGPD) |
+| `NEXT_PUBLIC_GOOGLE_AUTH_ENABLED` | No | `true` muestra «Continue with Google» (en `/entrar`, la tarjeta de guardar y el modal de alta). Solo cuando el proveedor Google de Supabase tenga claves |
+| `CLAIM_SECRET` | No | Clave HMAC de la cookie `sh_claim` (reasignar piezas de una prueba anónima a una cuenta existente). Vacía: usa `SUPABASE_SERVICE_ROLE_KEY` |
+
+## Prueba gratis sin correo (sesión anónima)
+
+- Todos los CTA de la landing («Turn a photo into a 3D model», en la cabecera, el héroe, precios y el cierre) llevan a `/piezas/nueva?source=<cta>`. `/entrar` solo aparece como «Log in».
+- Sin sesión, el formulario llama a `supabase.auth.signInAnonymously()` justo antes de subir las fotos (con `data.attribution` = cookie `sh_attr` + `source`; el trigger `handle_new_user` la guarda en `profiles.attribution`). La pieza vive en `/piezas/{id}` desde el primer momento, ligada a ese usuario anónimo.
+- **Límite:** 1 pieza al día sin correo (trigger `enforce_daily_piece_limit` con `auth.jwt()->>'is_anonymous'`; `anonymous_daily_piece_limit()`), 3 con cuenta. Más el límite de Supabase de 30 altas anónimas por hora e IP.
+- **Google:** ver «Google sign-in» abajo; sin `NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=true` el botón no aparece.
+- **Guardar la pieza:** mientras se genera, tarjeta opcional «Save this piece and get an email when it's ready»; al pulsar «Download GLB + USDZ (1 credit)», el modal de alta obligatorio. Ambos llaman a `saveAccount` (`src/app/account/actions.ts`): `updateUser({ email })` convierte el usuario anónimo (mismo id, mismas piezas) al abrir el enlace, que vuelve a la pieza con `?download=1`. «Continue with Google» va encima del correo: en `/entrar` es `signInWithOAuth`; en la tarjeta y el modal de alta de un anónimo es `linkIdentity` (mismo usuario). Si esa cuenta de Google ya tiene usuario, `/auth/callback` recibe `error_code=identity_already_exists`, inicia sesión con Google en ese usuario y mueve las piezas del anónimo (misma cookie `sh_claim`).
+- **Correo ya registrado:** se guarda en una cookie firmada (`sh_claim`, HMAC con `CLAIM_SECRET` o la clave de servicio, 24 h) el id anónimo y se manda un enlace de acceso a esa cuenta; `/auth/callback` mueve las fotos en Storage al prefijo de la cuenta y llama a `claim_anonymous_pieces` (piezas, filas de fotos, libro y compras). Lo mismo si el anónimo entra por «Log in».
+- **Créditos:** saldo y «Buy» en la cabecera de la app. Con 0 créditos, «Download» abre el modal de packs (precio por pieza en grande); Checkout vuelve a `/piezas/{id}?download=1&ok=1&session_id=…`, que acredita el pack, gasta el crédito y lanza la descarga del GLB sin otro clic. Un anónimo no puede comprar (necesita correo para recibo y factura).
+- `profiles.email` se actualiza solo cuando cambia `auth.users.email` (trigger `on_auth_user_email_changed`), así el aviso «pieza lista» llega al convertido.
+- Los usuarios anónimos que nunca se convierten se quedan en `auth.users` con sus piezas: límpialos de vez en cuando (Supabase recomienda borrar los anónimos antiguos).
+
+## Google sign-in
+
+El código está listo; falta que Jorge cree las claves:
+
+1. **Google Cloud Console** → APIs & Services → **OAuth consent screen**: tipo *External*, nombre «Pieza 3D», correo de soporte, dominios autorizados `pieza-3d.vercel.app` y `supabase.co`; publícala.
+2. **Credentials → Create credentials → OAuth client ID** (*Web application*), con *Authorized redirect URI* `https://oyntcaxzskzntiyzxquy.supabase.co/auth/v1/callback`. Copia el *client id* y el *client secret*.
+3. **Supabase:** Dashboard → Authentication → Providers → Google → pega id y secreto y activa. O por CLI: exporta `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID` y `SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET` y haz `supabase config push --project-ref oyntcaxzskzntiyzxquy` con la sección `[auth.email.template.*]` quitada temporalmente (el plan gratuito la rechaza) y restaura el archivo. **Sin esas variables, quita también `[auth.external.google]` antes de empujar.**
+4. **Vercel:** `NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=true` (Production y Preview) y redeploy. Sin esa variable el botón no aparece en ningún sitio.
 
 ## Avisos por correo
 
@@ -76,10 +99,16 @@ Eventos del embudo (`src/lib/analytics.ts`):
 
 | Evento | Cuándo | Meta | GA4 |
 |---|---|---|---|
-| `signup` | Primer inicio de sesión: `/auth/callback` redirige a `/panel?registro=1` | `CompleteRegistration` | `sign_up` |
-| `piece_created` | El formulario aterriza en la nueva pieza (`/piezas/nueva` → `/piezas/[id]`) | `PieceCreated` (personalizado) | `piece_created` |
-| `piece_approved` | Descarga con crédito correcta (`ResultActions`) | `PieceApproved` (personalizado) | `piece_approved` |
-| `purchase` | Aviso «Pago recibido» de `/creditos?ok=1` con la sesión verificada | `Purchase` con importe y EUR | `purchase` con `transaction_id` |
+| `landing_view` | Visita a la landing (una por navegador y día) | `LandingView` | `landing_view` |
+| `piece_started` | El formulario envía la pieza (tras subir las fotos) | `PieceStarted` | `piece_started` |
+| `preview_opened` | El visor de la pieza carga el modelo | `PreviewOpened` | `preview_opened` |
+| `ar_opened` | Se abre la RA desde el visor | `AROpened` | `ar_opened` |
+| `download_clicked` | Clic en «Download GLB + USDZ (1 credit)» | `DownloadClicked` | `download_clicked` |
+| `signup` | Alta o conversión de la prueba anónima: `/auth/callback` añade `?registro=1` al destino | `CompleteRegistration` | `sign_up` |
+| `purchase` | «Pago recibido» de `/creditos?ok=1` o de la pieza tras el modal de packs, con la sesión verificada | `Purchase` con importe y EUR | `purchase` con `transaction_id` |
+| `piece_approved` | Descarga con crédito correcta (`ResultActions`) | `PieceApproved` | `piece_approved` |
+
+Todos llevan `source` (el `?source=` del CTA, guardado en `profiles.attribution.source`; si no, `utm_source`; si no, `direct`).
 
 Cada evento se envía una vez por navegador y clave (`localStorage`). La fuente de verdad del embudo son las tablas, no los píxeles: ver `docs/anuncios.md`.
 
@@ -97,7 +126,7 @@ Cada evento se envía una vez por navegador y clave (`localStorage`). La fuente 
 - `src/lib/pieces.ts` — etiquetas de estado (`PIECE_STATUS_LABEL`), lecturas de la pieza del cliente y URLs firmadas.
 - `src/lib/notify.ts`, `src/lib/analytics.ts` — avisos por correo y eventos del embudo.
 - `src/theme.ts` — tema de Chakra (paleta arena y arcilla; Fraunces para titulares, Inter para texto).
-- `public/examples/` — fotos y GLB del piloto que enseña la landing. Los USDZ no se versionan: Quick Look en iOS genera el USDZ a partir del GLB.
+- `public/examples/` — fotos y GLB del piloto que enseña la landing. Los `ios-src` de los ejemplos apuntan a `public/examples/<id>.usdz` solo si el archivo existe al hacer el build (hoy están en `.gitignore`: si no se versionan, en Vercel no hay `ios-src` y Quick Look no abre en iPhone). En las piezas, el visor usa `previews/{id}/{intento}/model_preview.usdz` si el worker lo subió (HEAD en el servidor) y su propio botón «View in your room» llama a `activateAR()` dentro del toque.
 
 ## Decisiones y trampas
 
@@ -165,7 +194,9 @@ Para producción:
 ### Lista de comprobación antes de anuncios
 
 - [ ] `NEXT_PUBLIC_SITE_URL` y Redirect URLs de Supabase con el dominio de producción (`supabase config push`).
-- [ ] SMTP propio en Supabase Auth y plantillas del enlace mágico (en inglés) aplicadas.
+- [ ] SMTP propio en Supabase Auth y plantillas del enlace mágico (en inglés) aplicadas. Con SMTP propio, añade a las plantillas (también «Change email address», que confirma la conversión de la prueba anónima) el **código de 6 dígitos** (`{{ .Token }}`) y un campo para teclearlo: el enlace abierto en otro navegador o en el navegador interno de la app de correo no encuentra la sesión anónima. Hasta entonces la web avisa «Open it on this device, in this browser».
+- [ ] **Cloudflare Turnstile** en el alta anónima (siguiente capa antiabuso): crea el sitio en Cloudflare, activa CAPTCHA en Supabase (Authentication → Bot and Abuse Protection, proveedor Turnstile, clave secreta) y pasa `captchaToken` a `signInAnonymously` en `PieceForm` (necesita la clave de Jorge; no implementado).
+- [ ] Google sign-in (sección «Google sign-in»): claves en Supabase y `NEXT_PUBLIC_GOOGLE_AUTH_ENABLED=true` en Vercel.
 - [ ] Stripe en live: precios creados con `pnpm stripe:setup`, webhook con los tres eventos, compra real de prueba hecha.
 
 - [ ] Resend con dominio verificado; recibes «Pieza en revisión» y el cliente «Your piece “…” is ready».
@@ -184,4 +215,4 @@ Para producción:
 
 ## Despliegue actual
 
-Proyecto Vercel `pieza-3d` (equipo rodriguezlorajorge-6960), URL pública **https://pieza-3d.vercel.app**. Variables de producción cargadas: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `WORKER_SHARED_SECRET`, `NEXT_PUBLIC_SITE_URL`. Faltan: Stripe, Resend y los ids de analítica. Auth de Supabase ya acepta `https://pieza-3d.vercel.app/auth/callback` (empujado con `supabase config push` sin las secciones de plantillas, que el plan gratuito rechaza). El worker corre en el Mac con `NOTIFY_URL=https://pieza-3d.vercel.app/api/internal/notify`.
+Proyecto Vercel `pieza-3d` (equipo rodriguezlorajorge-6960), URL pública **https://pieza-3d.vercel.app**. Variables de producción cargadas: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `WORKER_SHARED_SECRET`, `NEXT_PUBLIC_SITE_URL`. Faltan: Stripe, Resend y los ids de analítica. Auth de Supabase ya acepta `https://pieza-3d.vercel.app/auth/callback` (empujado con `supabase config push` sin las secciones de plantillas, que el plan gratuito rechaza). El 2026-11-09 se empujó igual `enable_anonymous_sign_ins = true` y `enable_manual_linking = true` (prueba gratis anónima); ese push también activó de paso `storage.vector` (valor por defecto de la CLI 2.116, sin uso). **Procedimiento de push:** copia `supabase/config.toml`, borra del archivo las secciones `[auth.email.template.*]` y, mientras no existan las variables de Google, `[auth.external.google]`; `supabase config push --project-ref oyntcaxzskzntiyzxquy`; restaura el archivo. El worker corre en el Mac con `NOTIFY_URL=https://pieza-3d.vercel.app/api/internal/notify`.

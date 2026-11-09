@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { groupThousands } from "@/lib/format";
 import type { FulfillmentDeps } from "@/lib/stripe";
 
 // Untyped on purpose: `credit_ledger`, `purchases` and `grant_credits` are not
@@ -71,7 +72,7 @@ export async function getLedger(userId: string, client: LedgerClient): Promise<L
 
 /** Absolute value with English thousands: «1,000». */
 function groupDigits(n: number): string {
-  return String(Math.abs(Math.trunc(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return groupThousands(String(Math.abs(Math.trunc(n))));
 }
 
 /** «9», «1,000», «−2» (true minus sign). */

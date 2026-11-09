@@ -3,6 +3,7 @@
 import { headers } from "next/headers";
 import { redirect, unstable_rethrow } from "next/navigation";
 import { requireUser } from "@/lib/auth";
+import { isUuid } from "@/lib/pieces";
 import { getPack } from "@/lib/pricing";
 import { getStripe } from "@/lib/stripe";
 
@@ -21,9 +22,13 @@ class CheckoutError extends Error {}
 /**
  * Creates a Stripe Checkout Session for a credit pack and returns its URL.
  * The price is looked up by `lookup_key` (= pack id), created by `pnpm stripe:setup`.
+ * With `pieceId` (pack modal on a piece) the customer comes back to that piece
+ * with `?download=1`, which spends the credit and downloads without another click.
  */
-export async function createCheckoutSession(packId: string): Promise<string> {
+export async function createCheckoutSession(packId: string, pieceId?: string): Promise<string> {
   const { user } = await requireUser();
+  // An anonymous trial has no email for the invoice or the receipt: it saves the account first.
+  if (user.is_anonymous) throw new CheckoutError("anonymous");
   const pack = getPack(packId);
   if (!pack) throw new CheckoutError(`unknown pack ${packId}`);
   const stripe = getStripe();
@@ -50,8 +55,10 @@ export async function createCheckoutSession(packId: string): Promise<string> {
     tax_id_collection: { enabled: true },
     customer_creation: "always",
     billing_address_collection: "required",
-    success_url: `${base}/creditos?ok=1&session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${base}/creditos`,
+    success_url: pieceId
+      ? `${base}/piezas/${pieceId}?download=1&ok=1&session_id={CHECKOUT_SESSION_ID}`
+      : `${base}/creditos?ok=1&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: pieceId ? `${base}/piezas/${pieceId}` : `${base}/creditos`,
   });
   if (!session.url) throw new CheckoutError("checkout session without url");
   return session.url;
@@ -60,16 +67,19 @@ export async function createCheckoutSession(packId: string): Promise<string> {
 /** Form action for the pack buttons: sends the browser to Stripe Checkout. */
 export async function startCheckout(formData: FormData): Promise<void> {
   const packId = String(formData.get("pack") ?? "");
-  if (formData.get("waiver") !== "on") redirect("/creditos?error=desistimiento");
+  const rawPiece = formData.get("piece");
+  const pieceId = isUuid(rawPiece) ? rawPiece : undefined;
+  const back = pieceId ? `/piezas/${pieceId}` : "/creditos";
+  if (formData.get("waiver") !== "on") redirect(`${back}?error=desistimiento`);
   let url: string;
 
   try {
-    url = await createCheckoutSession(packId);
+    url = await createCheckoutSession(packId, pieceId);
   } catch (error) {
     // requireUser() redirects by throwing; let Next handle it.
     unstable_rethrow(error);
     console.error("[stripe] checkout failed", error);
-    redirect("/creditos?error=pago");
+    redirect(`${back}?error=pago`);
   }
   redirect(url);
 }

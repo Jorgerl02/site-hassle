@@ -15,8 +15,10 @@ import {
   Text,
   Textarea,
 } from "@chakra-ui/react";
-import { useState, useTransition, type FormEvent } from "react";
+import { useRef, useState, useTransition, type FormEvent } from "react";
 import { createPiece } from "@/app/piezas/nueva/actions";
+import { trackOnce } from "@/lib/analytics";
+import type { Attribution } from "@/lib/attribution";
 import { createClient } from "@/lib/supabase/client";
 import {
   DEFAULT_KIND,
@@ -97,7 +99,17 @@ const DIMENSIONS = [
  * `<details>`: its fields stay in the DOM, so the defaults (`otro`, "Not
  * sure", "Not sure") are submitted when nobody opens it.
  */
-export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; defaults?: PieceFormDefaults }) {
+interface PieceFormProps {
+  /** Signed-in user (account or anonymous trial); null: the form signs in anonymously on submit. */
+  userId: string | null;
+  defaults?: PieceFormDefaults;
+  /** Funnel source, sent with `piece_started`. */
+  source: string;
+  /** Stored on the profile when the anonymous user is created (`profiles.attribution`). */
+  attribution: Attribution;
+}
+
+export function PieceForm({ userId, defaults = EMPTY_PIECE, source, attribution }: PieceFormProps) {
   const [photos, setPhotos] = useState<SelectedPhoto[]>([]);
   const [errors, setErrors] = useState<Partial<Record<PieceField, string>>>({});
   const [message, setMessage] = useState<string | null>(null);
@@ -110,6 +122,8 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
   const name = typedName ?? (photos[0] ? nameFromFileName(photos[0].file.name) : "");
   const [notes, setNotes] = useState(defaults.notes);
   const [pending, startTransition] = useTransition();
+  // The anonymous user created on a first submit is reused if that submit fails.
+  const owner = useRef(userId);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -141,8 +155,26 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
 
     startTransition(async () => {
       const supabase = createClient();
+      let ownerId = owner.current;
+      if (!ownerId) {
+        // Free trial without an email: an anonymous Supabase user owns the piece
+        // until the customer saves the account (same id, same pieces).
+        setProgress("Starting your free trial…");
+        const { data, error } = await supabase.auth.signInAnonymously({ options: { data: { attribution } } });
+        if (error || !data.user) {
+          setProgress(null);
+          setMessage(
+            error?.status === 429
+              ? "Too many free trials from this connection. Please try again later or log in."
+              : "We couldn't start your free trial. Please try again in a few minutes.",
+          );
+          return;
+        }
+        ownerId = data.user.id;
+        owner.current = ownerId;
+      }
       const pieceId = crypto.randomUUID();
-      const folder = `${userId}/${pieceId}`;
+      const folder = `${ownerId}/${pieceId}`;
       const uploaded: string[] = [];
       const cleanup = () => (uploaded.length ? supabase.storage.from("photos").remove(uploaded) : null);
 
@@ -169,6 +201,7 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
 
       setProgress("Creating your piece…");
       formData.set("id", pieceId);
+      trackOnce("piece_started", `piece_started:${pieceId}`, { source });
       // Redirects to /piezas/[id] on success; returns only on failure.
       let failure: Awaited<ReturnType<typeof createPiece>> | undefined;
       try {
@@ -194,7 +227,7 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
           <Field.Label>Photos</Field.Label>
           <Field.HelperText mb="2">
             A front or three-quarter view on a light background with no other furniture, the whole piece in the
-            frame and at least 1,000 px on the long side. The first photo is the main one.
+            frame and at least 1,000 px on the long side. The first photo is the main one.
           </Field.HelperText>
           <Box w="full">
             <PhotoDropzone photos={photos} onChange={setPhotos} invalid={Boolean(errors.photos)} disabled={pending} />

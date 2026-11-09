@@ -1,6 +1,7 @@
-import { Box, Button, Container, Flex, HStack, Link, Text } from "@chakra-ui/react";
+import { Box, Container, Flex, HStack, Link, Text } from "@chakra-ui/react";
 import NextLink from "next/link";
 import { PRODUCT_NAME } from "@/lib/site";
+import { StartCta } from "./StartCta";
 
 export function SiteHeader() {
   return (
@@ -17,9 +18,12 @@ export function SiteHeader() {
             <Link asChild color="fg.muted" fontSize="sm">
               <NextLink href="/#pricing">Pricing</NextLink>
             </Link>
-            <Button asChild size="sm" variant="outline" colorPalette="ink" rounded="full">
-              <NextLink href="/entrar">Sign in</NextLink>
-            </Button>
+            <Link asChild color="fg.muted" fontSize="sm">
+              <NextLink href="/entrar">Log in</NextLink>
+            </Link>
+            <Box display={{ base: "none", md: "block" }}>
+              <StartCta source="landing_header" size="sm" />
+            </Box>
           </HStack>
         </Flex>
       </Container>

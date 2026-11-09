@@ -36,7 +36,7 @@ test.describe("credits", () => {
     await expect(page.getByTestId("pack-pieza_10")).toContainText("€6.90 per piece");
     await expect(page.getByTestId("pack-pieza_30")).toContainText("€169");
     await expect(page.getByTestId("pack-pieza_30")).toContainText("€5.63 per piece");
-    await expect(page.getByText(/No refunds/)).toBeVisible();
+    await expect(page.getByText(/Used credits are non-refundable · unused credits never expire/)).toBeVisible();
 
     if (stripeConfigured()) {
       await expect(page.getByRole("button", { name: "Buy", exact: true })).toHaveCount(3);

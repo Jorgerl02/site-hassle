@@ -1,11 +1,16 @@
 import { Alert, Badge, Box, Button, Container, Flex, Heading, Link, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import type { Metadata } from "next";
 import NextLink from "next/link";
+import { TrackEvent } from "@/components/Analytics";
 import { AppHeader } from "@/components/pieces/AppHeader";
+import { AutoDownload } from "@/components/pieces/AutoDownload";
+import { SaveAccountCard } from "@/components/pieces/SaveAccount";
 import { ModelViewer } from "@/components/pieces/ModelViewer";
 import { ResultActions } from "@/components/pieces/ResultActions";
 import { StatusSteps } from "@/components/pieces/StatusSteps";
+import { sourceOf } from "@/lib/attribution";
 import { requireUser } from "@/lib/auth";
+import { confirmCheckoutReturn, type ReturnInfo } from "@/lib/checkout-return";
 import { formatCm } from "@/lib/format";
 import {
   FAILED_MESSAGE,
@@ -15,12 +20,14 @@ import {
   getPieceForUser,
   getSelectedModel,
   previewUrl,
+  previewUsdzUrl,
   signedModelUrls,
   signedRenderUrls,
   statusSteps,
   type CustomerPiece,
 } from "@/lib/pieces";
 import { MAX_EXTRA_VERSIONS } from "@/lib/pricing";
+import { isStripeConfigured } from "@/lib/stripe";
 import { KIND_LABEL } from "@/lib/validation";
 
 export const metadata: Metadata = {
@@ -73,23 +80,51 @@ function Notice({
   );
 }
 
-export default async function PiecePage({ params }: { params: Promise<{ id: string }> }) {
-  const { user } = await requireUser();
+type SearchParams = Promise<{ [key: string]: string | string[] | undefined }>;
+
+function param(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+export default async function PiecePage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: SearchParams }) {
+  const { user, profile } = await requireUser();
+  const anonymous = user.is_anonymous === true;
   const { id } = await params;
+  const query = await searchParams;
   const piece = await getPieceForUser(id);
+  // Back from Checkout (pack modal): credit the pack before reading the balance.
+  const sessionId = param(query.session_id);
+  const returned: ReturnInfo = param(query.ok) === "1" ? await confirmCheckoutReturn(sessionId, user.id) : { state: null };
+  // `?download=1`: the customer asked to download before signing up or buying; carry on without another click.
+  const autoDownload = param(query.download) === "1";
   const model = await getSelectedModel(piece);
-  const [renders, downloads, balance] = await Promise.all([
+  const showsModel = piece.status === "ready" || piece.status === "approved";
+  const [renders, downloads, balance, iosSrc] = await Promise.all([
     signedRenderUrls(model),
     signedModelUrls(piece, model),
-    piece.status === "ready" ? getBalance(user.id) : Promise.resolve(null),
+    piece.status === "ready" && !anonymous ? getBalance(user.id) : Promise.resolve(null),
+    showsModel ? previewUsdzUrl(model) : Promise.resolve(null),
   ]);
   const preview = previewUrl(model);
   const steps = statusSteps(piece.status);
-  const showModel = (piece.status === "ready" || piece.status === "approved") && preview;
+  const showModel = showsModel && preview;
+  const source = sourceOf(profile?.attribution);
+  const here = `/piezas/${piece.id}`;
+  const error = param(query.error);
 
   return (
     <>
       <AppHeader />
+      {param(query.registro) === "1" && !anonymous ? (
+        <TrackEvent event="signup" onceKey={`signup:${user.id}`} params={{ source }} cleanParam="registro" />
+      ) : null}
+      {returned.state === "paid" ? (
+        <TrackEvent
+          event="purchase"
+          onceKey={`purchase:${sessionId}`}
+          params={{ value: returned.value, currency: "EUR", transactionId: sessionId, source }}
+        />
+      ) : null}
       <Container as="main" maxW="5xl" px={{ base: 4, md: 8 }} py={{ base: 8, md: 12 }}>
         <Stack gap="2" mb="8">
           <Link asChild fontSize="sm" color="fg.muted">
@@ -103,7 +138,7 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
               {PIECE_STATUS_LABEL[piece.status]}
             </Badge>
           </Flex>
-          <Text color="fg.muted">{KIND_LABEL[piece.kind]}</Text>
+          {piece.kind !== "otro" ? <Text color="fg.muted">{KIND_LABEL[piece.kind]}</Text> : null}
         </Stack>
 
         <SimpleGrid columns={{ base: 1, md: showModel ? 5 : 1 }} gap={{ base: 6, md: 10 }} alignItems="start">
@@ -114,6 +149,9 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
                 poster={renders.three_quarter ?? renders.front}
                 alt={`3D model of ${piece.name}`}
                 placement={piece.kind === "cabecero" || piece.kind === "panel" ? "wall" : "floor"}
+                iosSrc={iosSrc ?? undefined}
+                pieceId={piece.id}
+                source={source}
               />
               <Text fontSize="sm" color="fg.subtle" mt="2">
                 Free preview. Turn it with your finger or mouse; on your phone, “View in your room” places it at
@@ -125,6 +163,19 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
           <Stack gap="6" gridColumn={{ md: showModel ? "span 2" : undefined }} maxW={showModel ? undefined : "xl"}>
             <Measures piece={piece} />
 
+            {returned.state === "paid" ? (
+              <Notice status="info" title="Payment received. Your credits are now in your balance." />
+            ) : null}
+            {returned.state === "pending" ? (
+              <Notice status="info" title="Payment pending confirmation. We'll add your credits as soon as your bank confirms it." />
+            ) : null}
+            {error === "pago" ? (
+              <Notice status="error" title="We couldn't open the payment page. Please try again in a few minutes." />
+            ) : null}
+            {error === "desistimiento" ? (
+              <Notice status="error" title="To buy, tick the box about immediate delivery of the digital content." />
+            ) : null}
+
             {steps && piece.status !== "ready" && piece.status !== "approved" ? (
               <Stack gap="3">
                 <StatusSteps steps={steps} poll={!SETTLED_STATUSES.includes(piece.status)} />
@@ -134,11 +185,23 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
               </Stack>
             ) : null}
 
+            {anonymous && steps && piece.status !== "ready" && piece.status !== "approved" ? (
+              <SaveAccountCard
+                next={here}
+                title="Save this piece and get an email when it's ready"
+                body="Optional. Your piece stays the same; you'll be able to come back to it from any device."
+              />
+            ) : null}
+
             {piece.status === "ready" ? (
               showModel ? (
                 <ResultActions
                   pieceId={piece.id}
                   balance={balance}
+                  anonymous={anonymous}
+                  autoDownload={autoDownload}
+                  source={source}
+                  paymentsEnabled={isStripeConfigured()}
                   versionsLeft={Math.max(0, MAX_EXTRA_VERSIONS - (piece.attempt - 1))}
                 />
               ) : (
@@ -149,6 +212,7 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
             {piece.status === "approved" ? (
               downloads ? (
                 <Stack gap="3">
+                  {autoDownload ? <AutoDownload href={downloads.glb} /> : null}
                   <Text fontWeight="600">Your files</Text>
                   <Stack direction={{ base: "column", sm: "row" }} gap="3">
                     <Button asChild colorPalette="clay" rounded="full">

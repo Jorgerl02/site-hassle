@@ -1,17 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { eventForNavigation, isFirstSignIn } from "@/lib/analytics";
+import { cleanSource, isFirstSignIn, sourceFromSearch } from "@/lib/analytics";
 
-const PIECE = "/piezas/0b5e1c1e-8a3f-4c1e-9d55-2f1a6c0d9e71";
 
-describe("eventForNavigation", () => {
-  it("reads piece_created from the form landing on the new piece", () => {
-    expect(eventForNavigation("/piezas/nueva", PIECE)).toBe("piece_created");
+describe("sourceFromSearch", () => {
+  it("prefers ?source, then utm_source, then direct", () => {
+    expect(sourceFromSearch("?source=landing_hero&utm_source=meta")).toBe("landing_hero");
+    expect(sourceFromSearch("?utm_source=meta")).toBe("meta");
+    expect(sourceFromSearch("")).toBe("direct");
   });
-  it("ignores every other navigation", () => {
-    expect(eventForNavigation(null, PIECE)).toBeNull();
-    expect(eventForNavigation("/panel", PIECE)).toBeNull();
-    expect(eventForNavigation("/piezas/nueva", "/panel")).toBeNull();
-    expect(eventForNavigation("/piezas/nueva", "/piezas/nueva")).toBeNull();
+  it("keeps only safe characters", () => {
+    expect(sourceFromSearch("?source=<script>ad 1")).toBe("scriptad1");
+    expect(cleanSource("   ")).toBeNull();
   });
 });
 
@@ -93,19 +92,19 @@ describe("track", () => {
     const analytics = await load({ NEXT_PUBLIC_META_PIXEL_ID: "123", NEXT_PUBLIC_GA_ID: "G-TEST" }, "granted");
     analytics.trackOnce("purchase", "purchase:cs_1", { value: 69, transactionId: "cs_1" });
     analytics.trackOnce("purchase", "purchase:cs_1", { value: 69, transactionId: "cs_1" });
-    analytics.track("piece_created");
+    analytics.track("piece_started", { source: "landing_hero" });
 
     const fbqQueue = (window as Window).fbq!.queue;
     expect(fbqQueue).toEqual([
       ["init", "123"],
       ["track", "Purchase", { value: 69, currency: "EUR" }, { eventID: "cs_1" }],
-      ["trackCustom", "PieceCreated", {}],
+      ["trackCustom", "PieceStarted", { source: "landing_hero" }],
     ]);
     const layer = ((window as Window).dataLayer ?? []).map((args) => Array.from(args as ArrayLike<unknown>));
     expect(layer[1]).toEqual(["config", "G-TEST", { send_page_view: false }]);
     expect(layer.slice(2)).toEqual([
       ["event", "purchase", { value: 69, currency: "EUR", transaction_id: "cs_1" }],
-      ["event", "piece_created", {}],
+      ["event", "piece_started", { source: "landing_hero" }],
     ]);
 
     // Page views carry origin + path only, never the query string.
