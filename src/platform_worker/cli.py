@@ -3,8 +3,8 @@
     platform-worker run [--once] [--poll-seconds 10] [--provider fake|tripo|fal]
     platform-worker piece <id> [--provider …]
 
-Settings come from the process environment and ``.env`` at the working directory
-(the environment wins): ``SUPABASE_URL``, ``SUPABASE_SERVICE_ROLE_KEY``, ``PROVIDER``,
+Settings come from ``platform_worker.config.load_settings``: the process environment over
+``.env`` (or ``WORKER_ENV_FILE``): ``SUPABASE_URL``, ``SUPABASE_SERVICE_ROLE_KEY``, ``PROVIDER``,
 ``TRIPO_API_KEY``, ``FAL_KEY``, ``FAL_MODEL`` and ``BLENDER_BIN``.
 """
 
@@ -17,17 +17,19 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from dotenv import dotenv_values
 from rich.console import Console
 
 from platform_worker import providers
+from platform_worker.config import load_settings
 from platform_worker.db import WorkerDB
-from platform_worker.pipeline import process_piece
+from platform_worker.pipeline import STATUS_QUEUED, process_piece
 from platform_worker.storage import Storage
 
-ENV_FILE = Path(".env")
 DEFAULT_WORKDIR = Path("runs/platform")
 STALE_MINUTES = 30
+REQUEUE_EVERY_CYCLES = 10
+# ``piece <id>`` only re-runs pieces that have no result waiting for review or the client.
+RETRYABLE_STATUSES = frozenset({"queued", "failed", "generating"})
 CONFIG_EXIT_CODE = 2
 
 app = typer.Typer(
@@ -39,14 +41,6 @@ console = Console(soft_wrap=True)
 err_console = Console(stderr=True, soft_wrap=True)
 
 
-def load_env(env_file: Path = ENV_FILE) -> dict[str, str | None]:
-    values: dict[str, str | None] = {}
-    if env_file.is_file():
-        values.update(dotenv_values(env_file))
-    values.update(os.environ)
-    return {k: (v.strip() or None) if isinstance(v, str) else v for k, v in values.items()}
-
-
 def _exit_config(message: str) -> None:
     err_console.print(f"[red]{message}[/red]")
     raise typer.Exit(CONFIG_EXIT_CODE)
@@ -54,7 +48,7 @@ def _exit_config(message: str) -> None:
 
 def build_context(provider_name: str | None) -> dict[str, Any]:
     """DB, Storage, provider and Blender from the settings; exit 2 when something is missing."""
-    env = load_env()
+    env = load_settings()
     url, key = env.get("SUPABASE_URL"), env.get("SUPABASE_SERVICE_ROLE_KEY")
     if not key:
         _exit_config("Falta SUPABASE_SERVICE_ROLE_KEY en .env o en el entorno.")
@@ -66,11 +60,16 @@ def build_context(provider_name: str | None) -> dict[str, Any]:
     except ValueError as exc:
         _exit_config(str(exc))
     blender = env.get("BLENDER_BIN")
+    if not blender or not os.access(blender, os.X_OK) or not Path(blender).is_file():
+        _exit_config(
+            "Falta Blender: define BLENDER_BIN en .env con la ruta al ejecutable "
+            "(p. ej. /Applications/Blender.app/Contents/MacOS/Blender)."
+        )
     return {
         "db": WorkerDB(url, key),  # type: ignore[arg-type]
         "storage": Storage(url, key),  # type: ignore[arg-type]
         "provider": provider,
-        "blender_bin": Path(blender) if blender else None,
+        "blender_bin": Path(blender),  # type: ignore[arg-type]
     }
 
 
@@ -87,6 +86,16 @@ def _process(ctx: dict[str, Any], row: dict[str, Any], workdir: Path) -> str:
     return status
 
 
+def _requeue_stale(db: Any) -> None:
+    try:
+        requeued = db.requeue_stale(STALE_MINUTES)
+    except Exception as exc:
+        err_console.print(f"[red]No se pudieron revisar las piezas huérfanas: {exc}[/red]")
+        return
+    if requeued:
+        console.print(f"{requeued} pieza(s) huérfana(s) devuelta(s) a la cola.")
+
+
 def run_loop(
     ctx: dict[str, Any],
     *,
@@ -94,20 +103,24 @@ def run_loop(
     poll_seconds: float,
     workdir: Path,
     sleep: Any = time.sleep,
+    max_cycles: int | None = None,
 ) -> int:
-    """Requeue stale pieces, then claim and process until empty (``once``) or forever.
-    Returns the number of pieces processed."""
+    """Requeue stale pieces (at start and every ``REQUEUE_EVERY_CYCLES`` cycles), then claim
+    and process until empty (``once``) or forever. A failing piece or a DB/network error
+    never stops the loop. ``max_cycles`` bounds the loop (tests). Returns the number of
+    pieces processed."""
     db = ctx["db"]
-    requeued = db.requeue_stale(STALE_MINUTES)
-    if requeued:
-        console.print(f"{requeued} pieza(s) huérfana(s) devuelta(s) a la cola.")
     if ctx["provider"] is None:
         console.print(
             "[yellow]Sin proveedor (PROVIDER): solo se generan piezas rectilíneas; "
             "las orgánicas quedarán como fallidas con el motivo.[/yellow]"
         )
     processed = 0
-    while True:
+    cycle = 0
+    while max_cycles is None or cycle < max_cycles:
+        if cycle % REQUEUE_EVERY_CYCLES == 0:
+            _requeue_stale(db)
+        cycle += 1
         try:
             row = db.claim_next()
         except Exception as exc:  # network blip: keep the worker alive in loop mode
@@ -123,10 +136,19 @@ def run_loop(
                 return processed
             sleep(poll_seconds)
             continue
-        _process(ctx, row, workdir)
+        try:
+            status = _process(ctx, row, workdir)
+        except Exception as exc:  # e.g. Supabase down while recording the result
+            err_console.print(f"[red]Error procesando la pieza {row.get('id')}: {exc}[/red]")
+            status = None
+            if not once:
+                sleep(poll_seconds)
         processed += 1
         if once:
             return processed
+        if status == STATUS_QUEUED:  # photos still uploading: do not re-claim it at once
+            sleep(poll_seconds)
+    return processed
 
 
 ProviderOpt = Annotated[
@@ -166,6 +188,12 @@ def piece(
     row = ctx["db"].get_piece(piece_id)
     if row is None:
         err_console.print(f"[red]No existe la pieza {piece_id}.[/red]")
+        raise typer.Exit(1)
+    if row.get("status") not in RETRYABLE_STATUSES:
+        err_console.print(
+            f"[red]La pieza {piece_id} está en estado «{row.get('status')}»: solo se "
+            "reprocesan piezas en cola, fallidas o en generación.[/red]"
+        )
         raise typer.Exit(1)
     ctx["db"].update_piece(
         piece_id, status="generating", error=None, claimed_at=datetime.now(UTC).isoformat()

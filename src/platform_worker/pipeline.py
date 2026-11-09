@@ -4,7 +4,10 @@
 Reuses the harness: ``validate_input``/``explain`` (via ``intake``), ``rule_classify``, the
 parametric variant E, ``postprocess``, ``measure_candidate``, ``render_views`` and
 ``deliver``. Organic pieces get ``ORGANIC_CANDIDATES`` candidates from the provider, each
-post-processed with the guarded fit-to-box; the lowest ``max_error`` is ``selected``.
+post-processed with the guarded fit-to-box; the lowest ``max_error`` is ``selected``. Every
+successful candidate gets renders, contact sheet, GLB 2K + USDZ and preview, so the admin can
+pick either: the selected one under ``{piece_id}/{attempt}/``, the others under
+``{piece_id}/{attempt}/cand_{n}/`` (see :func:`storage_prefix`).
 
 Storage paths stored in ``piece_models`` are relative to their bucket (``models``:
 ``glb_path``/``usdz_path``; ``previews``: ``preview_path``; ``renders``: ``render_paths``).
@@ -12,6 +15,8 @@ Storage paths stored in ``piece_models`` are relative to their bucket (``models`
 
 from __future__ import annotations
 
+import logging
+import re
 import shutil
 import time
 import traceback
@@ -19,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from harness.core.models import Piece
 from harness.eval.geometry import measure_candidate
@@ -56,6 +61,20 @@ NO_PROVIDER_ERROR = (
 STATUS_REVIEW = "review"
 STATUS_NEEDS_PHOTOS = "needs_photos"
 STATUS_FAILED = "failed"
+STATUS_QUEUED = "queued"  # returned when a piece without photos yet goes back to the queue
+
+# A piece can be claimed the instant it is inserted, before its ``piece_photos`` rows exist:
+# it goes back to ``queued`` up to ``MAX_CLAIMS_WITHOUT_PHOTOS - 1`` times (counter kept in
+# ``pieces.error``), and the next claim without photos marks it ``needs_photos``.
+MAX_CLAIMS_WITHOUT_PHOTOS = 3
+WAITING_PHOTOS_PREFIX = "Esperando las fotos"
+WAITING_PHOTOS_RE = re.compile(rf"^{WAITING_PHOTOS_PREFIX} \((\d+)/\d+\)")
+NO_PHOTOS_ERROR = (
+    "No se recibieron fotos de la pieza. Vuelve a subir al menos una foto para continuar."
+)
+PROVIDER_MAX_PX = 2048  # raw-photo fallback for providers (fal base64 limit ≈ 6 MB)
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -95,13 +114,35 @@ def download_photos(db: Any, storage: Any, piece_id: str, work: Path) -> list[Pa
     return paths
 
 
+def oriented_copy(photo: Path, dst_dir: Path) -> Path:
+    """``photo`` with its EXIF orientation applied (the same file when it has none)."""
+    with Image.open(photo) as img:
+        if img.getexif().get(0x0112, 1) in (None, 1):
+            return Path(photo)
+        upright = ImageOps.exif_transpose(img)
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_dir / f"{Path(photo).stem}.jpg"
+        upright.convert("RGB").save(dst, "JPEG", quality=95)
+    return dst
+
+
+def provider_photo(photo: Path, dst: Path, max_px: int = PROVIDER_MAX_PX) -> Path:
+    """Raw photo downscaled to ≤ ``max_px`` on its long side, as JPEG."""
+    with Image.open(photo) as img:
+        out = ImageOps.exif_transpose(img).convert("RGB")
+    out.thumbnail((max_px, max_px))
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    out.save(dst, "JPEG", quality=90)
+    return dst
+
+
 def contact_sheet(renders: list[Path], photo: Path | None, dst: Path) -> Path:
     """One row: the first photo, then the four renders, each fitted in a white square."""
     tiles = ([photo] if photo is not None else []) + list(renders)
     sheet = Image.new("RGB", (CONTACT_TILE * len(tiles), CONTACT_TILE), (255, 255, 255))
     for i, path in enumerate(tiles):
         with Image.open(path) as img:
-            tile = img.convert("RGBA")
+            tile = ImageOps.exif_transpose(img).convert("RGBA")
         tile.thumbnail((CONTACT_TILE, CONTACT_TILE))
         x = i * CONTACT_TILE + (CONTACT_TILE - tile.width) // 2
         y = (CONTACT_TILE - tile.height) // 2
@@ -135,11 +176,12 @@ def _measure(cand: CandidateRun, piece: Piece, post: Any) -> None:
 
 
 def _organic_images(photos: list[Path], work: Path) -> list[Path]:
-    """Cleaned first photo (background removed, white square) as the provider input."""
+    """Cleaned first photo (background removed, white square) as the provider input; if the
+    cleaning finds no object, the raw photo downscaled to ≤ 2048 px JPEG."""
     try:
         return [clean_image(photos[0], work / "clean" / "1.png")]
     except ValueError:
-        return [photos[0]]
+        return [provider_photo(photos[0], work / "clean" / "1_raw.jpg")]
 
 
 def generate_candidates(
@@ -203,17 +245,25 @@ class NoProviderError(RuntimeError):
     """An organic piece arrived and the worker has no provider configured."""
 
 
-def _deliver_selected(
+def storage_prefix(piece_id: str, attempt: int, candidate: int, *, selected: bool) -> str:
+    """Selected candidate: ``{piece_id}/{attempt}`` (Global Constraints paths); every other
+    candidate: ``{piece_id}/{attempt}/cand_{n}``. Consumers read the row's paths."""
+    base = f"{piece_id}/{attempt}"
+    return base if selected else f"{base}/cand_{candidate}"
+
+
+def _deliver_candidate(
     piece: Piece,
     cand: CandidateRun,
     photos: list[Path],
     storage: Any,
     *,
-    attempt: int,
+    prefix: str,
     blender_bin: Path | None,
     provenance: dict[str, Any],
 ) -> dict[str, Any]:
-    prefix = f"{piece.id}/{attempt}"
+    """Renders + contact sheet, GLB 2K/USDZ and preview of one candidate, uploaded under
+    ``prefix`` in ``models``, ``previews`` and ``renders``."""
     renders_dir = cand.cand_dir / "renders"
     rendered = render_views(cand.cand_dir / "model_post.glb", renders_dir, blender_bin=blender_bin)
     by_view = {p.stem: p for p in rendered}
@@ -274,8 +324,34 @@ def _deliver_selected(
 
 
 def _fail(db: Any, piece_id: str, message: str) -> str:
-    db.update_piece(piece_id, status=STATUS_FAILED, error=message[:ERROR_MAX_CHARS])
+    """Mark the piece ``failed``; a DB error here is logged, never raised (the piece then
+    stays ``generating`` and the stale sweep requeues it)."""
+    try:
+        db.update_piece(piece_id, status=STATUS_FAILED, error=message[:ERROR_MAX_CHARS])
+    except Exception:
+        log.exception("No se pudo marcar la pieza %s como fallida", piece_id)
     return STATUS_FAILED
+
+
+def _claims_without_photos(piece_row: dict[str, Any]) -> int:
+    match = WAITING_PHOTOS_RE.match(piece_row.get("error") or "")
+    return int(match.group(1)) if match else 0
+
+
+def _wait_for_photos(db: Any, piece_row: dict[str, Any]) -> str:
+    """Back to ``queued`` (photos still uploading) or, after the last try, ``needs_photos``."""
+    piece_id = str(piece_row["id"])
+    claims = _claims_without_photos(piece_row) + 1
+    if claims >= MAX_CLAIMS_WITHOUT_PHOTOS:
+        db.update_piece(piece_id, status=STATUS_NEEDS_PHOTOS, error=NO_PHOTOS_ERROR)
+        return STATUS_NEEDS_PHOTOS
+    db.update_piece(
+        piece_id,
+        status=STATUS_QUEUED,
+        claimed_at=None,
+        error=f"{WAITING_PHOTOS_PREFIX} ({claims}/{MAX_CLAIMS_WITHOUT_PHOTOS})",
+    )
+    return STATUS_QUEUED
 
 
 def process_piece(
@@ -287,7 +363,8 @@ def process_piece(
     workdir: Path,
     blender_bin: Path | None,
 ) -> str:
-    """Run one claimed piece; returns the final status (``review|needs_photos|failed``).
+    """Run one claimed piece; returns the final status (``review|needs_photos|failed``), or
+    ``queued`` when the piece had no photos yet and went back to the queue.
 
     Never raises for a piece-level problem: every failure ends in ``failed`` with a Spanish
     ``error`` (the traceback goes to ``<work>/error.log``)."""
@@ -301,11 +378,15 @@ def process_piece(
         except Exception as exc:
             return _fail(db, piece_id, f"No se pudieron descargar las fotos: {exc}")
 
+        if not photos and not intake.excluded_reasons(piece_row):
+            return _wait_for_photos(db, piece_row)
+
         problems = intake.check(piece_row, photos)
         if problems:
             db.update_piece(piece_id, status=STATUS_NEEDS_PHOTOS, error=intake.explain(problems))
             return STATUS_NEEDS_PHOTOS
 
+        photos = [oriented_copy(p, work / "oriented") for p in photos]
         piece = intake.build_piece(piece_row, photos)
         decision = rule_classify(piece)
         organic = decision.route != "E"
@@ -326,19 +407,27 @@ def process_piece(
             return _fail(db, piece_id, f"No se pudo generar ningún modelo: {errors}")
         selected = min(ok, key=lambda c: c.max_error)
         provider_name = "parametric" if not organic else provider.name  # type: ignore[union-attr]
-        provenance = {
-            "variant": route,
-            "candidate": selected.index,
-            "attempt": attempt,
-            "provider": provider_name,
-        }
-        delivered = _deliver_selected(
-            piece, selected, photos, storage,
-            attempt=attempt, blender_bin=blender_bin, provenance=provenance,
-        )  # fmt: skip
+        # Every successful candidate is delivered so the admin can pick either one.
+        delivered: dict[int, dict[str, Any]] = {}
+        for cand in ok:
+            prefix = storage_prefix(piece_id, attempt, cand.index, selected=cand is selected)
+            provenance = {
+                "variant": route,
+                "candidate": cand.index,
+                "attempt": attempt,
+                "provider": provider_name,
+            }
+            delivered[cand.index] = _deliver_candidate(
+                piece, cand, photos, storage,
+                prefix=prefix, blender_bin=blender_bin, provenance=provenance,
+            )  # fmt: skip
 
-        for cand in runs:
+        # Re-processing an attempt never leaves duplicates; the selected row goes last so
+        # "newest row of the latest attempt" (admin_review_queue) is the selected one.
+        db.delete_models(piece_id, attempt)
+        for cand in sorted(runs, key=lambda c: (c is selected, c.index)):
             is_selected = cand is selected
+            files = delivered.get(cand.index)
             meta: dict[str, Any] = {
                 "route": decision.route,
                 "route_reason": decision.reason,
@@ -352,8 +441,9 @@ def process_piece(
             }
             if cand.error:
                 meta["error"] = cand.error
+            if files is not None:
+                meta["deliver"] = files["deliver"]
             if is_selected:
-                meta["deliver"] = delivered["deliver"]
                 meta["total_seconds"] = round(time.monotonic() - start, 3)
             db.insert_model(
                 {
@@ -361,10 +451,10 @@ def process_piece(
                     "attempt": attempt,
                     "provider": provider_name,
                     "candidate": cand.index,
-                    "preview_path": delivered["preview_path"] if is_selected else None,
-                    "glb_path": delivered["glb_path"] if is_selected else None,
-                    "usdz_path": delivered["usdz_path"] if is_selected else None,
-                    "render_paths": delivered["render_paths"] if is_selected else None,
+                    "preview_path": files["preview_path"] if files else None,
+                    "glb_path": files["glb_path"] if files else None,
+                    "usdz_path": files["usdz_path"] if files else None,
+                    "render_paths": files["render_paths"] if files else None,
                     "meta": meta,
                     "max_error": cand.max_error,
                     "cost_usd": cand.cost_usd,

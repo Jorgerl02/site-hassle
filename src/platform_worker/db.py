@@ -90,6 +90,15 @@ class WorkerDB:
         rows = response.json()
         return rows[0] if isinstance(rows, list) and rows else rows
 
+    def delete_models(self, piece_id: str, attempt: int) -> None:
+        """Remove the ``piece_models`` rows of one attempt (re-processing starts clean)."""
+        response = self._http.delete(
+            f"{self.rest}/piece_models",
+            params={"piece_id": f"eq.{piece_id}", "attempt": f"eq.{attempt}"},
+            headers=self._headers,
+        )
+        _raise_for(response, "piece_models (delete)")
+
     def list_photos(self, piece_id: str) -> list[dict[str, Any]]:
         response = self._http.get(
             f"{self.rest}/piece_photos",

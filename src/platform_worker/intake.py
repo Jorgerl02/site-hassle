@@ -8,6 +8,7 @@ form's ``lampara`` kind is excluded outright. Photo checks reuse
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -35,11 +36,15 @@ EXCLUDED_KINDS: dict[str, str] = {
 # Accent-free, lowercase keyword → reason (text of docs/promesa.md, «Categorías excluidas»).
 _REFLECTION = "los generadores pierden el reflejo y deforman los arcos."
 _TRANSPARENCY = "el reflejo y la transparencia no se reproducen bien."
-EXCLUDED_WORDS: dict[str, str] = {
+# Word-start stems (accent-free), so «cromadas», «metálica» or «inoxidable» are caught.
+EXCLUDED_STEMS: dict[str, str] = {
     "metal": f"No trabajamos piezas de metal: {_REFLECTION}",
-    "cromo": f"No trabajamos piezas cromadas: {_REFLECTION}",
-    "vidrio": f"No trabajamos piezas de vidrio: {_TRANSPARENCY}",
+    "acero": f"No trabajamos piezas de metal: {_REFLECTION}",
+    "inox": f"No trabajamos piezas de metal: {_REFLECTION}",
+    "crom": f"No trabajamos piezas cromadas: {_REFLECTION}",
+    "vidri": f"No trabajamos piezas de vidrio: {_TRANSPARENCY}",
     "cristal": f"No trabajamos piezas de cristal: {_TRANSPARENCY}",
+    "acristal": f"No trabajamos piezas de cristal: {_TRANSPARENCY}",
 }
 
 # Harness category (only used for bookkeeping in the harness: rubric reports, file names).
@@ -74,8 +79,8 @@ def excluded_reasons(piece_row: dict[str, Any]) -> list[str]:
     if kind in EXCLUDED_KINDS:
         reasons.append(EXCLUDED_KINDS[kind])
     text = _normalise(f"{piece_row.get('notes') or ''} {piece_row.get('name') or ''}")
-    for word, reason in EXCLUDED_WORDS.items():
-        if word in text and reason not in reasons:
+    for stem, reason in EXCLUDED_STEMS.items():
+        if re.search(rf"\b{stem}", text) and reason not in reasons:
             reasons.append(reason)
     return reasons
 

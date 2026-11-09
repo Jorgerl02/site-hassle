@@ -17,7 +17,7 @@ from harness.eval.geometry import GeometryResult
 from harness.post.blender_post import PostResult
 from harness.post.deliver import DeliverResult
 from harness.prep import clean
-from platform_worker import cli, pipeline
+from platform_worker import cli, config, pipeline
 from platform_worker.providers import FakeProvider
 from platform_worker.providers.base import GenerationOutcome
 
@@ -26,6 +26,26 @@ SAMPLE_GLB = FIXTURES / "platform" / "sample.glb"
 PIECE_ID = "22222222-2222-2222-2222-222222222222"
 # Simulated geometric error per candidate folder (organic: cand_2 is the better one).
 CAND_ERRORS = {"cand_1": 0.06, "cand_2": 0.01}
+
+
+WORKER_ENV_KEYS = (
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "PROVIDER",
+    "FAL_KEY",
+    "FAL_MODEL",
+    "TRIPO_API_KEY",
+    "BLENDER_BIN",
+    "WORKER_ENV_FILE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_worker_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Never read the repo's real ``.env`` nor worker keys from the shell."""
+    for key in WORKER_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("WORKER_ENV_FILE", str(tmp_path / "no-such-worker.env"))
 
 
 # ---------------------------------------------------------------- in-memory backends
@@ -39,6 +59,7 @@ class FakeDB:
         self.models: list[dict[str, Any]] = []
         self.updates: list[tuple[str, dict[str, Any]]] = []
         self.requeue_calls: list[int] = []
+        self.deleted: list[tuple[str, int]] = []
 
     def claim_next(self):
         if not self.queue:
@@ -60,6 +81,12 @@ class FakeDB:
         json.dumps(row)  # what PostgREST receives must be JSON
         self.models.append(row)
         return {"id": f"m{len(self.models)}", **row}
+
+    def delete_models(self, piece_id: str, attempt: int) -> None:
+        self.deleted.append((piece_id, attempt))
+        self.models = [
+            m for m in self.models if (m["piece_id"], m["attempt"]) != (piece_id, attempt)
+        ]
 
     def list_photos(self, piece_id: str) -> list[dict[str, Any]]:
         return self.photos.get(piece_id, [])
@@ -292,7 +319,21 @@ def test_organic_piece_two_candidates_lowest_error_selected(tmp_path: Path) -> N
     assert len(selected) == 1 and selected[0]["candidate"] == 2
     assert selected[0]["max_error"] == pytest.approx(0.01)
     other = db.models[0]
-    assert other["glb_path"] is None and other["max_error"] == pytest.approx(0.06)
+    assert other["selected"] is False and other["max_error"] == pytest.approx(0.06)
+    # Both candidates are delivered: the selected one at the canonical paths, the other
+    # under cand_1/, so the admin can switch.
+    prefix = f"{PIECE_ID}/1"
+    assert selected[0]["glb_path"] == f"{prefix}/model_web.glb"
+    assert selected[0]["preview_path"] == f"{prefix}/model_preview.glb"
+    assert other["glb_path"] == f"{prefix}/cand_1/model_web.glb"
+    assert other["usdz_path"] == f"{prefix}/cand_1/model.usdz"
+    assert other["preview_path"] == f"{prefix}/cand_1/model_preview.glb"
+    assert other["render_paths"]["contact"] == f"{prefix}/cand_1/contact.jpg"
+    assert "deliver" in other["meta"] and "deliver" in selected[0]["meta"]
+    for path in (other["glb_path"], selected[0]["glb_path"]):
+        assert ("models", path) in storage.uploads
+    for path in (other["preview_path"], selected[0]["preview_path"]):
+        assert ("previews", path) in storage.uploads
     assert all(m["meta"]["post"]["fit_box_applied"] for m in db.models)
     cand = tmp_path / "runs" / PIECE_ID / "1" / "fake" / "cand_1" / "model.glb"
     assert cand.read_bytes() == SAMPLE_GLB.read_bytes()
@@ -360,7 +401,185 @@ def test_run_once_processes_one_piece(tmp_path: Path) -> None:
 def test_cli_exits_2_without_service_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
     monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
-    monkeypatch.setattr(cli, "ENV_FILE", tmp_path / "no.env")
     result = CliRunner().invoke(cli.app, ["run", "--once"])
     assert result.exit_code == 2
     assert "SUPABASE_SERVICE_ROLE_KEY" in result.output
+
+
+def test_cli_ignores_real_env_file_when_redirected(tmp_path: Path, monkeypatch) -> None:
+    """With the redirected env file absent, a key in some other .env is never read."""
+    real = tmp_path / ".env"
+    real.write_text("SUPABASE_URL=https://x.supabase.co\nSUPABASE_SERVICE_ROLE_KEY=k\n")
+    monkeypatch.chdir(tmp_path)  # a .env in the working directory must not leak either
+    result = CliRunner().invoke(cli.app, ["run", "--once"])
+    assert result.exit_code == 2
+
+
+def test_load_settings_reads_worker_env_file(tmp_path: Path, monkeypatch) -> None:
+    env = tmp_path / "worker.env"
+    env.write_text("SUPABASE_URL=https://x.supabase.co\nPROVIDER=fake\nFAL_KEY=\n")
+    monkeypatch.setenv("WORKER_ENV_FILE", str(env))
+    monkeypatch.setenv("PROVIDER", "tripo")  # the process environment wins
+    settings = config.load_settings()
+    assert settings["SUPABASE_URL"] == "https://x.supabase.co"
+    assert settings["PROVIDER"] == "tripo"
+    assert settings["FAL_KEY"] is None
+
+
+def test_load_settings_follows_harness_redirection(tmp_path: Path, monkeypatch) -> None:
+    from harness.core import config as harness_config
+
+    env = tmp_path / "harness.env"
+    env.write_text("SUPABASE_SERVICE_ROLE_KEY=k\n")
+    monkeypatch.delenv("WORKER_ENV_FILE")
+    monkeypatch.setattr(harness_config, "DEFAULT_ENV_FILE", env)
+    assert config.env_file_path() == env
+    assert config.load_settings()["SUPABASE_SERVICE_ROLE_KEY"] == "k"
+
+
+# ---------------------------------------------------------------- fix round 1
+
+
+def test_piece_without_photos_goes_back_to_queue_then_needs_photos(tmp_path: Path) -> None:
+    db, storage, row = setup(tmp_path)
+    db.photos = {}  # claimed before its piece_photos rows exist
+    assert run(db, storage, row, tmp_path) == "queued"
+    piece = db.pieces[PIECE_ID]
+    assert piece["status"] == "queued" and piece["claimed_at"] is None
+    assert piece["error"] == "Esperando las fotos (1/3)"
+
+    assert run(db, storage, dict(piece), tmp_path) == "queued"
+    assert db.pieces[PIECE_ID]["error"] == "Esperando las fotos (2/3)"
+
+    assert run(db, storage, dict(db.pieces[PIECE_ID]), tmp_path) == "needs_photos"
+    assert db.pieces[PIECE_ID]["error"] == pipeline.NO_PHOTOS_ERROR
+    assert db.models == []
+
+
+def test_photos_arriving_after_a_requeue_reach_review(tmp_path: Path) -> None:
+    db, storage, row = setup(tmp_path)
+    photos = db.photos
+    db.photos = {}
+    assert run(db, storage, row, tmp_path) == "queued"
+    db.photos = photos
+    assert run(db, storage, dict(db.pieces[PIECE_ID]), tmp_path) == "review"
+    assert db.pieces[PIECE_ID]["error"] is None
+
+
+def test_candidate_1_wins_selected_row_is_inserted_last(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setitem(CAND_ERRORS, "cand_1", 0.005)
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá", width_cm=200, depth_cm=90)
+    db.models.append({"piece_id": PIECE_ID, "attempt": 1, "candidate": 9, "selected": True})
+    assert run(db, storage, row, tmp_path, provider=FakeProvider(SAMPLE_GLB)) == "review"
+    assert db.deleted == [(PIECE_ID, 1)]
+    assert [m["candidate"] for m in db.models] == [2, 1]
+    assert db.models[-1]["selected"] is True and db.models[-1]["candidate"] == 1
+    assert db.models[-1]["glb_path"] == f"{PIECE_ID}/1/model_web.glb"
+    assert db.models[0]["glb_path"] == f"{PIECE_ID}/1/cand_2/model_web.glb"
+    assert sum(m["selected"] for m in db.models) == 1
+
+
+class FlakyDB(FakeDB):
+    """``insert_model`` fails (Supabase down after the uploads)."""
+
+    def insert_model(self, row):
+        raise ConnectionError("Supabase no responde")
+
+
+def test_insert_failure_marks_failed_and_loop_survives(tmp_path: Path) -> None:
+    db, storage, _ = setup(tmp_path)
+    flaky = FlakyDB([dict(db.pieces[PIECE_ID], status="queued")], db.photos)
+    sleeps: list[float] = []
+    ctx = {"db": flaky, "storage": storage, "provider": None, "blender_bin": None}
+    cli.run_loop(
+        ctx, once=False, poll_seconds=1, workdir=tmp_path / "runs",
+        sleep=sleeps.append, max_cycles=3,
+    )  # fmt: skip
+    assert flaky.pieces[PIECE_ID]["status"] == "failed"
+    assert "Supabase no responde" in flaky.pieces[PIECE_ID]["error"]
+
+
+class DeadDB(FakeDB):
+    """Every write fails: the piece cannot even be marked failed."""
+
+    def insert_model(self, row):
+        raise ConnectionError("Supabase no responde")
+
+    def update_piece(self, piece_id, **fields):
+        if fields.get("status") in ("failed", "review"):
+            raise ConnectionError("Supabase no responde")
+        return super().update_piece(piece_id, **fields)
+
+
+def test_fail_never_raises_and_loop_keeps_running(tmp_path: Path) -> None:
+    db, storage, _ = setup(tmp_path)
+    dead = DeadDB([dict(db.pieces[PIECE_ID], status="queued")], db.photos)
+    ctx = {"db": dead, "storage": storage, "provider": None, "blender_bin": None}
+    processed = cli.run_loop(
+        ctx, once=False, poll_seconds=0, workdir=tmp_path / "runs",
+        sleep=lambda _s: None, max_cycles=4,
+    )  # fmt: skip
+    assert processed == 1
+    # Left in ``generating``: the periodic stale sweep requeues it.
+    assert dead.pieces[PIECE_ID]["status"] == "generating"
+
+
+def test_requeue_stale_runs_every_10_cycles(tmp_path: Path) -> None:
+    db = FakeDB()
+    ctx = {"db": db, "storage": None, "provider": None, "blender_bin": None}
+    cli.run_loop(
+        ctx, once=False, poll_seconds=0, workdir=tmp_path, sleep=lambda _s: None, max_cycles=21
+    )
+    assert db.requeue_calls == [30, 30, 30]  # cycles 0, 10 and 20
+
+
+def _cli_env(monkeypatch, tmp_path: Path, blender: str | None) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "k")
+    if blender is not None:
+        monkeypatch.setenv("BLENDER_BIN", blender)
+
+
+@pytest.mark.parametrize("blender", [None, "/no/such/blender"])
+def test_run_exits_2_without_blender(tmp_path: Path, monkeypatch, blender) -> None:
+    _cli_env(monkeypatch, tmp_path, blender)
+    result = CliRunner().invoke(cli.app, ["run", "--once"])
+    assert result.exit_code == 2
+    assert "BLENDER_BIN" in result.output
+
+
+@pytest.mark.parametrize("status", ["review", "ready", "approved"])
+def test_piece_command_refuses_finished_attempts(tmp_path: Path, monkeypatch, status) -> None:
+    blender = tmp_path / "blender"
+    blender.write_text("#!/bin/sh\n")
+    blender.chmod(0o755)
+    _cli_env(monkeypatch, tmp_path, str(blender))
+    db = FakeDB([{"id": PIECE_ID, "status": status, "attempt": 1}])
+    monkeypatch.setattr(cli, "WorkerDB", lambda url, key: db)
+    result = CliRunner().invoke(cli.app, ["piece", PIECE_ID])
+    assert result.exit_code == 1
+    assert f"«{status}»" in result.output
+    assert db.updates == []
+
+
+def test_exif_rotated_photo_is_upright(tmp_path: Path) -> None:
+    src = tmp_path / "rot.jpg"
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90° CW on display
+    Image.new("RGB", (400, 200), (10, 20, 30)).save(src, exif=exif)
+    upright = pipeline.oriented_copy(src, tmp_path / "oriented")
+    with Image.open(upright) as img:
+        assert img.size == (200, 400)
+    plain = _png(tmp_path / "plain.png")
+    assert pipeline.oriented_copy(plain, tmp_path / "oriented") == plain
+
+
+def test_raw_photo_fallback_is_downscaled_jpeg(tmp_path: Path, monkeypatch) -> None:
+    def no_object(src, dst, size=1024):
+        raise ValueError("sin objeto")
+
+    monkeypatch.setattr(pipeline, "clean_image", no_object)
+    big = _png(tmp_path / "big.png", size=(4000, 3000))
+    [out] = pipeline._organic_images([big], tmp_path / "work")
+    with Image.open(out) as img:
+        assert img.format == "JPEG" and max(img.size) == pipeline.PROVIDER_MAX_PX

@@ -15,6 +15,26 @@ from platform_worker.storage import Storage
 URL = "https://proj.supabase.co"
 KEY = "service-key"
 AUTH = {"apikey": KEY, "Authorization": f"Bearer {KEY}"}
+WORKER_ENV_KEYS = (
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "PROVIDER",
+    "FAL_KEY",
+    "FAL_MODEL",
+    "TRIPO_API_KEY",
+    "BLENDER_BIN",
+    "WORKER_ENV_FILE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_worker_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Never read the repo's real ``.env`` nor worker keys from the shell."""
+    for key in WORKER_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("WORKER_ENV_FILE", str(tmp_path / "no-such-worker.env"))
+
+
 PIECE = {"id": "p-1", "status": "generating", "attempt": 1, "kind": "cabecero"}
 
 

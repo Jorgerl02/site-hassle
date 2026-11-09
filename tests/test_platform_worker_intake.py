@@ -12,6 +12,25 @@ from harness.prep import clean
 from harness.variants.f_router import rule_classify
 from platform_worker import intake
 
+WORKER_ENV_KEYS = (
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "PROVIDER",
+    "FAL_KEY",
+    "FAL_MODEL",
+    "TRIPO_API_KEY",
+    "BLENDER_BIN",
+    "WORKER_ENV_FILE",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_worker_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Never read the repo's real ``.env`` nor worker keys from the shell."""
+    for key in WORKER_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("WORKER_ENV_FILE", str(tmp_path / "no-such-worker.env"))
+
 
 def _fake_rembg(image: Image.Image) -> Image.Image:
     """Deterministic stand-in for rembg: non-grey pixels are the object."""
@@ -55,12 +74,28 @@ def test_lamp_is_excluded(tmp_path: Path) -> None:
 
 def test_chrome_note_is_excluded(tmp_path: Path) -> None:
     problems = intake.check(row(notes="Patas de Cromo"), [photo(tmp_path / "1.jpg")])
-    assert problems == [intake.EXCLUDED_WORDS["cromo"]]
+    assert problems == [intake.EXCLUDED_STEMS["crom"]]
 
 
-@pytest.mark.parametrize("word", ["metal", "vidrio", "cristal"])
-def test_other_excluded_materials(tmp_path: Path, word: str) -> None:
-    assert intake.check(row(notes=f"Mesa de {word}"), [photo(tmp_path / "1.jpg")])
+@pytest.mark.parametrize(
+    "notes",
+    [
+        "Mesa de metal",
+        "Estructura metálica",
+        "Patas cromadas",
+        "Acero inoxidable",
+        "Base de inox",
+        "Tapa de vidrio",
+        "Puertas acristaladas",
+        "Sobre de cristal",
+    ],
+)
+def test_other_excluded_materials(tmp_path: Path, notes: str) -> None:
+    assert intake.check(row(notes=notes), [photo(tmp_path / "1.jpg")])
+
+
+def test_words_inside_other_words_are_not_excluded(tmp_path: Path) -> None:
+    assert intake.excluded_reasons(row(notes="Tapizado policromo")) == []
 
 
 def test_headboard_3cm_is_ok_and_rectilinear(tmp_path: Path) -> None:
