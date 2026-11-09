@@ -68,7 +68,7 @@ def test_provider_sends_first_photo_with_settings(httpx_mock: HTTPXMock, tmp_pat
         photos, tmp_path / "out.glb", seed=5
     )
 
-    assert len(httpx_mock.get_requests(url=f"{DEFAULT_BASE_URL}/files")) == 1
+    assert len(httpx_mock.get_requests(url=f"{DEFAULT_BASE_URL}/files")) == 1  # first only
     [create] = httpx_mock.get_requests(url=f"{DEFAULT_BASE_URL}/generation/image-to-model")
     body = json.loads(create.content)
     assert body["input"] == fixture("upload")["data"]["file_token"]
@@ -76,4 +76,26 @@ def test_provider_sends_first_photo_with_settings(httpx_mock: HTTPXMock, tmp_pat
     assert body["model_seed"] == 5
     assert outcome.cost_usd == pytest.approx(0.60)
     assert outcome.meta["images"] == [str(photos[0])]
+    assert outcome.meta["images_ignored"] == [str(p) for p in photos[1:]]
     assert (tmp_path / "out.glb").read_bytes() == b"glTF-fake"
+
+
+def test_make_applies_tripo_settings_from_env_mapping() -> None:
+    from platform_worker import providers
+
+    provider = providers.make("tripo", {"TRIPO_API_KEY": "tsk_test", "TRIPO_FACE_LIMIT": "30000"})
+    assert isinstance(provider, TripoProvider)
+    assert provider.settings.face_limit == 30000
+    assert provider.settings.texture_quality == "detailed"
+
+
+def test_make_reads_tripo_settings_from_dotenv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from platform_worker import config, providers
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("TRIPO_API_KEY=tsk_test\nTRIPO_GEOMETRY_QUALITY=standard\n")
+    provider = providers.make("tripo", config.load_settings(env_file))
+    assert isinstance(provider, TripoProvider)
+    assert provider.settings.geometry_quality == "standard"

@@ -44,11 +44,25 @@ class StubGenerator:
         self.price = price
         self.calls: list[dict[str, Any]] = []
 
-    def generate(self, images: list[Path], dst_glb: Path, *, seed: int | None = None) -> Any:
+    def generate(
+        self,
+        images: list[Path],
+        dst_glb: Path,
+        *,
+        seed: int | None = None,
+        views: dict[str, Path] | None = None,
+    ) -> Any:
         dst_glb = Path(dst_glb)
         dst_glb.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(CUBE, dst_glb)
-        self.calls.append({"images": [str(p) for p in images], "seed": seed})
+        sent = list(views.values()) if views is not None else list(images)
+        self.calls.append(
+            {
+                "images": [str(p) for p in sent],
+                "views": None if views is None else {k: str(v) for k, v in views.items()},
+                "seed": seed,
+            }
+        )
         return self.outcome_cls(
             glb_path=dst_glb, cost_usd=self.price, seconds=0.1, meta={"task_id": "stub"}
         )

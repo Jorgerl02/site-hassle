@@ -10,7 +10,7 @@ platform.tripo3d.ai/docs/* pages now redirect there): ``generation-image-to-mode
 - ``POST /generation/image-to-model`` ``{"input": <file_token>, "model": ..., ...}``.
 - ``POST /generation/multiview-to-model`` ``{"inputs": [{"front": tok}, {"left": tok}, ...]}``
   (view-key format: each object names its view, ``front`` is mandatory, ≥ 2 images, order
-  free). Both return ``data.task_id``.
+  free). Both return ``data.task_id``. Only explicitly labelled ``views`` go multiview.
 - ``GET /tasks/{task_id}`` -> ``data.status`` queued/running (ongoing), success,
   failed/cancelled (final; legacy banned/expired are final too; ``unknown`` is waited out
   within the deadline); ``data.output.model_url`` (GLB); ``data.credits_consumed`` (number).
@@ -21,8 +21,9 @@ Pietra settings (Tripo web) -> API (see ``TripoSettings``): v3.1 -> ``model``
 ``v3.1-20260211``; HD Model / 4K texture -> ``texture_quality="detailed"`` (the API has no
 4K switch: ``detailed`` is "HD", ``extreme`` is 8K); Ultra Mesh -> ``geometry_quality=
 "detailed"``; PBR -> ``pbr``; polycount -> ``face_limit``; AI Complete -> closest is
-``enable_image_autofix`` (image-to-model only). Quad is NOT sent: the docs say ``quad=true``
-forces FBX output, and this client's contract is a GLB.
+``enable_image_autofix`` (image-to-model only), OFF by default because it alters the
+customer's photo and the mapping is an inference (``TRIPO_IMAGE_AUTOFIX=1`` enables it).
+Quad is NOT sent: the docs say ``quad=true`` forces FBX output, and the contract is a GLB.
 """
 
 from __future__ import annotations
@@ -33,10 +34,12 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from PIL import Image
+
+from harness.core import pricing
 
 DEFAULT_BASE_URL = "https://openapi.tripo3d.ai/v3"
 IMAGE_TO_MODEL = "image_to_model"
@@ -47,6 +50,11 @@ ENDPOINTS = {
 }
 # "v3.1-20260211 — recommended; latest, best quality" (models-and-versions, 2026-11-09).
 DEFAULT_MODEL_VERSION = "v3.1-20260211"
+# Documented H Series ``model`` values (P1/P2 have other parameters and prices).
+MODEL_VERSIONS = ("v3.1-20260211", "v3.0-20250812", "v2.5-20250123")
+LEGACY_MODEL_VERSION = "v2.5-20250123"
+# "Only valid when model ≥ v3.0-20250812" (the ones this client sends).
+V3_ONLY_PARAMS = ("texture_quality", "geometry_quality", "auto_size")
 TEXTURE_QUALITIES = ("fast", "standard", "detailed", "extreme")
 GEOMETRY_QUALITIES = ("standard", "detailed")
 ORIENTATIONS = ("default", "align_image")
@@ -55,17 +63,11 @@ TEXTURE_VERSIONS = ("v3.5-20260815", "v3.0-20250812", "v2.5-20250123")
 FAST_TEXTURE_VERSION = "v3.5-20260815"  # texture_quality="fast" requires it
 MAX_FACE_LIMIT = 2_000_000  # triangle, v3.x Ultra (Standard v3.1: 1,500,000)
 
-# Credits, H Series (developers.tripo3d.ai/en/pricing, read 2026-11-09). Image and
-# multiview cost the same: 20 without texture, 30 with standard texture; add-ons stack on
-# top. PBR, face_limit, orientation, auto_size and autofix carry no listed add-on.
-CREDITS_BASE_NO_TEXTURE = 20
-CREDITS_BASE_TEXTURE = 30
-CREDITS_TEXTURE_QUALITY_ADDON = {"fast": 0, "standard": 0, "detailed": 10, "extreme": 20}
-CREDITS_GEOMETRY_DETAILED_ADDON = 20  # "HD Geometry Quality"
-# "1 credit = $0.01 USD" (pricing page and docs/billing, read 2026-11-09).
-USD_PER_CREDIT = 0.01
+# Credit table and USD per credit: ``harness.core.pricing`` (TRIPO_*).
+USD_PER_CREDIT = pricing.TRIPO_USD_PER_CREDIT
 
-MULTIVIEW_SLOTS = ("front", "left", "back", "right")
+View = Literal["front", "left", "back", "right"]
+MULTIVIEW_SLOTS: tuple[View, ...] = ("front", "left", "back", "right")
 ONGOING_STATUSES = frozenset({"queued", "running", "unknown"})  # unknown: bounded wait
 SUCCESS_STATUS = "success"
 RETRYABLE_STATUS_CODES = frozenset({408, 429})  # plus every 5xx (idempotent calls only)
@@ -143,17 +145,28 @@ class TripoSettings:
     face_limit: int | None = 40_000  # None -> adaptive topology
     orientation: str = "align_image"
     texture_alignment: str = "original_image"
-    image_autofix: bool = True  # enable_image_autofix; image-to-model only
+    # enable_image_autofix (image-to-model only). Off: it alters the customer's photo, and
+    # mapping it to Tripo web's "AI Complete" is an inference. TRIPO_IMAGE_AUTOFIX=1 enables.
+    image_autofix: bool = False
     auto_size: bool = False
     texture_version: str | None = None  # None -> derived from the geometry model
 
     def __post_init__(self) -> None:
-        # Pricing and the v3-only options (geometry_quality, auto_size...) are for the H
-        # Series v3.x models; v2.5 rejects geometry_quality and P1/P2 bill differently.
-        if not self.model_version.startswith("v3."):
+        _choice("TRIPO_MODEL_VERSION", self.model_version, MODEL_VERSIONS)
+        if self.model_version == LEGACY_MODEL_VERSION and (
+            self.texture_quality != "standard"
+            or self.geometry_quality != "standard"
+            or self.auto_size
+        ):
             raise ValueError(
-                f"TRIPO_MODEL_VERSION={self.model_version!r}: sólo se admite la serie H v3.x "
-                f"(p. ej. {DEFAULT_MODEL_VERSION})"
+                f"{LEGACY_MODEL_VERSION} no admite texture_quality/geometry_quality/auto_size: "
+                "pon TRIPO_TEXTURE_QUALITY=standard, TRIPO_GEOMETRY_QUALITY=standard y "
+                "TRIPO_AUTO_SIZE=false"
+            )
+        if self.orientation == "align_image" and not self.textured:
+            raise ValueError(
+                "orientation='align_image' sólo tiene efecto con textura: pon "
+                "TRIPO_ORIENTATION=default o activa TRIPO_TEXTURE/TRIPO_PBR"
             )
         _choice("TRIPO_TEXTURE_QUALITY", self.texture_quality, TEXTURE_QUALITIES)
         _choice("TRIPO_GEOMETRY_QUALITY", self.geometry_quality, GEOMETRY_QUALITIES)
@@ -213,6 +226,9 @@ class TripoSettings:
             out["face_limit"] = self.face_limit
         if self.texture_version is not None:
             out["texture_version"] = self.texture_version
+        if self.model_version == LEGACY_MODEL_VERSION:
+            for name in V3_ONLY_PARAMS:
+                del out[name]
         if task_type == IMAGE_TO_MODEL:  # not a multiview-to-model parameter
             out["enable_image_autofix"] = self.image_autofix
         return out
@@ -220,11 +236,14 @@ class TripoSettings:
     def estimated_credits(self) -> int:
         """Credits from the pricing table (same for image and multiview, H Series)."""
         if not self.textured:
-            credits = CREDITS_BASE_NO_TEXTURE
+            credits = pricing.TRIPO_CREDITS_BASE_NO_TEXTURE
         else:
-            credits = CREDITS_BASE_TEXTURE + CREDITS_TEXTURE_QUALITY_ADDON[self.texture_quality]
+            credits = (
+                pricing.TRIPO_CREDITS_BASE_TEXTURE
+                + pricing.TRIPO_CREDITS_TEXTURE_QUALITY_ADDON[self.texture_quality]
+            )
         if self.geometry_quality == "detailed":
-            credits += CREDITS_GEOMETRY_DETAILED_ADDON
+            credits += pricing.TRIPO_CREDITS_GEOMETRY_DETAILED_ADDON
         return credits
 
     def estimated_cost_usd(self) -> float:
@@ -244,6 +263,28 @@ def _upload_payload(path: Path) -> tuple[str, bytes, str]:
             img.save(buffer, format="PNG")
         return f"{path.stem}.png", buffer.getvalue(), "image/png"
     raise ValueError(f"Formato de imagen no soportado por Tripo: {path}")
+
+
+def resolve_inputs(
+    images: list[Path], views: Mapping[View, Path] | None
+) -> tuple[list[tuple[View | None, Path]], list[Path]]:
+    """``(inputs, ignored)``. Multiview needs every photo labelled front/left/back/right
+    and ``front`` is mandatory (docs), so unlabelled photos never go multiview: the first
+    one is used and the rest are reported as ignored."""
+    if views is None:
+        if not images:
+            raise ValueError("generate() necesita al menos una imagen")
+        return [(None, images[0])], images[1:]
+    if images:
+        raise ValueError("generate(): pasa las fotos en images o en views, no en ambos")
+    unknown = set(views) - set(MULTIVIEW_SLOTS)
+    if unknown:
+        raise ValueError(f"Vistas desconocidas para Tripo: {sorted(unknown)}")
+    if "front" not in views:
+        raise ValueError("Tripo multiview exige la vista 'front'")
+    if len(views) == 1:
+        return [(None, Path(views["front"]))], []
+    return [(slot, Path(views[slot])) for slot in MULTIVIEW_SLOTS if slot in views], []
 
 
 class TripoClient:
@@ -354,19 +395,20 @@ class TripoClient:
             raise TripoError("La subida a Tripo no devolvió file_token", data)
         return str(token)
 
-    def build_request(self, tokens: list[str], seed: int | None) -> tuple[str, dict[str, Any]]:
-        """``(task_type, body)``: 1 token -> image-to-model; 2–4 -> multiview-to-model with
-        view keys in slot order (front, left, back, right)."""
+    def build_request(
+        self, tokens: list[tuple[View | None, str]], seed: int | None
+    ) -> tuple[str, dict[str, Any]]:
+        """``(task_type, body)`` from ``(view, file_token)`` pairs: one pair ->
+        image-to-model; several (all labelled, see ``resolve_inputs``) ->
+        multiview-to-model in the documented view-key format."""
         if len(tokens) == 1:
             task_type = IMAGE_TO_MODEL
-            request: dict[str, Any] = {"input": tokens[0]}
+            request: dict[str, Any] = {"input": tokens[0][1]}
         else:
+            if any(view is None for view, _ in tokens):
+                raise ValueError("multiview-to-model necesita una vista etiquetada por imagen")
             task_type = MULTIVIEW_TO_MODEL
-            request = {
-                "inputs": [
-                    {slot: token} for slot, token in zip(MULTIVIEW_SLOTS, tokens, strict=False)
-                ]
-            }
+            request = {"inputs": [{view: token} for view, token in tokens]}
         request.update(self.settings.params(task_type))
         if seed is not None:
             request["model_seed"] = seed
@@ -400,20 +442,25 @@ class TripoClient:
     # -- Public contract ----------------------------------------------------------------
 
     def generate(
-        self, images: list[Path], dst_glb: Path, *, seed: int | None = None
+        self,
+        images: list[Path],
+        dst_glb: Path,
+        *,
+        seed: int | None = None,
+        views: Mapping[View, Path] | None = None,
     ) -> GenerationOutcome:
-        """1 image -> image-to-model; >=2 images -> multiview-to-model (first 4, labelled
-        front, left, back, right in that order). Blocks until done and downloads the GLB to
-        ``dst_glb``. Raises ``TripoError`` on failure or when ``timeout_s`` (total wall
-        clock) elapses."""
+        """Unlabelled ``images`` -> image-to-model with the first one only (photos are never
+        labelled by position). Labelled ``views`` (``images`` empty) -> multiview-to-model,
+        or image-to-model when only ``front`` is given. Blocks until done and downloads
+        the GLB to ``dst_glb``. Raises ``TripoError`` on failure or when ``timeout_s``
+        (total wall clock) elapses."""
         images = [Path(p) for p in images]
-        if not images:
-            raise ValueError("generate() necesita al menos una imagen")
-        used = images[: len(MULTIVIEW_SLOTS)]
+        inputs, ignored = resolve_inputs(images, views)
+        used = [path for _, path in inputs]
         start = self._clock()
         deadline = start + self.timeout_s
 
-        tokens = [self.upload(path) for path in used]
+        tokens = [(view, self.upload(path)) for view, path in inputs]
         upload_s = self._clock() - start
 
         task_type, request = self.build_request(tokens, seed)
@@ -464,7 +511,8 @@ class TripoClient:
             "settings": self.settings.as_dict(),
             "seed": seed,
             "images": [str(p) for p in used],
-            "images_ignored": [str(p) for p in images[len(used) :]],
+            "views": {view: str(path) for view, path in inputs if view is not None} or None,
+            "images_ignored": [str(p) for p in ignored],
             "request": request,
             "create_attempts": create_attempts,
             "status_history": history,

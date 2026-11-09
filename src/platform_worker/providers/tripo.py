@@ -35,7 +35,6 @@ class TripoProvider:
     def generate(
         self, images: list[Path], dst_glb: Path, *, seed: int | None = None
     ) -> GenerationOutcome:
-        # Tripo multiview needs each photo labelled front/left/back/right (view-key format,
-        # front mandatory); customer photos carry no view labels, so only the first photo
-        # is sent (image-to-model), as in harness variant B.
-        return self._client.generate(list(images)[:1], dst_glb, seed=seed)
+        # Customer photos carry no view labels and Tripo multiview needs them, so the client
+        # sends only the first photo (image-to-model) and records the rest as ignored.
+        return self._client.generate(list(images), dst_glb, seed=seed)

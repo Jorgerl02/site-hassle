@@ -15,7 +15,7 @@ from harness.clients.tripo import (
     TripoError,
     TripoSettings,
 )
-from harness.core import storage
+from harness.core import pricing, storage
 from harness.core.config import Settings
 from harness.core.models import Piece
 from harness.core.variant import Variant
@@ -111,7 +111,7 @@ def test_generate_single_image_full_cycle(httpx_mock: HTTPXMock, tmp_path: Path)
         "texture_alignment": "original_image",
         "auto_size": False,
         "face_limit": 40000,
-        "enable_image_autofix": True,
+        "enable_image_autofix": False,
         "model_seed": 7,
         "texture_seed": 7,
     }
@@ -145,7 +145,22 @@ def test_generate_populates_cost_and_seconds(httpx_mock: HTTPXMock, tmp_path: Pa
     assert "model_seed" not in outcome.meta["request"]
 
 
-def test_generate_multiview_uses_view_keys(httpx_mock: HTTPXMock, tmp_path: Path) -> None:
+def test_unlabelled_photos_use_first_only(httpx_mock: HTTPXMock, tmp_path: Path) -> None:
+    mock_success_cycle(httpx_mock)
+    photos = [write_photo(tmp_path / f"{k}.jpg") for k in range(3)]
+
+    outcome = make_client().generate(photos, tmp_path / "m.glb")
+
+    assert len(httpx_mock.get_requests(method="POST", url=UPLOAD_URL)) == 1
+    assert not httpx_mock.get_requests(url=MULTIVIEW_URL)
+    [request] = task_requests(httpx_mock)
+    assert request["input"] == fixture("upload")["data"]["file_token"]
+    assert outcome.meta["images"] == [str(photos[0])]
+    assert outcome.meta["images_ignored"] == [str(p) for p in photos[1:]]
+    assert outcome.meta["views"] is None
+
+
+def test_generate_labelled_views_uses_view_keys(httpx_mock: HTTPXMock, tmp_path: Path) -> None:
     for token in ("tok-front", "tok-left", "tok-back"):
         httpx_mock.add_response(
             method="POST", url=UPLOAD_URL, json={"code": 0, "data": {"file_token": token}}
@@ -153,14 +168,18 @@ def test_generate_multiview_uses_view_keys(httpx_mock: HTTPXMock, tmp_path: Path
     httpx_mock.add_response(method="POST", url=MULTIVIEW_URL, json=fixture("create_task"))
     httpx_mock.add_response(method="GET", url=POLL_URL, json=fixture("task_success"))
     httpx_mock.add_response(method="GET", url=GLB_URL, content=GLB_BYTES)
-    photos = [
-        write_photo(tmp_path / "a.png"),
-        write_photo(tmp_path / "b.jpg"),
-        write_photo(tmp_path / "c.jpg"),
-    ]
+    # Given out of slot order: uploads and inputs follow front, left, back, right.
+    views = {
+        "back": write_photo(tmp_path / "back.jpg"),
+        "front": write_photo(tmp_path / "front.png"),
+        "left": write_photo(tmp_path / "left.jpg"),
+    }
 
-    outcome = make_client().generate(photos, tmp_path / "m.glb", seed=3)
+    outcome = make_client().generate([], tmp_path / "m.glb", seed=3, views=views)
 
+    uploads = httpx_mock.get_requests(method="POST", url=UPLOAD_URL)
+    assert [b'filename="front.png"' in u.content for u in uploads] == [True, False, False]
+    assert b'filename="back.jpg"' in uploads[2].content
     [request] = task_requests(httpx_mock, MULTIVIEW_URL)
     assert request == {
         "inputs": [{"front": "tok-front"}, {"left": "tok-left"}, {"back": "tok-back"}],
@@ -177,8 +196,40 @@ def test_generate_multiview_uses_view_keys(httpx_mock: HTTPXMock, tmp_path: Path
         "texture_seed": 3,
     }  # no enable_image_autofix: not a multiview-to-model parameter
     assert outcome.meta["task_type"] == "multiview_to_model"
+    assert outcome.meta["views"] == {k: str(views[k]) for k in ("front", "left", "back")}
     assert outcome.meta["cost_usd"] == pytest.approx(0.60)  # same price as image-to-model
     assert (tmp_path / "m.glb").read_bytes() == GLB_BYTES
+
+
+def test_front_only_view_uses_image_to_model(httpx_mock: HTTPXMock, tmp_path: Path) -> None:
+    mock_success_cycle(httpx_mock)
+    front = write_photo(tmp_path / "front.jpg")
+
+    outcome = make_client().generate([], tmp_path / "m.glb", views={"front": front})
+
+    [request] = task_requests(httpx_mock)
+    assert request["input"] == fixture("upload")["data"]["file_token"]
+    assert outcome.meta["task_type"] == "image_to_model"
+
+
+@pytest.mark.parametrize(
+    ("images", "views", "match"),
+    [
+        ([], {"left": "l.jpg", "back": "b.jpg"}, "front"),
+        ([], {"front": "f.jpg", "top": "t.jpg"}, "desconocidas"),
+        (["x.jpg"], {"front": "f.jpg", "left": "l.jpg"}, "no en ambos"),
+        ([], None, "al menos una imagen"),
+    ],
+)
+def test_invalid_view_inputs_fail_before_any_request(
+    images: list[str], views: dict | None, match: str, tmp_path: Path
+) -> None:
+    views_paths = None if views is None else {k: tmp_path / v for k, v in views.items()}
+    with pytest.raises(ValueError, match=match):
+        make_client().generate(
+            [tmp_path / p for p in images], tmp_path / "m.glb", views=views_paths
+        )
+    assert not (tmp_path / "m.glb").exists()
 
 
 def test_task_failure_raises_with_payload(httpx_mock: HTTPXMock, tmp_path: Path) -> None:
@@ -337,7 +388,33 @@ def test_default_settings_match_pietra() -> None:
     assert settings.geometry_quality == "detailed"  # Ultra mesh
     assert settings.face_limit == 40000
     assert settings.orientation == "align_image"
-    assert settings.image_autofix is True
+    assert settings.image_autofix is False  # alters the customer's photo: opt-in only
+
+
+def test_pricing_per_model_matches_default_settings() -> None:
+    assert pricing.TRIPO_USD_PER_CREDIT == 0.01
+    assert pricing.TRIPO_DEFAULT_CREDITS == TripoSettings().estimated_credits() == 60
+    assert pricing.TRIPO_USD_PER_MODEL == TripoSettings().estimated_cost_usd() == 0.60
+
+
+def test_image_autofix_opt_in_from_env() -> None:
+    settings = TripoSettings.from_env({"TRIPO_IMAGE_AUTOFIX": "1"})
+    assert settings.params("image_to_model")["enable_image_autofix"] is True
+    assert "enable_image_autofix" not in settings.params("multiview_to_model")
+
+
+def test_legacy_model_omits_v3_only_params() -> None:
+    settings = TripoSettings.from_env(
+        {
+            "TRIPO_MODEL_VERSION": "v2.5-20250123",
+            "TRIPO_TEXTURE_QUALITY": "standard",
+            "TRIPO_GEOMETRY_QUALITY": "standard",
+        }
+    )
+    params = settings.params("image_to_model")
+    assert params["model"] == "v2.5-20250123"
+    assert not {"texture_quality", "geometry_quality", "auto_size"} & set(params)
+    assert settings.estimated_credits() == 30
 
 
 def test_client_reads_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -391,6 +468,8 @@ def test_env_blank_values_keep_defaults_and_zero_face_limit_is_adaptive() -> Non
     [
         {"TRIPO_MODEL_VERSION": "v2.5-20250123"},  # geometry_quality not allowed on v2.5
         {"TRIPO_MODEL_VERSION": "P2-20260801"},  # P series: other params and prices
+        {"TRIPO_MODEL_VERSION": "v3.2-20270101"},  # undocumented
+        {"TRIPO_TEXTURE": "false", "TRIPO_PBR": "false"},  # align_image needs texture
         {"TRIPO_TEXTURE_QUALITY": "4k"},
         {"TRIPO_TEXTURE_QUALITY": "fast"},  # needs texture v3.5
         {"TRIPO_GEOMETRY_QUALITY": "ultra"},
@@ -413,8 +492,16 @@ def test_invalid_env_values_fail_fast(env: dict[str, str]) -> None:
         ({"geometry_quality": "standard", "texture_quality": "standard"}, 30),
         ({"geometry_quality": "standard"}, 40),
         ({"texture_quality": "extreme"}, 70),
-        ({"texture": False, "pbr": False}, 40),  # 20 untextured + HD geometry 20
-        ({"texture": False, "pbr": False, "geometry_quality": "standard"}, 20),
+        ({"texture": False, "pbr": False, "orientation": "default"}, 40),  # 20 + HD geometry
+        (
+            {
+                "texture": False,
+                "pbr": False,
+                "orientation": "default",
+                "geometry_quality": "standard",
+            },
+            20,
+        ),
         ({"texture": False}, 60),  # pbr=true forces texture
         ({"texture_quality": "fast", "texture_version": "v3.5-20260815"}, 50),
     ],

@@ -26,7 +26,7 @@ def make(name: str | None, env: dict[str, str | None] | None = None) -> Provider
         key = env.get("TRIPO_API_KEY")
         if not key:
             raise ValueError("PROVIDER=tripo necesita TRIPO_API_KEY en .env")
-        return TripoProvider(key)
+        return TripoProvider(key, env=env)  # TRIPO_* settings from the same env/.env
     if name == "fal":
         from platform_worker.providers.fal import FalProvider
 

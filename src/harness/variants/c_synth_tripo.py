@@ -1,6 +1,7 @@
 """Variant C: clean the first photo → synthetic orthographic views (Gemini, green key) →
 silhouette check → Tripo multiview with the longest passing slot prefix of
-``front, left, back, right``, or the cleaned real photo alone if degraded.
+``front, left, back, right`` (sent as labelled ``views=``), or the cleaned real photo alone
+if degraded.
 
 A view whose Gemini call fails is skipped (cost still recorded) and the slot rule decides.
 
@@ -108,7 +109,11 @@ class SynthTripoVariant:
         for index in range(1, candidates + 1):
             cand = storage.candidate_dir(workdir, index)
             try:
-                outcome = tripo.generate(images, storage.model_path(cand), seed=index)
+                # Labelled views (never positional): multiview with view keys, or
+                # image-to-model when only the (fallback) front is left.
+                outcome = tripo.generate(
+                    [], storage.model_path(cand), seed=index, views=dict(check.passed)
+                )
             except Exception as exc:  # one failed candidate must not drop the paid ones
                 last_error = exc
                 failures.append(f"cand_{index}: {exc}")
