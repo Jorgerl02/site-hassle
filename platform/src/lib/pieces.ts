@@ -31,11 +31,17 @@ export const MODEL_STATUSES: readonly PieceStatus[] = ["ready", "approved", "rej
 export const DAILY_LIMIT_MESSAGE = `Has llegado a las ${DAILY_PIECE_LIMIT} piezas de hoy. Mañana podrás crear más.`;
 
 /**
- * Columns the customer sees. `review_note` is an internal note and never
- * leaves the server; `error` is shown only in `needs_photos` and `failed`.
+ * Columns the customer may read: exactly the column-level SELECT grant of
+ * `authenticated` (migration 20261109000007). `review_note`, `route`,
+ * `claimed_at`, `provider_cost_usd` and `not_before` are not granted, so a
+ * `select *` with the user's session fails. `error` is shown only in
+ * `needs_photos` (in `failed` the customer sees a fixed message).
  */
 const PIECE_COLUMNS =
-  "id, user_id, name, kind, width_cm, height_cm, depth_cm, rectilinear, notes, status, attempt, error, reject_reason, created_at, updated_at";
+  "id, user_id, name, kind, width_cm, height_cm, depth_cm, rectilinear, support, notes, status, attempt, error, reject_reason, created_at, updated_at";
+
+/** Customer copy for `failed`: the technical detail stays in `pieces.error` for the admin. */
+export const FAILED_MESSAGE = "No hemos podido generar esta pieza. Lo revisamos y te escribimos.";
 
 export type CustomerPiece = Pick<
   Piece,
@@ -47,6 +53,7 @@ export type CustomerPiece = Pick<
   | "height_cm"
   | "depth_cm"
   | "rectilinear"
+  | "support"
   | "notes"
   | "status"
   | "attempt"
@@ -90,13 +97,21 @@ export async function getPieceForUser(id: string): Promise<CustomerPiece> {
   return piece;
 }
 
+/** `piece_models` columns granted to `authenticated` (never `meta`, `cost_usd`, `provider`). */
+const MODEL_COLUMNS = "id, piece_id, attempt, preview_path, glb_path, usdz_path, render_paths, selected, created_at";
+
+export type CustomerModel = Pick<
+  PieceModel,
+  "id" | "piece_id" | "attempt" | "preview_path" | "glb_path" | "usdz_path" | "render_paths" | "selected" | "created_at"
+>;
+
 /** Selected model (`selected = true`) of the current attempt, once the piece has been shown to the customer. */
-export async function getSelectedModel(piece: CustomerPiece): Promise<PieceModel | null> {
+export async function getSelectedModel(piece: CustomerPiece): Promise<CustomerModel | null> {
   if (!MODEL_STATUSES.includes(piece.status)) return null;
   const supabase = await createServerClient();
   const { data } = await supabase
     .from("piece_models")
-    .select("*")
+    .select(MODEL_COLUMNS)
     .eq("piece_id", piece.id)
     .eq("attempt", piece.attempt)
     .eq("selected", true)
@@ -161,7 +176,8 @@ function fileStem(name: string): string {
  * Signed download URLs (1 h) of the paid files. Only for an `approved` piece
  * the caller has already loaded through the user's session (ownership by RLS).
  */
-export async function signedModelUrls(piece: CustomerPiece, model: PieceModel | null): Promise<DownloadUrls | null> {
+export async function signedModelUrls(piece: CustomerPiece, model: CustomerModel | null): Promise<DownloadUrls | null> {
+
   if (piece.status !== "approved" || !model?.glb_path || !model.usdz_path) return null;
   const bucket = createAdminClient().storage.from("models");
   const stem = fileStem(piece.name);

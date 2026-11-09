@@ -18,7 +18,9 @@ export type ActionResult<T = object> = ({ ok: true } & T) | { ok: false; code: A
 const MESSAGES: Record<ActionCode, string> = {
   insufficient_credits: "Necesitas 1 crédito para descargar esta pieza.",
   invalid_state: "Esta pieza ha cambiado de estado. Recarga la página.",
-  max_versions: "Ya has pedido las 2 versiones extra de esta pieza.",
+  // An admin «Regenerar» also uses an attempt: never claim the customer asked for them.
+  max_versions: "No quedan más versiones de esta pieza.",
+
   not_found: "No encontramos esta pieza.",
   not_authenticated: "Tu sesión ha caducado. Vuelve a entrar.",
   unknown: "Algo ha fallado. Vuelve a intentarlo en unos minutos.",

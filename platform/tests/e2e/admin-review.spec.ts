@@ -116,7 +116,7 @@ test("a candidate without USDZ cannot be shown to the customer", async ({ browse
 
   await page.getByLabel(/Candidato 2/).check();
   await page.getByRole("button", { name: "Mostrar al cliente" }).click();
-  await expect(page.getByTestId("review-error")).toHaveText("Este candidato no tiene archivos descargables");
+  await expect(page.getByTestId("review-error")).toHaveText("Este candidato no tiene archivos descargables.");
 
   const { data: row } = await db.from("pieces").select("status").eq("id", piece.id).single();
   expect(row?.status).toBe("review");
@@ -153,4 +153,47 @@ test("regenerate sends the piece back to the queue with the next attempt", async
   // Delete straight away so a running worker never picks the test piece up.
   await cleanupPiece(db, piece);
   expect(row).toEqual({ status: "queued", attempt: 2, review_note: "Patas demasiado gruesas." });
+});
+
+test("failed pieces: technical error, «Reintentar» on the same attempt and «Rechazar»", async ({ browser }) => {
+  const retry = await seedReviewPiece(db, customer, `test_ Sillón fallido ${Date.now()}`);
+  const reject = await seedReviewPiece(db, customer, `test_ Sillón fallido rechazo ${Date.now()}`);
+  pieces.push(retry, reject);
+  for (const piece of [retry, reject]) {
+    const { error } = await db
+      .from("pieces")
+      .update({ status: "failed", error: "No se pudo generar ningún modelo: RuntimeError: proveedor caído" })
+      .eq("id", piece.id);
+    expect(error).toBeNull();
+  }
+  const page = await adminPage(browser);
+  await page.goto("/admin/revision");
+
+  const retryItem = page.getByTestId("failed-item").filter({ hasText: retry.name });
+  await expect(retryItem.getByTestId("failed-error")).toContainText("proveedor caído");
+  await retryItem.getByRole("button", { name: "Reintentar" }).click();
+  // The action revalidates the page: the piece leaves the «Fallidas» list.
+  await expect(retryItem).toHaveCount(0);
+
+  const { data: retried } = await db.from("pieces").select("status, attempt, error").eq("id", retry.id).single();
+  await cleanupPiece(db, retry); // a running worker must never pick the test piece up
+  expect(retried).toEqual({ status: "queued", attempt: 1, error: null });
+
+  const rejectItem = page.getByTestId("failed-item").filter({ hasText: reject.name });
+  await rejectItem.getByRole("button", { name: "Rechazar" }).click();
+  await expect(rejectItem.getByTestId("failed-message")).toHaveText("Escribe el motivo: lo verá el cliente.");
+  await rejectItem.getByLabel("Motivo del rechazo (lo leerá el cliente)").fill("No podemos generar esta pieza.");
+  await rejectItem.getByRole("button", { name: "Rechazar" }).click();
+  await expect(page.getByTestId("failed-item").filter({ hasText: reject.name })).toHaveCount(0);
+  const { data: rejected } = await db.from("pieces").select("status, reject_reason").eq("id", reject.id).single();
+  expect(rejected).toEqual({ status: "rejected", reject_reason: "No podemos generar esta pieza." });
+});
+
+test("the detail shows the customer's support answer", async ({ browser }) => {
+  const piece = await seedReviewPiece(db, customer, `test_ Aparador apoyo ${Date.now()}`);
+  pieces.push(piece);
+  await db.from("pieces").update({ support: "paneles" }).eq("id", piece.id);
+  const page = await adminPage(browser);
+  await page.goto(`/admin/revision/${piece.id}`);
+  await expect(page.getByTestId("piece-support")).toHaveText("Sobre paneles laterales");
 });

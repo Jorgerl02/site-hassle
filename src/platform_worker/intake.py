@@ -63,6 +63,11 @@ KIND_TEXT: dict[str, str] = {
     "estanteria": "estantería",
 }
 BOX_KINDS: frozenset[str] = frozenset({"cabecero", "panel"})
+# «¿Cómo se apoya la pieza?» (``pieces.support``) → parametric kind of route E. ``caja`` is
+# resolved in :func:`parametric_kind_override` (box, or box_legs with a base word in the
+# notes); ``no_se``/null keep the heuristic.
+SUPPORT_KINDS: dict[str, str] = {"patas": "table", "paneles": "panel_table"}
+_BASE_WORDS = re.compile(r"\b(patas?|zocalo)\b")
 
 Validator = Callable[[Path], list[str]]
 
@@ -167,5 +172,16 @@ def build_piece(piece_row: dict[str, Any], photo_paths: Sequence[Path]) -> Piece
 
 
 def parametric_kind_override(piece_row: dict[str, Any]) -> str | None:
-    """``"box"`` for headboards and panels (a slab-like box, never a table)."""
+    """Parametric kind forced for route E, or None for the heuristic.
+
+    The customer's support answer wins: ``patas`` → ``table``, ``paneles`` → ``panel_table``
+    (side panels, the default layout), ``caja`` → ``box`` or ``box_legs`` when the notes say
+    «patas»/«zócalo». Without an answer (``no_se``/null), headboards and panels are a plain
+    ``box`` (a slab-like box, never a table) and everything else is classified."""
+    support = piece_row.get("support")
+    if support in SUPPORT_KINDS:
+        return SUPPORT_KINDS[support]
+    if support == "caja":
+        notes = _normalise(piece_row.get("notes") or "")
+        return "box_legs" if _BASE_WORDS.search(notes) else "box"
     return "box" if (piece_row.get("kind") or "") in BOX_KINDS else None

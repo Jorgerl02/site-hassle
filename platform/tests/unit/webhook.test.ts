@@ -194,3 +194,62 @@ describe("POST /api/stripe/webhook", () => {
     expect(await response.json()).toEqual({ received: true, handled: false });
   });
 });
+
+describe("charge.refunded", () => {
+  const PI = "pi_test_1";
+
+  function refundDb() {
+    const base = fakeDb();
+    const refunds = new Map<string, number>();
+    const deps: FulfillmentDeps = {
+      ...base.deps,
+      async findPurchaseByPaymentIntent(pi) {
+        const purchase = [...base.purchases.values()].find((p) => p.paymentIntent === pi);
+        return purchase ? { userId: purchase.userId, sessionId: purchase.sessionId, credits: purchase.credits } : null;
+      },
+      async recordRefund(userId, credits, eventId) {
+        if (!refunds.has(eventId)) {
+          refunds.set(eventId, -credits);
+          base.ledger.push({ userId, delta: -credits, sessionId: `refund:${eventId}` });
+        }
+        return base.balance(userId);
+      },
+    };
+    return { ...base, deps, refunds };
+  }
+
+  function refundEvent(charge: Partial<Stripe.Charge>, id = "evt_refund_1"): Stripe.Event {
+    return {
+      id,
+      object: "event",
+      type: "charge.refunded",
+      data: { object: { id: "ch_1", object: "charge", amount: 6900, amount_refunded: 6900, refunded: true, payment_intent: PI, ...charge } },
+    } as unknown as Stripe.Event;
+  }
+
+  it("takes back the pack credits once per event", async () => {
+    const db = refundDb();
+    await handleStripeEvent(checkoutEvent({ payment_intent: PI }), db.deps);
+    expect(db.balance(USER)).toBe(10);
+    const result = await handleStripeEvent(refundEvent({}), db.deps);
+    expect(result).toEqual({ handled: true, userId: USER, credits: -10, balance: 0 });
+    await handleStripeEvent(refundEvent({}), db.deps); // Stripe retry
+    expect(db.balance(USER)).toBe(0);
+    expect(db.refunds.size).toBe(1);
+  });
+
+  it("ignores refunds of unknown purchases and leaves partial refunds to a human", async () => {
+    const db = refundDb();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await handleStripeEvent(refundEvent({ payment_intent: "pi_other" }), db.deps)).toEqual({
+      handled: false,
+      reason: "unknown_purchase",
+    });
+    expect(await handleStripeEvent(refundEvent({ refunded: false, amount_refunded: 100 }), db.deps)).toEqual({
+      handled: false,
+      reason: "partial_refund",
+    });
+    expect(db.refunds.size).toBe(0);
+    vi.restoreAllMocks();
+  });
+});

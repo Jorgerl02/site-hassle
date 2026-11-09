@@ -11,7 +11,31 @@ test.describe("landing", () => {
     await expect(page.locator('meta[property="og:locale"]')).toHaveAttribute("content", "es_ES");
   });
 
+  test("hydrates / and /entrar without a mismatch", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error" && /Hydration|418/.test(msg.text())) errors.push(msg.text());
+    });
+    page.on("pageerror", (error) => {
+      if (/Hydration|#418/.test(error.message)) errors.push(error.message);
+    });
+    for (const path of ["/", "/entrar"]) {
+      await page.goto(path);
+      await page.waitForLoadState("networkidle");
+    }
+    expect(errors).toEqual([]);
+    // Emotion's styles are flushed into <head>, never inline in <body>.
+    await expect(page.locator("body style[data-emotion]")).toHaveCount(0);
+  });
+
+  test("sends anti-framing headers", async ({ request }) => {
+    const response = await request.get("/");
+    expect(response.headers()["x-frame-options"]).toBe("DENY");
+    expect(response.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
+  });
+
   test("shows the five sections", async ({ page }) => {
+
     await page.goto("/");
     for (const name of ["Piezas reales, con sus medidas", "Cómo funciona", "Precios", "Preguntas frecuentes"]) {
       await expect(page.getByRole("heading", { level: 2, name })).toBeVisible();

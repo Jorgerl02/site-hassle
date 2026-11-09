@@ -94,6 +94,15 @@ export default async function ReviewDetailPage({ params }: { params: Promise<{ i
             </Box>
             <Box>
               <Text as="dt" color="fg.muted">
+                ¿Cómo se apoya?
+              </Text>
+              <Text as="dd" data-testid="piece-support">
+                {piece.supportLabel ?? "—"}
+              </Text>
+            </Box>
+
+            <Box>
+              <Text as="dt" color="fg.muted">
                 Notas del cliente
               </Text>
               <Text as="dd" whiteSpace="pre-line">

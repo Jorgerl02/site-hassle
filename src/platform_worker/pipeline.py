@@ -19,10 +19,12 @@ import logging
 import shutil
 import time
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from PIL import Image, ImageOps
@@ -63,7 +65,21 @@ NO_PROVIDER_ERROR = (
 STATUS_REVIEW = "review"
 STATUS_NEEDS_PHOTOS = "needs_photos"
 STATUS_FAILED = "failed"
-STATUS_QUEUED = "queued"  # returned when a piece without photos yet goes back to the queue
+STATUS_REJECTED = "rejected"  # excluded categories (lámpara, metal, vidrio)
+# Returned when a piece without photos yet, or deferred by the daily budget, goes back to
+# the queue.
+STATUS_QUEUED = "queued"
+# Notice sent to the web (admin) when the daily provider budget runs out (once a day).
+NOTICE_BUDGET = "budget"
+
+# Same cap as the form and the ``piece_photos`` trigger: the first 4 photos by position.
+MAX_PHOTOS = 4
+THUMB_STEM = "thumb"
+
+# Daily provider budget (USD) over every organic piece; ``WORKER_DAILY_BUDGET_USD``.
+DEFAULT_DAILY_BUDGET_USD = 20.0
+BUDGET_MESSAGE = "Presupuesto diario agotado; se reintenta mañana"
+MADRID = ZoneInfo("Europe/Madrid")
 
 # A piece can be claimed the instant it is inserted, before its ``piece_photos`` rows exist:
 # while it is younger than ``PHOTOS_GRACE`` (from ``created_at``) it goes back to ``queued``;
@@ -105,12 +121,34 @@ def _suffix(storage_path: str) -> str:
     return suffix if suffix else ".jpg"
 
 
-def download_photos(db: Any, storage: Any, piece_id: str, work: Path) -> list[Path]:
+def check_photo_path(path: str, user_id: str, piece_id: str) -> str:
+    """``path`` if it lives directly under ``{user_id}/{piece_id}/``, else PhotoPathError."""
+    prefix = f"{user_id}/{piece_id}/"
+    name = path[len(prefix) :] if path.startswith(prefix) else ""
+    if not name or ".." in path or "/" in name or "\\" in path:
+        raise PhotoPathError(f"Ruta de foto no válida: {path!r}")
+    return path
+
+
+def download_photos(
+    db: Any, storage: Any, piece_id: str, work: Path, *, user_id: str | None = None
+) -> list[Path]:
+    """The first ``MAX_PHOTOS`` photo rows by ``position`` (the thumbnail never counts).
+    With ``user_id``, every path must be under ``{user_id}/{piece_id}/`` (no «..»)."""
     photos_dir = work / "photos"
     if photos_dir.exists():
         shutil.rmtree(photos_dir)
+    rows = [
+        r
+        for r in db.list_photos(piece_id)
+        if Path(str(r.get("storage_path") or "")).stem != THUMB_STEM
+    ]
+    rows = sorted(rows, key=lambda r: int(r.get("position") or 0))[:MAX_PHOTOS]
+    if user_id is not None:
+        for row in rows:
+            check_photo_path(str(row.get("storage_path") or ""), str(user_id), str(piece_id))
     paths: list[Path] = []
-    for n, row in enumerate(db.list_photos(piece_id), start=1):
+    for n, row in enumerate(rows, start=1):
         dst = photos_dir / f"{n}{_suffix(row['storage_path'])}"
         storage.download("photos", row["storage_path"], dst)
         paths.append(dst)
@@ -196,7 +234,11 @@ def generate_candidates(
     *,
     provider: Provider | None,
     blender_bin: Path | None,
+    before_provider_call: Callable[[int, float], bool] | None = None,
 ) -> list[CandidateRun]:
+    """Candidates of one attempt. For organic pieces ``before_provider_call(index, spent)``
+    (``spent`` = this piece's provider cost so far) runs before every provider call: False
+    before the first one raises :class:`BudgetExhausted`; later, it stops generating."""
     if route == "E":
         override = intake.parametric_kind_override(piece_row)
         variant = ParametricVariant(
@@ -221,7 +263,14 @@ def generate_candidates(
     images = _organic_images(photos, work)
     runs = []
     for index in range(1, ORGANIC_CANDIDATES + 1):
+        spent = sum(c.cost_usd for c in runs)
+        if before_provider_call is not None and not before_provider_call(index, spent):
+            if index == 1:
+                raise BudgetExhausted(BUDGET_MESSAGE)
+            log.warning("Presupuesto diario agotado: la pieza sigue con %d candidato(s)", index - 1)
+            break
         cand = CandidateRun(index, work / provider.name / f"cand_{index}")
+
         try:
             outcome = provider.generate(images, cand.cand_dir / "model.glb", seed=index)
             cand.cost_usd, cand.seconds, cand.gen_meta = (
@@ -246,6 +295,37 @@ def generate_candidates(
 
 class NoProviderError(RuntimeError):
     """An organic piece arrived and the worker has no provider configured."""
+
+
+class BudgetExhausted(RuntimeError):
+    """The daily provider budget is spent before the first provider call of a piece."""
+
+
+class PhotoPathError(ValueError):
+    """A ``piece_photos.storage_path`` outside ``{user_id}/{piece_id}/``."""
+
+
+def daily_budget_usd(settings: dict[str, str | None] | None = None) -> float:
+    """``WORKER_DAILY_BUDGET_USD`` (default 20); an unreadable value falls back to 20."""
+    env = settings if settings is not None else load_settings()
+    raw = env.get("WORKER_DAILY_BUDGET_USD")
+    try:
+        value = float(str(raw).replace(",", ".")) if raw else DEFAULT_DAILY_BUDGET_USD
+    except ValueError:
+        log.warning("WORKER_DAILY_BUDGET_USD no es un número (%r); uso 20", raw)
+        return DEFAULT_DAILY_BUDGET_USD
+    return value if value >= 0 else DEFAULT_DAILY_BUDGET_USD
+
+
+def next_madrid_midnight(now: datetime | None = None) -> datetime:
+    """Next 00:00 Europe/Madrid (the budget day boundary), as an aware datetime."""
+    local = (now or _utcnow()).astimezone(MADRID)
+    tomorrow = (local + timedelta(days=1)).date()
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=MADRID)
+
+
+# Day (Madrid) of the last budget notice sent by this process: the admin hears it once.
+_budget_notice_day: date | None = None
 
 
 def storage_prefix(piece_id: str, attempt: int, candidate: int, *, selected: bool) -> str:
@@ -334,8 +414,9 @@ def notify_status(
     client: httpx.Client | None = None,
 ) -> bool:
     """POST ``{pieceId, status}`` to the web's ``/api/internal/notify`` (admin heads-up on
-    ``review``). Only when ``NOTIFY_URL`` and ``WORKER_SHARED_SECRET`` are set; returns
-    whether the web accepted it. Never raises: a lost notice must not fail a finished piece."""
+    ``review``, ``failed`` and ``budget``). Only when ``NOTIFY_URL`` and
+    ``WORKER_SHARED_SECRET`` are set; returns whether the web accepted it.
+    Never raises: a lost notice must not fail a finished piece."""
     try:
         # Inside the try: a broken .env must never turn a reviewed piece into ``failed``.
         env = settings if settings is not None else load_settings()
@@ -357,14 +438,45 @@ def notify_status(
     return True
 
 
-def _fail(db: Any, piece_id: str, message: str) -> str:
-    """Mark the piece ``failed``; a DB error here is logged, never raised (the piece then
-    stays ``generating`` and the stale sweep requeues it)."""
+def _fail(db: Any, piece_id: str, message: str, *, provider_cost_usd: float | None = None) -> str:
+    """Mark the piece ``failed`` (technical ``error``; the customer sees a fixed message) and
+    alert the admin. ``provider_cost_usd`` is the new accumulated cost of failed attempts
+    (written only when given). A DB error here is logged, never raised (the piece then stays
+    ``generating`` and the stale sweep requeues it)."""
+    fields: dict[str, Any] = {"status": STATUS_FAILED, "error": message[:ERROR_MAX_CHARS]}
+    if provider_cost_usd is not None:
+        fields["provider_cost_usd"] = round(provider_cost_usd, 4)
     try:
-        db.update_piece(piece_id, status=STATUS_FAILED, error=message[:ERROR_MAX_CHARS])
+        db.update_piece(piece_id, **fields)
     except Exception:
         log.exception("No se pudo marcar la pieza %s como fallida", piece_id)
+        return STATUS_FAILED
+    notify_status(piece_id, STATUS_FAILED)
     return STATUS_FAILED
+
+
+def _heartbeat(db: Any, piece_id: str) -> None:
+    """Refresh ``claimed_at`` so a long piece is never taken for orphaned. Never raises."""
+    try:
+        db.update_piece(piece_id, claimed_at=_utcnow().isoformat())
+    except Exception as exc:
+        log.warning("No se pudo renovar claimed_at de la pieza %s: %s", piece_id, exc)
+
+
+def _defer_for_budget(db: Any, piece_id: str) -> str:
+    """Back to ``queued`` until the next Madrid midnight; the admin is told once a day."""
+    global _budget_notice_day
+    db.update_piece(
+        piece_id,
+        status=STATUS_QUEUED,
+        claimed_at=None,
+        error=BUDGET_MESSAGE,
+        not_before=next_madrid_midnight().isoformat(),
+    )
+    today = _utcnow().astimezone(MADRID).date()
+    if _budget_notice_day != today and notify_status(piece_id, NOTICE_BUDGET):
+        _budget_notice_day = today
+    return STATUS_QUEUED
 
 
 def _utcnow() -> datetime:
@@ -404,23 +516,46 @@ def process_piece(
     provider: Provider | None,
     workdir: Path,
     blender_bin: Path | None,
+    budget_usd: float | None = None,
 ) -> str:
-    """Run one claimed piece; returns the final status (``review|needs_photos|failed``), or
-    ``queued`` when the piece had no photos yet and went back to the queue.
+    """Run one claimed piece; returns the final status (``review|needs_photos|rejected|
+    failed``), or ``queued`` when the piece had no photos yet or the daily provider budget
+    (``budget_usd``, default ``WORKER_DAILY_BUDGET_USD``) is spent and it went back to the
+    queue.
 
-    Never raises for a piece-level problem: every failure ends in ``failed`` with a Spanish
-    ``error`` (the traceback goes to ``<work>/error.log``)."""
+    Never raises for a piece-level problem: every failure ends in ``failed`` with a technical
+    ``error`` (the traceback goes to ``<work>/error.log``) and a notice to the admin."""
     piece_id = str(piece_row["id"])
     attempt = int(piece_row.get("attempt") or 1)
     work = piece_workdir(workdir, piece_id, attempt)
     start = time.monotonic()
+    prior_cost = float(piece_row.get("provider_cost_usd") or 0)
+    runs: list[CandidateRun] = []
+    models_written = False
+
+    def failed_cost() -> float | None:
+        """Accumulated provider cost to record on failure (None: nothing new to add)."""
+        spent = sum(c.cost_usd for c in runs)
+        return prior_cost + spent if spent and not models_written else None
+
     try:
+        excluded = intake.excluded_reasons(piece_row)
+        if excluded:
+            # Out of scope: closed at no cost with the reason (never a photo problem).
+            db.update_piece(
+                piece_id, status=STATUS_REJECTED, reject_reason="\n".join(excluded), error=None
+            )
+            return STATUS_REJECTED
+
         try:
-            photos = download_photos(db, storage, piece_id, work)
+            user_id = piece_row.get("user_id")
+            photos = download_photos(
+                db, storage, piece_id, work, user_id=str(user_id) if user_id else None
+            )
         except Exception as exc:
             return _fail(db, piece_id, f"No se pudieron descargar las fotos: {exc}")
 
-        if not photos and not intake.excluded_reasons(piece_row):
+        if not photos:
             return _wait_for_photos(db, piece_row)
 
         problems = intake.check(piece_row, photos)
@@ -435,23 +570,43 @@ def process_piece(
         route = "E" if not organic else (provider.name if provider is not None else "sin proveedor")
         db.update_piece(piece_id, route=route)
 
+        budget = budget_usd if budget_usd is not None else daily_budget_usd()
+
+        def before_provider_call(index: int, spent: float) -> bool:
+            _heartbeat(db, piece_id)
+            try:
+                today = float(db.provider_spend_today())
+            except Exception as exc:  # fail open: a DB blip must not stall every piece
+                log.warning("No se pudo leer el gasto del día: %s", exc)
+                return True
+            return today + spent < budget
+
         try:
             runs = generate_candidates(
                 piece, piece_row, decision.route if not organic else "organic", photos, work,
                 provider=provider, blender_bin=blender_bin,
+                before_provider_call=before_provider_call,
             )  # fmt: skip
         except NoProviderError as exc:
             return _fail(db, piece_id, str(exc))
+        except BudgetExhausted:
+            return _defer_for_budget(db, piece_id)
 
         ok = [c for c in runs if c.error is None and c.max_error is not None]
         if not ok:
             errors = "; ".join(c.error for c in runs if c.error) or "sin candidatos"
-            return _fail(db, piece_id, f"No se pudo generar ningún modelo: {errors}")
+            return _fail(
+                db,
+                piece_id,
+                f"No se pudo generar ningún modelo: {errors}",
+                provider_cost_usd=failed_cost(),
+            )
         selected = min(ok, key=lambda c: c.max_error)
         provider_name = "parametric" if not organic else provider.name  # type: ignore[union-attr]
         # Every successful candidate is delivered so the admin can pick either one.
         delivered: dict[int, dict[str, Any]] = {}
         for cand in ok:
+            _heartbeat(db, piece_id)
             prefix = storage_prefix(piece_id, attempt, cand.index, selected=cand is selected)
             provenance = {
                 "variant": route,
@@ -503,9 +658,15 @@ def process_piece(
                     "selected": is_selected,
                 }
             )
+            models_written = True
         db.update_piece(piece_id, status=STATUS_REVIEW, error=None)
         notify_status(piece_id, STATUS_REVIEW)
         return STATUS_REVIEW
     except Exception as exc:
         (work / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
-        return _fail(db, piece_id, f"Error del worker: {type(exc).__name__}: {exc}")
+        return _fail(
+            db,
+            piece_id,
+            f"Error del worker: {type(exc).__name__}: {exc}",
+            provider_cost_usd=failed_cost(),
+        )

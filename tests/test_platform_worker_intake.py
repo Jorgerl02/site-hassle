@@ -161,3 +161,24 @@ def test_table_notes_reach_the_parametric_classifier(tmp_path: Path) -> None:
 
     assert classify(piece) == "panel_table"
     assert intake.parametric_kind_override(row(kind="mesita")) is None
+
+
+# ---------------------------------------------------------------- support answer (W1)
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        ({"kind": "mesa", "support": "patas"}, "table"),
+        ({"kind": "cabecero", "support": "paneles"}, "panel_table"),
+        ({"kind": "aparador", "support": "caja", "notes": ""}, "box"),
+        ({"kind": "aparador", "support": "caja", "notes": "Sobre un zócalo"}, "box_legs"),
+        ({"kind": "aparador", "support": "caja", "notes": "Cuatro patas"}, "box_legs"),
+        ({"kind": "cabecero", "support": "no_se"}, "box"),
+        ({"kind": "cabecero", "support": None}, "box"),
+        ({"kind": "mesa", "support": "no_se"}, None),
+        ({"kind": "aparador"}, None),
+    ],
+)
+def test_parametric_kind_override_from_support(row, expected) -> None:
+    assert intake.parametric_kind_override(row) == expected

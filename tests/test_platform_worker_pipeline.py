@@ -64,10 +64,24 @@ class FakeDB:
         self.updates: list[tuple[str, dict[str, Any]]] = []
         self.requeue_calls: list[int] = []
         self.deleted: list[tuple[str, int]] = []
+        self.spend_today = 0.0
+
+    def _claimable(self, p: dict[str, Any]) -> bool:
+        # claim_next_piece(): photos present (or older than 10 min) and not deferred.
+        if p.get("status", "queued") != "queued":
+            return False
+        not_before = p.get("not_before")
+        if not_before and datetime.fromisoformat(not_before) > datetime.now(UTC):
+            return False
+        created = p.get("created_at")
+        old = bool(created) and datetime.fromisoformat(created) < datetime.now(UTC) - timedelta(
+            minutes=10
+        )
+        return bool(self.photos.get(p["id"])) or old
 
     def claim_next(self):
-        # Same as claim_next_piece() in SQL: oldest queued → generating, claimed_at, error null.
-        queued = [p for p in self.pieces.values() if p.get("status", "queued") == "queued"]
+        # Same as claim_next_piece() in SQL: oldest claimable → generating, claimed_at, error null.
+        queued = [p for p in self.pieces.values() if self._claimable(p)]
         if not queued:
             return None
         piece = min(queued, key=lambda p: p.get("created_at") or "")
@@ -77,6 +91,9 @@ class FakeDB:
     def requeue_stale(self, minutes: int = 30) -> int:
         self.requeue_calls.append(minutes)
         return 0
+
+    def provider_spend_today(self) -> float:
+        return self.spend_today
 
     def update_piece(self, piece_id: str, **fields: Any) -> dict[str, Any]:
         self.updates.append((piece_id, fields))
@@ -358,10 +375,20 @@ def test_invalid_photo_needs_photos_with_spanish_error(tmp_path: Path) -> None:
     assert db.models == [] and storage.uploads == {}
 
 
-def test_excluded_kind_needs_photos(tmp_path: Path) -> None:
-    db, storage, row = setup(tmp_path, kind="lampara", name="Lámpara de pie")
-    assert run(db, storage, row, tmp_path) == "needs_photos"
-    assert "lámparas" in db.pieces[PIECE_ID]["error"]
+@pytest.mark.parametrize(
+    ("overrides", "word"),
+    [
+        ({"kind": "lampara", "name": "Lámpara de pie"}, "lámparas"),
+        ({"kind": "mesa", "notes": "Mesa de acero cromado"}, "metal"),
+        ({"kind": "mesita", "notes": "Sobre de vidrio templado"}, "vidrio"),
+    ],
+)
+def test_excluded_piece_is_rejected_with_reason(tmp_path: Path, overrides, word) -> None:
+    db, storage, row = setup(tmp_path, **overrides)
+    assert run(db, storage, row, tmp_path) == "rejected"
+    piece = db.pieces[PIECE_ID]
+    assert piece["status"] == "rejected" and word in piece["reject_reason"]
+    assert piece["error"] is None and db.models == [] and storage.uploads == {}
 
 
 def test_provider_exception_fails(tmp_path: Path) -> None:
@@ -393,7 +420,7 @@ def test_run_requeues_stale_pieces_first(tmp_path: Path) -> None:
     db = FakeDB()
     ctx = {"db": db, "storage": None, "provider": None, "blender_bin": None}
     assert cli.run_loop(ctx, once=True, poll_seconds=0, workdir=tmp_path) == 0
-    assert db.requeue_calls == [30]
+    assert db.requeue_calls == [90]
 
 
 def test_run_once_processes_one_piece(tmp_path: Path) -> None:
@@ -402,7 +429,7 @@ def test_run_once_processes_one_piece(tmp_path: Path) -> None:
     ctx = {"db": db, "storage": storage, "provider": None, "blender_bin": None}
     assert cli.run_loop(ctx, once=True, poll_seconds=0, workdir=tmp_path / "runs") == 1
     assert db.pieces[PIECE_ID]["status"] == "review"
-    assert db.requeue_calls == [30]
+    assert db.requeue_calls == [90]
 
 
 def test_cli_exits_2_without_service_key(tmp_path: Path, monkeypatch) -> None:
@@ -454,15 +481,25 @@ def _claim_without_photos(tmp_path: Path, created_ago: timedelta):
     return db, storage
 
 
-def test_recent_piece_without_photos_goes_back_to_queue(tmp_path: Path) -> None:
+def test_recent_piece_without_photos_is_not_claimed(tmp_path: Path) -> None:
+    """I-4: a photo-less piece younger than 10 min never holds the queue."""
     db, storage = _claim_without_photos(tmp_path, timedelta(minutes=1))
-    for _ in range(5):  # never a counter: it stays re-queued while inside the grace period
-        row = db.claim_next()
-        assert row["error"] is None  # claim_next clears error, like the SQL
+    assert db.claim_next() is None
+    # Reached anyway (``piece <id>``): it goes back to the queue, never a counter.
+    row = dict(db.pieces[PIECE_ID], status="generating")
+    for _ in range(3):
         assert run(db, storage, row, tmp_path) == "queued"
     piece = db.pieces[PIECE_ID]
     assert piece["status"] == "queued" and piece["claimed_at"] is None
     assert piece["error"] == pipeline.WAITING_PHOTOS_MESSAGE
+
+
+def test_photo_less_piece_does_not_starve_the_next_one(tmp_path: Path) -> None:
+    db, storage = _claim_without_photos(tmp_path, timedelta(minutes=1))
+    other = "33333333-3333-3333-3333-333333333333"
+    db.pieces[other] = dict(db.pieces[PIECE_ID], id=other, created_at=_now_iso())
+    db.photos = {other: [{"piece_id": other, "storage_path": f"u1/{other}/1.jpg", "position": 1}]}
+    assert db.claim_next()["id"] == other
 
 
 def test_old_piece_without_photos_needs_photos(tmp_path: Path) -> None:
@@ -476,7 +513,8 @@ def test_old_piece_without_photos_needs_photos(tmp_path: Path) -> None:
 def test_piece_without_created_at_is_not_requeued(tmp_path: Path) -> None:
     db, storage = _claim_without_photos(tmp_path, timedelta(0))
     db.pieces[PIECE_ID]["created_at"] = None
-    assert run(db, storage, db.claim_next(), tmp_path) == "needs_photos"
+    assert db.claim_next() is None  # no photos and no age: claim_next_piece skips it
+    assert run(db, storage, dict(db.pieces[PIECE_ID]), tmp_path) == "needs_photos"
 
 
 def test_photos_arriving_after_a_requeue_reach_review(tmp_path: Path) -> None:
@@ -484,7 +522,8 @@ def test_photos_arriving_after_a_requeue_reach_review(tmp_path: Path) -> None:
     photos = {
         PIECE_ID: [{"piece_id": PIECE_ID, "storage_path": f"u1/{PIECE_ID}/1.jpg", "position": 1}]
     }
-    assert run(db, storage, db.claim_next(), tmp_path) == "queued"
+    assert run(db, storage, dict(db.pieces[PIECE_ID]), tmp_path) == "queued"
+    assert db.claim_next() is None
     db.photos = photos
     assert run(db, storage, db.claim_next(), tmp_path) == "review"
     assert db.pieces[PIECE_ID]["error"] is None
@@ -554,7 +593,7 @@ def test_requeue_stale_runs_every_10_cycles(tmp_path: Path) -> None:
     cli.run_loop(
         ctx, once=False, poll_seconds=0, workdir=tmp_path, sleep=lambda _s: None, max_cycles=21
     )
-    assert db.requeue_calls == [30, 30, 30]  # cycles 0, 10 and 20
+    assert db.requeue_calls == [90, 90, 90]  # cycles 0, 10 and 20
 
 
 def _cli_env(monkeypatch, tmp_path: Path, blender: str | None) -> None:
@@ -639,5 +678,172 @@ def test_needs_photos_sends_no_notice(tmp_path: Path, monkeypatch) -> None:
         pipeline, "notify_status", lambda pid, status, **kw: sent.append((pid, status))
     )
     db, storage, row = setup(tmp_path, kind="lampara")
-    assert run(db, storage, row, tmp_path) == "needs_photos"
+    assert run(db, storage, row, tmp_path) == "rejected"
     assert sent == []
+
+
+# ---------------------------------------------------------------- final review fixes
+
+
+def _photo_rows(paths: list[str]) -> list[dict[str, Any]]:
+    return [
+        {"piece_id": PIECE_ID, "storage_path": p, "position": i} for i, p in enumerate(paths, 1)
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        f"u1/{PIECE_ID}/../../u2/other/1.jpg",
+        f"u2/{PIECE_ID}/1.jpg",
+        "u1/other-piece/1.jpg",
+        f"u1/{PIECE_ID}/sub/1.jpg",
+    ],
+)
+def test_photo_path_outside_the_piece_folder_fails(tmp_path: Path, bad: str) -> None:
+    db, storage, row = setup(tmp_path)
+    db.photos[PIECE_ID] = _photo_rows([bad])
+    storage.objects[("photos", bad)] = tmp_path / "src" / "1.jpg"
+    assert run(db, storage, row, tmp_path) == "failed"
+    assert "Ruta de foto no válida" in db.pieces[PIECE_ID]["error"]
+    assert not (tmp_path / "runs" / PIECE_ID / "1" / "photos").exists()
+
+
+def test_only_the_first_four_photos_by_position_are_used(tmp_path: Path) -> None:
+    db, storage, _ = setup(tmp_path)
+    paths = [f"u1/{PIECE_ID}/{n}.jpg" for n in range(1, 7)] + [f"u1/{PIECE_ID}/thumb.jpg"]
+    rows = _photo_rows(paths)
+    rows.reverse()  # PostgREST order must not matter
+    db.photos[PIECE_ID] = rows
+    src = tmp_path / "src" / "1.jpg"
+    storage.objects = {("photos", p): src for p in paths}
+    seen: list[str] = []
+    original = storage.download
+
+    def download(bucket, path, dst):
+        seen.append(path)
+        return original(bucket, path, dst)
+
+    storage.download = download
+    photos = pipeline.download_photos(db, storage, PIECE_ID, tmp_path / "w", user_id="u1")
+    assert len(photos) == 4
+    assert seen == [f"u1/{PIECE_ID}/{n}.jpg" for n in range(1, 5)]
+
+
+def test_failed_piece_notifies_the_admin(tmp_path: Path, monkeypatch) -> None:
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pipeline, "notify_status", lambda pid, status, **kw: sent.append((pid, status)) or True
+    )
+    db, storage, row = setup(tmp_path, kind="jarron", name="Jarrón")
+    assert run(db, storage, row, tmp_path, provider=BrokenProvider()) == "failed"
+    assert sent == [(PIECE_ID, "failed")]
+
+
+class CostlyBrokenProvider(FakeProvider):
+    """Charges for the GLB, then the post-processing of every candidate fails."""
+
+    def generate(self, images, dst_glb, *, seed=None):
+        outcome = super().generate(images, dst_glb, seed=seed)
+        outcome.cost_usd = 0.25
+        return outcome
+
+
+def test_failed_attempt_records_provider_cost(tmp_path: Path, monkeypatch) -> None:
+    def broken_post(*args, **kwargs):
+        raise RuntimeError("malla rota")
+
+    monkeypatch.setattr(pipeline, "postprocess", broken_post)
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá", provider_cost_usd=0.1)
+    assert run(db, storage, row, tmp_path, provider=CostlyBrokenProvider(SAMPLE_GLB)) == "failed"
+    assert db.pieces[PIECE_ID]["provider_cost_usd"] == pytest.approx(0.6)
+
+
+def test_budget_spent_defers_organic_piece_and_notifies_once(tmp_path: Path, monkeypatch) -> None:
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pipeline, "notify_status", lambda pid, status, **kw: sent.append((pid, status)) or True
+    )
+    monkeypatch.setattr(pipeline, "_budget_notice_day", None)
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá")
+    db.spend_today = 20.0
+    calls: list[int] = []
+
+    class CountingProvider(FakeProvider):
+        def generate(self, images, dst_glb, *, seed=None):
+            calls.append(seed)
+            return super().generate(images, dst_glb, seed=seed)
+
+    provider = CountingProvider(SAMPLE_GLB)
+    assert run(db, storage, row, tmp_path, provider=provider) == "queued"
+    piece = db.pieces[PIECE_ID]
+    assert piece["status"] == "queued" and piece["error"] == pipeline.BUDGET_MESSAGE
+    assert piece["claimed_at"] is None
+    assert datetime.fromisoformat(piece["not_before"]) > datetime.now(UTC)
+    assert calls == [] and db.models == []
+    assert db.claim_next() is None  # deferred until tomorrow
+    # A second piece the same day: still deferred, no second notice.
+    assert run(db, storage, dict(piece, status="generating"), tmp_path, provider=provider) == (
+        "queued"
+    )
+    assert sent == [(PIECE_ID, "budget")]
+
+
+def test_budget_reached_after_first_candidate_keeps_one(tmp_path: Path) -> None:
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá")
+
+    class Costly(FakeProvider):
+        def generate(self, images, dst_glb, *, seed=None):
+            outcome = super().generate(images, dst_glb, seed=seed)
+            outcome.cost_usd = 1.0
+            return outcome
+
+    db.spend_today = 19.5  # 19,5 + 1 of candidate 1 ≥ 20: no second call
+    status = pipeline.process_piece(
+        db, storage, row, provider=Costly(SAMPLE_GLB), workdir=tmp_path / "runs",
+        blender_bin=None, budget_usd=20.0,
+    )  # fmt: skip
+    assert status == "review"
+    assert [m["candidate"] for m in db.models] == [1]
+
+
+def test_rectilinear_piece_ignores_the_budget(tmp_path: Path) -> None:
+    db, storage, row = setup(tmp_path)
+    db.spend_today = 1000.0
+    assert run(db, storage, row, tmp_path) == "review"
+
+
+def test_daily_budget_from_settings() -> None:
+    assert pipeline.daily_budget_usd({}) == 20.0
+    assert pipeline.daily_budget_usd({"WORKER_DAILY_BUDGET_USD": "7,5"}) == 7.5
+    assert pipeline.daily_budget_usd({"WORKER_DAILY_BUDGET_USD": "x"}) == 20.0
+
+
+def test_next_madrid_midnight() -> None:
+    now = datetime(2026, 11, 9, 22, 30, tzinfo=UTC)  # 23:30 in Madrid
+    nxt = pipeline.next_madrid_midnight(now)
+    assert nxt.astimezone(pipeline.MADRID).hour == 0
+    assert nxt - now == timedelta(minutes=30)
+
+
+def test_heartbeat_refreshes_claimed_at_between_candidates(tmp_path: Path) -> None:
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá", width_cm=200, depth_cm=90)
+    assert run(db, storage, row, tmp_path, provider=FakeProvider(SAMPLE_GLB)) == "review"
+    beats = [f for _, f in db.updates if set(f) == {"claimed_at"}]
+    assert len(beats) >= 4  # before each of 2 provider calls and each of 2 deliveries
+
+
+@pytest.mark.parametrize(
+    ("support", "notes", "expected"),
+    [
+        ("patas", "", "table"),
+        ("paneles", "", "panel_table"),
+        ("caja", "", "box"),
+        ("caja", "Con zócalo de madera", "box_legs"),
+        ("caja", "Lleva patas cortas", "box_legs"),
+    ],
+)
+def test_support_answer_picks_the_parametric_kind(tmp_path, support, notes, expected) -> None:
+    db, storage, row = setup(tmp_path, kind="aparador", support=support, notes=notes)
+    assert run(db, storage, row, tmp_path) == "review"
+    assert FakeParametric.instances[0].kind_overrides == {PIECE_ID: expected}

@@ -3,7 +3,8 @@ import type { Metadata } from "next";
 import NextLink from "next/link";
 import { AdminHeader } from "@/components/admin/AdminHeader";
 import { ContactSheet } from "@/components/admin/ContactSheet";
-import { listReviewQueue, requireAdmin } from "@/lib/admin";
+import { FailedActions } from "@/components/admin/FailedActions";
+import { listFailedPieces, listReviewQueue, requireAdmin } from "@/lib/admin";
 
 export const metadata: Metadata = {
   title: "Revisión interna",
@@ -13,7 +14,7 @@ export const metadata: Metadata = {
 export default async function ReviewQueuePage() {
   // 404 before anything streams for non-admins.
   await requireAdmin();
-  const items = await listReviewQueue();
+  const [items, failed] = await Promise.all([listReviewQueue(), listFailedPieces()]);
 
   return (
     <>
@@ -82,7 +83,77 @@ export default async function ReviewQueuePage() {
             ))}
           </Stack>
         )}
+
+        <Stack as="section" gap="4" mt="14" aria-labelledby="fallidas">
+          <Flex justify="space-between" align="baseline" gap="4" wrap="wrap">
+            <Heading as="h2" id="fallidas" fontSize={{ base: "2xl", md: "3xl" }} fontWeight="500">
+              Fallidas
+            </Heading>
+            <Text color="fg.muted">{failed.length === 1 ? "1 pieza" : `${failed.length} piezas`}</Text>
+          </Flex>
+          {failed.length === 0 ? (
+            <Text color="fg.muted">No hay piezas fallidas.</Text>
+          ) : (
+            <Stack as="ol" listStyleType="none" gap="4">
+              {failed.map((item) => (
+                <Box
+                  as="li"
+                  key={item.id}
+                  data-testid="failed-item"
+                  bg="bg.panel"
+                  borderWidth="1px"
+                  borderColor="border"
+                  rounded="xl"
+                  p={{ base: 4, md: 5 }}
+                >
+                  <Stack gap="3">
+                    <Flex justify="space-between" align="baseline" gap="3" wrap="wrap">
+                      <Text fontWeight="600" fontSize="lg">
+                        {item.name}
+                      </Text>
+                      <Text fontSize="sm" color="fg.muted" fontVariantNumeric="tabular-nums">
+                        Falló hace {item.waiting}
+                      </Text>
+                    </Flex>
+                    <Flex gap="2" wrap="wrap" fontSize="sm" color="fg.muted">
+                      <Text>{item.kindLabel}</Text>
+                      <Text aria-hidden>·</Text>
+                      <Text fontVariantNumeric="tabular-nums">{item.dimensions}</Text>
+                      <Text aria-hidden>·</Text>
+                      <Text>Intento {item.attempt}</Text>
+                      {item.route ? (
+                        <>
+                          <Text aria-hidden>·</Text>
+                          <Text>Ruta {item.route}</Text>
+                        </>
+                      ) : null}
+                      {item.email ? (
+                        <Text ms="auto" color="fg.subtle">
+                          {item.email}
+                        </Text>
+                      ) : null}
+                    </Flex>
+                    <Box
+                      as="pre"
+                      data-testid="failed-error"
+                      bg="bg.subtle"
+                      rounded="md"
+                      p="3"
+                      fontSize="xs"
+                      whiteSpace="pre-wrap"
+                      wordBreak="break-word"
+                    >
+                      {item.error ?? "Sin detalle del error."}
+                    </Box>
+                    <FailedActions pieceId={item.id} />
+                  </Stack>
+                </Box>
+              ))}
+            </Stack>
+          )}
+        </Stack>
       </Container>
+
     </>
   );
 }

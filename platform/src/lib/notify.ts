@@ -188,3 +188,55 @@ export async function notifyPieceInReview(pieceId: string, deps: NotifyDeps = en
     };
   });
 }
+
+/** Shared gate of the admin notices: without `ADMIN_NOTIFY_EMAIL` there is nobody to tell. */
+function adminNotice(
+  pieceId: string,
+  deps: NotifyDeps,
+  build: (piece: PieceContact, adminEmail: string) => EmailMessage,
+): Promise<NotifyResult> {
+  if (deps.apiKey && !deps.adminEmail) {
+    deps.log(`[notify] ADMIN_NOTIFY_EMAIL sin configurar: sin aviso interno para ${pieceId}`);
+    return Promise.resolve({ sent: false, reason: "no_recipient" });
+  }
+  return notifyAbout(pieceId, deps, (piece) => (deps.adminEmail ? build(piece, deps.adminEmail) : null));
+}
+
+/** Internal alert: the worker marked a piece `failed` (the detail is in `pieces.error`). */
+export async function notifyPieceFailed(pieceId: string, deps: NotifyDeps = envDeps()): Promise<NotifyResult> {
+  return adminNotice(pieceId, deps, (piece, to) => {
+    const href = `${deps.siteUrl}/admin/revision`;
+    return {
+      to,
+      subject: `Pieza fallida: «${piece.name}»`,
+      text: `El worker no ha podido generar «${piece.name}». Revisa el error y reintenta o rechaza: ${href}`,
+      html: layout(
+        [`El worker no ha podido generar «${escapeHtml(piece.name)}».`, "Revisa el error y reintenta o rechaza la pieza."],
+        { href, label: "Ver fallidas" },
+      ),
+    };
+  });
+}
+
+/** Internal alert: the worker's daily provider budget ran out (organic pieces wait for tomorrow). */
+export async function notifyBudgetExhausted(pieceId: string, deps: NotifyDeps = envDeps()): Promise<NotifyResult> {
+  return adminNotice(pieceId, deps, (piece, to) => {
+    const href = `${deps.siteUrl}/admin/revision`;
+    const day = new Date().toISOString().slice(0, 10);
+    return {
+      to,
+      subject: "Presupuesto diario del proveedor agotado",
+      idempotencyKey: `budget/${day}`,
+      text:
+        `El worker ha agotado el presupuesto diario del proveedor 3D (WORKER_DAILY_BUDGET_USD). ` +
+        `«${piece.name}» y las demás piezas orgánicas esperan en cola hasta mañana: ${href}`,
+      html: layout(
+        [
+          "El worker ha agotado el presupuesto diario del proveedor 3D (WORKER_DAILY_BUDGET_USD).",
+          `«${escapeHtml(piece.name)}» y las demás piezas orgánicas esperan en cola hasta mañana.`,
+        ],
+        { href, label: "Ver la cola" },
+      ),
+    };
+  });
+}

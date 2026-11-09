@@ -137,8 +137,9 @@ export function ResultActions({ pieceId, balance, versionsLeft }: ResultActionsP
         </Button>
       </Flex>
       <Text fontSize="sm" color="fg.subtle">
-        {versionsLeft < 1 ? "Ya has usado las 2 versiones extra. " : ""}Pedir otra versión o cerrar la pieza no cuesta
-        nada.
+        {versionsLeft < 1 ? "No quedan más versiones de esta pieza. " : ""}Pedir otra versión o cerrar la pieza no
+        cuesta nada.
+
       </Text>
 
       {noCredits ? <NoCredits /> : null}

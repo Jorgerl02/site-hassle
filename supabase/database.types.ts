@@ -46,6 +46,7 @@ export type Database = {
           id: string
           piece_id: string | null
           reason: Database["public"]["Enums"]["credit_reason"]
+          stripe_event_id: string | null
           stripe_session_id: string | null
           user_id: string
         }
@@ -55,6 +56,7 @@ export type Database = {
           id?: string
           piece_id?: string | null
           reason: Database["public"]["Enums"]["credit_reason"]
+          stripe_event_id?: string | null
           stripe_session_id?: string | null
           user_id: string
         }
@@ -64,6 +66,7 @@ export type Database = {
           id?: string
           piece_id?: string | null
           reason?: Database["public"]["Enums"]["credit_reason"]
+          stripe_event_id?: string | null
           stripe_session_id?: string | null
           user_id?: string
         }
@@ -207,12 +210,15 @@ export type Database = {
           id: string
           kind: Database["public"]["Enums"]["piece_kind"]
           name: string
+          not_before: string | null
           notes: string | null
+          provider_cost_usd: number
           rectilinear: boolean | null
           reject_reason: string | null
           review_note: string | null
           route: string | null
           status: Database["public"]["Enums"]["piece_status"]
+          support: string | null
           updated_at: string
           user_id: string
           width_cm: number
@@ -227,12 +233,15 @@ export type Database = {
           id?: string
           kind: Database["public"]["Enums"]["piece_kind"]
           name: string
+          not_before?: string | null
           notes?: string | null
+          provider_cost_usd?: number
           rectilinear?: boolean | null
           reject_reason?: string | null
           review_note?: string | null
           route?: string | null
           status?: Database["public"]["Enums"]["piece_status"]
+          support?: string | null
           updated_at?: string
           user_id?: string
           width_cm: number
@@ -247,12 +256,15 @@ export type Database = {
           id?: string
           kind?: Database["public"]["Enums"]["piece_kind"]
           name?: string
+          not_before?: string | null
           notes?: string | null
+          provider_cost_usd?: number
           rectilinear?: boolean | null
           reject_reason?: string | null
           review_note?: string | null
           route?: string | null
           status?: Database["public"]["Enums"]["piece_status"]
+          support?: string | null
           updated_at?: string
           user_id?: string
           width_cm?: number
@@ -302,6 +314,7 @@ export type Database = {
           id: string
           pack: string
           status: string
+          stripe_payment_intent: string | null
           stripe_session_id: string
           user_id: string
         }
@@ -312,6 +325,7 @@ export type Database = {
           id?: string
           pack: string
           status: string
+          stripe_payment_intent?: string | null
           stripe_session_id: string
           user_id: string
         }
@@ -322,6 +336,7 @@ export type Database = {
           id?: string
           pack?: string
           status?: string
+          stripe_payment_intent?: string | null
           stripe_session_id?: string
           user_id?: string
         }
@@ -356,9 +371,11 @@ export type Database = {
           model_created_at: string | null
           model_id: string | null
           name: string | null
+          not_before: string | null
           notes: string | null
           preview_path: string | null
           provider: string | null
+          provider_cost_usd: number | null
           rectilinear: boolean | null
           reject_reason: string | null
           render_paths: Json | null
@@ -366,6 +383,7 @@ export type Database = {
           route: string | null
           selected: boolean | null
           status: Database["public"]["Enums"]["piece_status"] | null
+          support: string | null
           updated_at: string | null
           usdz_path: string | null
           user_email: string | null
@@ -397,12 +415,15 @@ export type Database = {
           id: string
           kind: Database["public"]["Enums"]["piece_kind"]
           name: string
+          not_before: string | null
           notes: string | null
+          provider_cost_usd: number
           rectilinear: boolean | null
           reject_reason: string | null
           review_note: string | null
           route: string | null
           status: Database["public"]["Enums"]["piece_status"]
+          support: string | null
           updated_at: string
           user_id: string
           width_cm: number
@@ -426,64 +447,12 @@ export type Database = {
         Returns: number
       }
       pieces_created_today: { Args: { p_user: string }; Returns: number }
+      provider_spend_today: { Args: never; Returns: number }
       reject_piece: {
         Args: { p_piece_id: string; p_reason: string }
-        Returns: {
-          attempt: number
-          claimed_at: string | null
-          created_at: string
-          depth_cm: number
-          error: string | null
-          height_cm: number
-          id: string
-          kind: Database["public"]["Enums"]["piece_kind"]
-          name: string
-          notes: string | null
-          rectilinear: boolean | null
-          reject_reason: string | null
-          review_note: string | null
-          route: string | null
-          status: Database["public"]["Enums"]["piece_status"]
-          updated_at: string
-          user_id: string
-          width_cm: number
-        }
-        SetofOptions: {
-          from: "*"
-          to: "pieces"
-          isOneToOne: true
-          isSetofReturn: false
-        }
+        Returns: Json
       }
-      request_new_version: {
-        Args: { p_piece_id: string }
-        Returns: {
-          attempt: number
-          claimed_at: string | null
-          created_at: string
-          depth_cm: number
-          error: string | null
-          height_cm: number
-          id: string
-          kind: Database["public"]["Enums"]["piece_kind"]
-          name: string
-          notes: string | null
-          rectilinear: boolean | null
-          reject_reason: string | null
-          review_note: string | null
-          route: string | null
-          status: Database["public"]["Enums"]["piece_status"]
-          updated_at: string
-          user_id: string
-          width_cm: number
-        }
-        SetofOptions: {
-          from: "*"
-          to: "pieces"
-          isOneToOne: true
-          isSetofReturn: false
-        }
-      }
+      request_new_version: { Args: { p_piece_id: string }; Returns: Json }
       requeue_stale_pieces: { Args: { p_minutes?: number }; Returns: number }
     }
     Enums: {

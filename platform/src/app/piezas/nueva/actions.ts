@@ -52,6 +52,7 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
     heightCm: String(formData.get("heightCm") ?? ""),
     depthCm: String(formData.get("depthCm") ?? ""),
     rectilinear: String(formData.get("rectilinear") ?? ""),
+    support: String(formData.get("support") ?? ""),
     notes: String(formData.get("notes") ?? ""),
     photos,
   });
@@ -69,6 +70,8 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
     height_cm: piece.heightCm,
     depth_cm: piece.depthCm,
     rectilinear: piece.rectilinear,
+    support: piece.support,
+
     notes: piece.notes,
     status: "queued",
   });

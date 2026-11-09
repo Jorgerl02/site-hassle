@@ -106,6 +106,7 @@ export function supabaseFulfillmentDeps(getClient: () => LedgerClient): Fulfillm
             credits: record.credits,
             amount_cents: record.amountCents,
             status: record.status,
+            stripe_payment_intent: record.paymentIntent ?? null,
           },
           { onConflict: "stripe_session_id", ignoreDuplicates: true },
         );
@@ -121,5 +122,30 @@ export function supabaseFulfillmentDeps(getClient: () => LedgerClient): Fulfillm
       if (error) throw new Error(`grant_credits: ${error.message}`);
       return typeof data === "number" ? data : 0;
     },
+    async findPurchaseByPaymentIntent(paymentIntent) {
+      const { data, error } = await getClient()
+        .from("purchases")
+        .select("user_id, stripe_session_id, credits")
+        .eq("stripe_payment_intent", paymentIntent)
+        .maybeSingle();
+      if (error) throw new Error(`purchases: ${error.message}`);
+      if (!data) return null;
+      const row = data as { user_id: string; stripe_session_id: string; credits: number };
+      return { userId: row.user_id, sessionId: row.stripe_session_id, credits: row.credits };
+    },
+    async recordRefund(userId, credits, eventId) {
+      // Unique `stripe_event_id`: a retried event never takes the credits twice.
+      const { error } = await getClient()
+        .from("credit_ledger")
+        .upsert(
+          { user_id: userId, delta: -credits, reason: "refund", stripe_event_id: eventId },
+          { onConflict: "stripe_event_id", ignoreDuplicates: true },
+        );
+      if (error) throw new Error(`credit_ledger: ${error.message}`);
+      const { data, error: balanceError } = await getClient().rpc("credit_balance", { p_user: userId });
+      if (balanceError) throw new Error(`credit_balance: ${balanceError.message}`);
+      return typeof data === "number" ? data : 0;
+    },
+
   };
 }

@@ -59,6 +59,10 @@ class WorkerDB:
         data = self._rpc("requeue_stale_pieces", {"p_minutes": minutes})
         return int(data or 0)
 
+    def provider_spend_today(self) -> float:
+        """Provider USD spent since 00:00 Europe/Madrid (``provider_spend_today()``)."""
+        return float(self._rpc("provider_spend_today", {}) or 0)
+
     def update_piece(self, piece_id: str, **fields: Any) -> dict[str, Any]:
         response = self._http.patch(
             f"{self.rest}/pieces",
@@ -100,6 +104,8 @@ class WorkerDB:
         _raise_for(response, "piece_models (delete)")
 
     def list_photos(self, piece_id: str) -> list[dict[str, Any]]:
+        """Photo rows of the piece ordered by ``position`` (the caller caps how many)."""
+
         response = self._http.get(
             f"{self.rest}/piece_photos",
             params={"piece_id": f"eq.{piece_id}", "select": "*", "order": "position.asc"},

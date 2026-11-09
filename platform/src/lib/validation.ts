@@ -17,6 +17,10 @@ export const PIECE_KINDS: readonly PieceKind[] = Constants.public.Enums.piece_ki
 /** Answer to «¿Es una pieza recta…?». */
 export type RectilinearAnswer = "si" | "no" | "no_se";
 
+/** Answer to «¿Cómo se apoya la pieza?» (`pieces.support`). */
+export type SupportAnswer = "patas" | "paneles" | "caja" | "no_se";
+export const SUPPORT_ANSWERS: readonly SupportAnswer[] = ["patas", "paneles", "caja", "no_se"];
+
 export interface PhotoMeta {
   name: string;
   type: string;
@@ -33,6 +37,8 @@ export interface PieceInput {
   heightCm: string | number;
   depthCm: string | number;
   rectilinear: string;
+  /** Missing or empty = «No lo sé». */
+  support?: string | null;
   notes?: string | null;
   photos: PhotoMeta[];
 }
@@ -44,11 +50,22 @@ export interface PieceValue {
   heightCm: number;
   depthCm: number;
   rectilinear: boolean | null;
+  /** Only for pieces that may be rectilinear; null when the piece is not («No»). */
+  support: SupportAnswer | null;
   notes: string | null;
   photos: PhotoMeta[];
 }
 
-export type PieceField = "name" | "kind" | "widthCm" | "heightCm" | "depthCm" | "rectilinear" | "notes" | "photos";
+export type PieceField =
+  | "name"
+  | "kind"
+  | "widthCm"
+  | "heightCm"
+  | "depthCm"
+  | "rectilinear"
+  | "support"
+  | "notes"
+  | "photos";
 
 export type ValidationResult =
   | { ok: true; value: PieceValue }
@@ -116,6 +133,10 @@ export function validatePieceInput(input: PieceInput): ValidationResult {
   const answer = input.rectilinear as RectilinearAnswer;
   if (!(answer in RECTILINEAR)) errors.rectilinear = "Elige una respuesta.";
 
+  const supportRaw = (input.support ?? "").trim() || "no_se";
+  const support = supportRaw as SupportAnswer;
+  if (!SUPPORT_ANSWERS.includes(support)) errors.support = "Elige una respuesta.";
+
   const notes = (input.notes ?? "").trim();
   if (notes.length > NOTES_MAX) errors.notes = `Las notas admiten ${NOTES_MAX} caracteres como máximo.`;
 
@@ -136,6 +157,8 @@ export function validatePieceInput(input: PieceInput): ValidationResult {
       kind,
       ...dims,
       rectilinear: RECTILINEAR[answer],
+      // An organic piece («No») has no support to describe.
+      support: answer === "no" ? null : support,
       notes: notes || null,
       photos: input.photos,
     },
@@ -173,7 +196,27 @@ export const RECTILINEAR_OPTIONS: readonly { value: RectilinearAnswer; label: st
   { value: "no_se", label: "No sé" },
 ];
 
+export const SUPPORT_OPTIONS: readonly { value: SupportAnswer; label: string }[] = [
+  { value: "patas", label: "Sobre patas" },
+  { value: "paneles", label: "Sobre paneles laterales" },
+  { value: "caja", label: "Es una caja o lleva zócalo" },
+  { value: "no_se", label: "No lo sé" },
+];
+
+export const SUPPORT_LABEL: Record<SupportAnswer, string> = {
+  patas: "Sobre patas",
+  paneles: "Sobre paneles laterales",
+  caja: "Es una caja o lleva zócalo",
+  no_se: "No lo sé",
+};
+
+/** Stored value → form answer (unknown or null → «No lo sé»). */
+export function supportAnswer(value: string | null | undefined): SupportAnswer {
+  return SUPPORT_ANSWERS.includes(value as SupportAnswer) ? (value as SupportAnswer) : "no_se";
+}
+
 export function rectilinearAnswer(value: boolean | null | undefined): RectilinearAnswer {
+
   return value === true ? "si" : value === false ? "no" : "no_se";
 }
 

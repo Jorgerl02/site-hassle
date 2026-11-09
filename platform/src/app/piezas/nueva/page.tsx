@@ -8,7 +8,7 @@ import { formatCm } from "@/lib/format";
 import { DAILY_LIMIT_MESSAGE, findPieceForUser } from "@/lib/pieces";
 import { DAILY_PIECE_LIMIT } from "@/lib/pricing";
 import { createServerClient } from "@/lib/supabase/server";
-import { rectilinearAnswer } from "@/lib/validation";
+import { rectilinearAnswer, supportAnswer } from "@/lib/validation";
 
 export const metadata: Metadata = {
   title: "Nueva pieza",
@@ -27,6 +27,8 @@ async function defaultsFrom(id: string | undefined): Promise<PieceFormDefaults |
     heightCm: formatCm(piece.height_cm),
     depthCm: formatCm(piece.depth_cm),
     rectilinear: rectilinearAnswer(piece.rectilinear),
+    support: supportAnswer(piece.support),
+
     notes: piece.notes ?? "",
   };
 }

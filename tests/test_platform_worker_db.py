@@ -71,7 +71,19 @@ def test_requeue_stale_sends_minutes(httpx_mock: HTTPXMock, db: WorkerDB) -> Non
     assert db.requeue_stale() == 2
 
 
+def test_provider_spend_today(httpx_mock: HTTPXMock, db: WorkerDB) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{URL}/rest/v1/rpc/provider_spend_today",
+        match_headers=AUTH,
+        match_json={},
+        json=12.5,
+    )
+    assert db.provider_spend_today() == 12.5
+
+
 def test_update_piece_patches_by_id(httpx_mock: HTTPXMock, db: WorkerDB) -> None:
+
     httpx_mock.add_response(
         method="PATCH",
         url=f"{URL}/rest/v1/pieces?id=eq.p-1",

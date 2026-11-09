@@ -33,11 +33,27 @@ describe("validatePieceInput", () => {
         heightCm: 60,
         depthCm: 6,
         rectilinear: true,
+        support: "no_se",
         notes: null,
         photos: [photo()],
       },
     });
   });
+
+  it("stores the support answer, «No lo sé» by default and none for organic pieces", () => {
+    const support = (r: ReturnType<typeof validatePieceInput>) => (r.ok ? r.value.support : "error");
+    for (const answer of ["patas", "paneles", "caja", "no_se"] as const) {
+      expect(support(validatePieceInput(input({ support: answer })))).toBe(answer);
+    }
+    expect(support(validatePieceInput(input({ support: "" })))).toBe("no_se");
+    expect(support(validatePieceInput(input({ support: undefined })))).toBe("no_se");
+    expect(support(validatePieceInput(input({ rectilinear: "no", support: "patas" })))).toBeNull();
+    expect(validatePieceInput(input({ support: "flotando" }))).toMatchObject({
+      ok: false,
+      errors: { support: expect.any(String) },
+    });
+  });
+
 
   it("maps the straight-piece answer to true, false or null", () => {
     const ok = (r: ReturnType<typeof validatePieceInput>) => (r.ok ? r.value.rectilinear : "error");

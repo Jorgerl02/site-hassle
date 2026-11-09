@@ -59,6 +59,8 @@ export default defineConfig({
     env: {
       ...(process.env as Record<string, string>),
       WORKER_SHARED_SECRET: E2E_WORKER_SECRET,
+      // Never email real people from a test run, even with a key in .env.local.
+      RESEND_API_KEY: "",
       NEXT_PUBLIC_META_PIXEL_ID: E2E_META_PIXEL_ID,
       NEXT_PUBLIC_GA_ID: E2E_GA_ID,
     },

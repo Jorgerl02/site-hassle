@@ -25,7 +25,7 @@ sin hablar con comercios, si algún pipeline produce modelos lo bastante buenos 
 Sobre este harness vive el MVP de la plataforma «Pieza 3D»: el cliente sube la foto y las medidas de un mueble, recibe un modelo 3D a escala real revisado internamente, lo ve gratis con RA y descarga el GLB y el USDZ con créditos.
 
 - `platform/` — web Next.js 16 + Supabase + Stripe. Instalación, claves, despliegue en Vercel, Stripe en producción y lista de comprobación antes de anuncios: [`platform/README.md`](platform/README.md).
-- `src/platform_worker/` — worker Python que corre en el Mac: `uv run platform-worker run` (o `just worker`). Reclama las piezas en cola, genera con el harness y Blender y las deja en revisión.
+- `src/platform_worker/` — worker Python que corre en el Mac: `uv run platform-worker run` (o `just worker`). Reclama las piezas en cola, genera con el harness y Blender y las deja en revisión. **Un solo worker** a la vez (presupuesto diario `WORKER_DAILY_BUDGET_USD` y limpieza de huérfanas a 90 min; ver `platform/README.md`).
 - `supabase/` — migraciones, RLS y funciones SQL: [`supabase/README.md`](supabase/README.md).
 - [`docs/anuncios.md`](docs/anuncios.md) — qué medir en la prueba con anuncios y convención de UTM.
 - Recetas: `just platform-dev`, `just platform-test`, `just platform-e2e`, `just worker`.

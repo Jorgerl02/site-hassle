@@ -4,12 +4,14 @@ import NextLink from "next/link";
 import { TrackEvent } from "@/components/Analytics";
 import { requireUser } from "@/lib/auth";
 import { formatCount, formatCreditDelta, formatCredits, getLedger, supabaseFulfillmentDeps, type LedgerClient } from "@/lib/credits";
-import { formatEur, HIGHLIGHT_LABEL, PACKS, type Pack } from "@/lib/pricing";
+import { formatEur, HIGHLIGHT_LABEL, PACKS, WAIVER_TEXT, type Pack } from "@/lib/pricing";
+
 import { PRODUCT_NAME } from "@/lib/site";
 import { fulfillCheckoutSession, getStripe, isStripeConfigured } from "@/lib/stripe";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { startCheckout } from "./actions";
+
 
 export const metadata: Metadata = {
   title: "Créditos",
@@ -71,6 +73,7 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
   const returned: ReturnInfo = param(params.ok) === "1" ? await confirmReturn(sessionId, user.id) : { state: null };
   const returnState = returned.state;
   const paymentError = param(params.error) === "pago";
+  const waiverError = param(params.error) === "desistimiento";
 
   const supabase = await createServerClient();
   const ledger = await getLedger(user.id, supabase as unknown as LedgerClient);
@@ -117,6 +120,9 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
             {paymentError ? (
               <Notice tone="error">No hemos podido abrir el pago. Inténtalo de nuevo en unos minutos.</Notice>
             ) : null}
+            {waiverError ? (
+              <Notice tone="error">Para comprar, marca la casilla de entrega inmediata del contenido digital.</Notice>
+            ) : null}
             <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="xl" p={{ base: 6, md: 8 }}>
               <Text color="fg.muted">Tu saldo</Text>
               <Flex align="baseline" gap="3" mt="1">
@@ -137,11 +143,30 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
             <Heading as="h2" id="comprar" fontSize={{ base: "2xl", md: "3xl" }} fontWeight="500">
               Comprar créditos
             </Heading>
-            <Grid templateColumns={{ base: "1fr", md: "repeat(3, 1fr)" }} gap={{ base: 4, md: 6 }} alignItems="stretch">
-              {PACKS.map((pack) => (
-                <PackCard key={pack.id} pack={pack} paymentsEnabled={paymentsEnabled} />
-              ))}
-            </Grid>
+            {/* One form: each «Comprar» submits its pack; the waiver checkbox is required (native validation, checked again on the server). */}
+            <Stack asChild gap="6">
+              <form action={startCheckout}>
+                <Grid templateColumns={{ base: "1fr", md: "repeat(3, 1fr)" }} gap={{ base: 4, md: 6 }} alignItems="stretch">
+                  {PACKS.map((pack) => (
+                    <PackCard key={pack.id} pack={pack} paymentsEnabled={paymentsEnabled} />
+                  ))}
+                </Grid>
+                {paymentsEnabled ? (
+                  <Flex asChild gap="3" align="flex-start" fontSize="sm" cursor="pointer">
+                    <label>
+                      <input
+                        type="checkbox"
+                        name="waiver"
+                        required
+                        data-testid="waiver"
+                        style={{ marginTop: "0.2rem", width: "1rem", height: "1rem", accentColor: "#9A5132", flexShrink: 0 }}
+                      />
+                      <Text as="span">{WAIVER_TEXT}</Text>
+                    </label>
+                  </Flex>
+                ) : null}
+              </form>
+            </Stack>
             <Text fontSize="sm" color="fg.muted" textWrap="pretty">
               IVA incluido. Los créditos comprados no caducan. Sin reembolsos: por eso ves cada pieza entera, con sus
               medidas y en realidad aumentada, antes de gastar un crédito.
@@ -229,18 +254,17 @@ function PackCard({ pack, paymentsEnabled }: { pack: Pack; paymentsEnabled: bool
       </Text>
       <Box flex="1" />
       {paymentsEnabled ? (
-        <form action={startCheckout}>
-          <input type="hidden" name="pack" value={pack.id} />
-          <Button
-            type="submit"
-            width="full"
-            colorPalette={pack.highlighted ? "clay" : "ink"}
-            variant={pack.highlighted ? "solid" : "outline"}
-            rounded="full"
-          >
-            Comprar
-          </Button>
-        </form>
+        <Button
+          type="submit"
+          name="pack"
+          value={pack.id}
+          width="full"
+          colorPalette={pack.highlighted ? "clay" : "ink"}
+          variant={pack.highlighted ? "solid" : "outline"}
+          rounded="full"
+        >
+          Comprar
+        </Button>
       ) : (
         <Button disabled width="full" variant="outline" colorPalette="ink" rounded="full">
           Pagos no configurados

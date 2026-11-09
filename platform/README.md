@@ -26,6 +26,8 @@ Desde la raíz del repo hay atajos de `just`: `just platform-dev`, `just platfor
 
 **Para el E2E completo, para antes el worker de producción** (`just worker`): `run --once` reclama la pieza más antigua de la cola y un worker en marcha podría llevarse la del test (o el test una pieza real).
 
+**Recomendado: un proyecto de Supabase de staging para los e2e.** Hoy corren contra el proyecto alojado `oyntcaxzskzntiyzxquy` (usuarios `test_*` que se borran al terminar); en cuanto haya clientes reales, crea un proyecto de staging, aplica las migraciones y apunta `.env.local` de los e2e a él. El servidor de los e2e arranca siempre con `RESEND_API_KEY` vacía (`playwright.config.ts`): un test nunca manda correos.
+
 El build de los e2e lleva ids de medición falsos (`NEXT_PUBLIC_META_PIXEL_ID`/`NEXT_PUBLIC_GA_ID`, salvo que exportes los tuyos) para que exista el aviso de cookies; todas las specs salvo `consent.spec.ts` empiezan con `sh_consent=denied` guardado. Las peticiones a Meta y Google de `consent.spec.ts` se responden en local. Antes de medir Lighthouse o servir en local, vuelve a hacer `pnpm build` sin esos ids.
 
 Si reutilizas un servidor ya arrancado en el 3150 para los e2e, arráncalo con `WORKER_SHARED_SECRET=e2e-worker-secret` (el mismo que usa el test del recorrido completo) o el aviso del worker fallará.
@@ -49,7 +51,7 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | No (reservada) | No la usa el código actual (Checkout alojado) |
 | `RESEND_API_KEY` | No | Correos. Sin ella cada aviso es un no-op que se anota en el log |
 | `NOTIFY_FROM_EMAIL` | Con Resend | Remitente en un dominio verificado en Resend, p. ej. `Pieza 3D <avisos@tudominio.es>`. Vacío: remitente de pruebas de Resend (solo entrega al dueño de la cuenta) |
-| `ADMIN_NOTIFY_EMAIL` | No | Quién recibe «Pieza en revisión» |
+| `ADMIN_NOTIFY_EMAIL` | No | Quién recibe «Pieza en revisión», «Pieza fallida» y «Presupuesto diario agotado» |
 | `WORKER_SHARED_SECRET` | No | Activa `POST /api/internal/notify` (lo llama el worker). El mismo valor va en el `.env` de la raíz |
 | `NEXT_PUBLIC_META_PIXEL_ID`, `NEXT_PUBLIC_GA_ID` | No | Meta Pixel y GA4. Vacías: no se carga ningún script de terceros ni aparece el aviso de cookies |
 | `NEXT_PUBLIC_CONTACT_EMAIL` | Sí en producción | Correo de contacto de `/privacidad` (derechos RGPD) |
@@ -58,6 +60,8 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 
 - **Pieza lista (cliente):** al pulsar «Mostrar al cliente» en `/admin/revision/[id]`, la acción llama a `notifyPieceReady(pieceId)` después de responder (`after()`): «Tu pieza «…» está lista» con el enlace a `/piezas/[id]`. Lleva `Idempotency-Key: piece-ready/{id}` (Resend no lo repite en 24 h).
 - **Pieza en revisión (admin):** el worker, al dejar una pieza en `review`, hace `POST {NOTIFY_URL}` con `Authorization: Bearer {WORKER_SHARED_SECRET}` y `{ pieceId, status: "review" }`; la ruta `/api/internal/notify` manda el correo a `ADMIN_NOTIFY_EMAIL`. Sin `NOTIFY_URL` o sin secreto, el worker no avisa; un aviso fallido nunca hace fallar la pieza.
+- **Pieza fallida (admin):** igual, con `status: "failed"`. El detalle técnico queda en `pieces.error` y se ve en la sección «Fallidas» de `/admin/revision` («Reintentar» la devuelve a la cola en el mismo intento; «Rechazar» la cierra con un motivo para el cliente). El cliente solo ve «No hemos podido generar esta pieza. Lo revisamos y te escribimos.».
+- **Presupuesto agotado (admin):** `status: "budget"`, una vez al día (`Idempotency-Key: budget/{fecha}`), cuando el worker llega a `WORKER_DAILY_BUDGET_USD`.
 - Todo vive en `src/lib/notify.ts` (API REST de Resend con `fetch`, sin SDK). Ningún aviso lanza excepciones.
 
 ## Analítica para anuncios
@@ -94,9 +98,12 @@ Cada evento se envía una vez por navegador y clave (`localStorage`). La fuente 
 
 ## Decisiones y trampas
 
-- **Cache Components está desactivado** (`next.config.ts`). Con él activo, la hidratación de los estilos de Chakra/Emotion dentro del shell prerenderizado provocaba un error de hidratación que congelaba la página unos segundos después de cargar (Next 16.4.5, React 19.3, Chakra 3.38). Hay un test e2e («stays responsive after hydration») que lo vigila si se vuelve a activar.
+- **Registro de Emotion para SSR** (`src/components/ui/emotion-registry.tsx`, envuelve a `Provider` en el layout): recoge los estilos que Emotion genera al renderizar en el servidor y los inserta en `<head>` con `useServerInsertedHTML`. Sin él, Emotion dejaba `<style data-emotion>` dentro de `<body>`, el HTML del servidor no coincidía con el del cliente y React tiraba el árbol y lo volvía a pintar (error #418 en todas las páginas). Un e2e comprueba que `/`, `/entrar` y `/panel` hidratan sin errores.
+- **Cache Components sigue desactivado** (`next.config.ts`). El error de hidratación que congelaba la página está resuelto por el registro, pero activarlo exige además quitar `export const dynamic` de los route handlers y poner cada lectura de cookies tras `Suspense`; no se ha probado a fondo para el MVP. Hay un test e2e («stays responsive after hydration») que lo vigila si se vuelve a activar.
+- **Cabeceras:** todas las páginas salen con `X-Frame-Options: DENY` y `Content-Security-Policy: frame-ancestors 'none'` (`next.config.ts`): nadie puede meter la web en un iframe.
+- **Lecturas por columna:** con la sesión del cliente, `pieces` y `piece_models` solo se pueden leer por las columnas del cliente (ver `supabase/README.md`); un `select("*")` falla. Usa las listas de `src/lib/pieces.ts`.
 - `model-viewer` se carga con `import()` solo cuando la tarjeta del ejemplo se acerca a la pantalla, y usa `ar-scale="fixed"` para que la realidad aumentada respete el tamaño real.
-- El enlace mágico usa PKCE: hay que abrirlo en el mismo navegador donde se pidió. `/auth/callback` acepta también `token_hash` + `type` por si se cambia la plantilla del correo.
+- **Enlace mágico:** la plantilla del repo (`supabase/templates/magic_link.html`, en `supabase/config.toml`) manda `{{ .SiteURL }}/auth/callback?token_hash=…&type=magiclink`, que `/auth/callback` verifica con `verifyOtp` y funciona en cualquier navegador. **No está aplicada todavía:** Supabase no deja cambiar plantillas en el plan gratuito con su SMTP por defecto (`supabase config push` responde 400). Hasta configurar SMTP propio, el correo usa la plantilla por defecto con PKCE (`?code=`, mismo navegador), que el callback también acepta. Ver `supabase/README.md`.
 
 ## El worker en el Mac
 
@@ -111,7 +118,11 @@ uv run platform-worker piece <id>              # reintento manual de una pieza
 
 - `PROVIDER` vacío: solo se generan piezas rectilíneas (ruta E paramétrica); las orgánicas quedan como fallidas con el motivo. Para orgánicas, `PROVIDER=tripo` (con `TRIPO_API_KEY`) o `PROVIDER=fal` (con `FAL_KEY`). `fake` es solo para pruebas.
 - Aviso al admin: `NOTIFY_URL=https://<dominio>/api/internal/notify` y `WORKER_SHARED_SECRET` (el mismo de Vercel) en el `.env` de la raíz.
-- Mientras el Mac esté apagado, las piezas esperan en `queued`. Al arrancar, el worker devuelve a la cola las piezas huérfanas en `generating` de más de 30 min.
+- **Un solo worker.** La cola aguantaría dos (`FOR UPDATE SKIP LOCKED`), pero el presupuesto diario y la limpieza de huérfanas suponen un único proceso.
+- Mientras el Mac esté apagado, las piezas esperan en `queued`. El worker renueva `claimed_at` antes de cada llamada al proveedor y de cada entrega; al arrancar (y cada 10 vueltas) devuelve a la cola las piezas en `generating` sin latido desde hace más de 90 min.
+- **Presupuesto diario del proveedor:** `WORKER_DAILY_BUDGET_USD` (20 por defecto). Antes de cada llamada al proveedor suma lo gastado hoy (hora de Madrid: `cost_usd` de los modelos de hoy más `pieces.provider_cost_usd`, el coste de los intentos fallidos); si se pasa, la pieza orgánica vuelve a `queued` con «Presupuesto diario agotado; se reintenta mañana» y `not_before` = medianoche de Madrid, y el admin recibe un aviso al día. Las rectilíneas (ruta E) no gastan y siguen.
+- Piezas excluidas (lámparas, metal, cromo, vidrio): `rejected` con el motivo en `reject_reason`, sin coste.
+- Fotos: el worker usa solo las 4 primeras por `position` y rechaza (pieza `failed`) cualquier ruta que no esté directamente bajo `{user_id}/{piece_id}/`.
 - Para dejarlo corriendo: una ventana de terminal con `just worker`, o un `launchd` (pendiente; no incluido).
 
 ## Stripe: de pruebas a producción
@@ -126,7 +137,7 @@ Para producción:
 
 1. Activa la cuenta de Stripe (datos fiscales y bancarios) y, si toca, Stripe Tax o el IVA en los precios (los precios ya son `tax_behavior: inclusive`).
 2. Con la clave **live** (`sk_live_…`) en local, una vez: `STRIPE_SECRET_KEY=sk_live_… pnpm stripe:setup` (avisa de que es PRODUCCIÓN).
-3. Dashboard → Developers → Webhooks → endpoint `https://<dominio>/api/stripe/webhook` con los eventos `checkout.session.completed` y `checkout.session.async_payment_succeeded`; copia su `whsec_…`.
+3. Dashboard → Developers → Webhooks → endpoint `https://<dominio>/api/stripe/webhook` con los eventos `checkout.session.completed`, `checkout.session.async_payment_succeeded` y `charge.refunded`; copia su `whsec_…`.
 4. En Vercel (Production): `STRIPE_SECRET_KEY=sk_live_…` y `STRIPE_WEBHOOK_SECRET=whsec_…`; redeploy.
 5. Compra real de 9 € con tu tarjeta y comprueba saldo, fila en `purchases` y el pago en Stripe.
 
@@ -151,7 +162,8 @@ Para producción:
 
 - [ ] `NEXT_PUBLIC_SITE_URL` y Redirect URLs de Supabase con el dominio de producción (`supabase config push`).
 - [ ] SMTP propio en Supabase Auth y plantilla del enlace mágico en español.
-- [ ] Stripe en live: precios creados con `pnpm stripe:setup`, webhook con los dos eventos, compra real de prueba hecha.
+- [ ] Stripe en live: precios creados con `pnpm stripe:setup`, webhook con los tres eventos, compra real de prueba hecha.
+
 - [ ] Resend con dominio verificado; recibes «Pieza en revisión» y el cliente «Tu pieza está lista».
 - [ ] `NEXT_PUBLIC_META_PIXEL_ID` y/o `NEXT_PUBLIC_GA_ID`; eventos comprobados con Meta Pixel Helper / GA DebugView tras pulsar «Aceptar»; «Automatic Advanced Matching» desactivado en Meta.
 - [ ] `NEXT_PUBLIC_CONTACT_EMAIL` y el titular (nombre y NIF) en `/privacidad` (`src/app/privacidad/page.tsx`, TODO).
@@ -159,3 +171,9 @@ Para producción:
 - [ ] Aviso legal (titular, NIF, domicilio) y condiciones de venta; `/privacidad` ya existe en lenguaje llano, conviene que lo revise un abogado.
 - [ ] Worker corriendo en el Mac con `PROVIDER` decidido (sin proveedor, las piezas orgánicas fallan).
 - [ ] Un recorrido completo en producción desde el móvil: registro, pieza, revisión, visor con RA, compra y descarga.
+
+### Cobros: factura, desistimiento, devoluciones y disputas
+
+- Checkout crea **factura** (`invoice_creation`), pide **NIF/CIF** opcional (`tax_id_collection`) y la dirección de facturación. Antes de «Comprar», `/creditos` exige marcar «Acepto que el contenido digital se entrega de inmediato y renuncio al derecho de desistimiento.» (comprobado también en el servidor; queda en `metadata.withdrawal_waiver` de la sesión).
+- **Devoluciones:** el evento `charge.refunded` con la devolución **completa** de un cobro que conocemos (`purchases.stripe_payment_intent`) resta los créditos del paquete con una fila `refund` negativa, una sola vez por evento (`credit_ledger.stripe_event_id` único). El saldo puede quedar negativo si ya se gastaron. Las devoluciones **parciales** solo se anotan en el log: ajusta los créditos a mano (fila `refund` desde el SQL editor).
+- **Disputas** (`charge.dispute.*`): manuales. Responde en el Dashboard de Stripe y, si la pierdes, resta los créditos a mano.

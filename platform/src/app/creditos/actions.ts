@@ -17,6 +17,7 @@ async function origin(): Promise<string> {
 
 class CheckoutError extends Error {}
 
+
 /**
  * Creates a Stripe Checkout Session for a credit pack and returns its URL.
  * The price is looked up by `lookup_key` (= pack id), created by `pnpm stripe:setup`.
@@ -41,8 +42,14 @@ export async function createCheckoutSession(packId: string): Promise<string> {
     line_items: [{ price: price.id, quantity: 1 }],
     client_reference_id: user.id,
     customer_email: user.email ?? undefined,
-    metadata: { pack: pack.id, credits: String(pack.credits) },
+    // The customer ticked the withdrawal waiver (checked by `startCheckout`); kept on the session as evidence.
+    metadata: { pack: pack.id, credits: String(pack.credits), withdrawal_waiver: "accepted" },
     locale: "es",
+    // Invoice with the customer's tax id (companies need it to deduct the VAT).
+    invoice_creation: { enabled: true },
+    tax_id_collection: { enabled: true },
+    customer_creation: "always",
+    billing_address_collection: "required",
     success_url: `${base}/creditos?ok=1&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${base}/creditos`,
   });
@@ -53,7 +60,9 @@ export async function createCheckoutSession(packId: string): Promise<string> {
 /** Form action for the pack buttons: sends the browser to Stripe Checkout. */
 export async function startCheckout(formData: FormData): Promise<void> {
   const packId = String(formData.get("pack") ?? "");
+  if (formData.get("waiver") !== "on") redirect("/creditos?error=desistimiento");
   let url: string;
+
   try {
     url = await createCheckoutSession(packId);
   } catch (error) {

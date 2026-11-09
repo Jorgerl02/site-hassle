@@ -8,6 +8,7 @@ import { StatusSteps } from "@/components/pieces/StatusSteps";
 import { requireUser } from "@/lib/auth";
 import { formatCm } from "@/lib/format";
 import {
+  FAILED_MESSAGE,
   PIECE_STATUS_LABEL,
   SETTLED_STATUSES,
   getBalance,
@@ -189,11 +190,12 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
             ) : null}
 
             {piece.status === "failed" ? (
-              <Notice status="error" title="Algo ha fallado al generar esta pieza. No te cuesta nada.">
-                {piece.error ? <Text whiteSpace="pre-line">{piece.error}</Text> : null}
-                <Text mt="1">La revisamos y te avisamos aquí.</Text>
+              // Fixed copy: `piece.error` holds technical detail meant for the admin only.
+              <Notice status="error" title={FAILED_MESSAGE}>
+                <Text>No te cuesta nada.</Text>
               </Notice>
             ) : null}
+
           </Stack>
         </SimpleGrid>
       </Container>

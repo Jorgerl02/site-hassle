@@ -89,6 +89,14 @@ export default function PrivacyPage() {
                 <strong>Resend</strong>: envío de los correos de aviso.
               </List.Item>
               <List.Item>
+                <strong>Generación 3D de piezas que no son rectas</strong> (sofás, sillones, jarrones…): enviamos
+                solo la foto principal de la pieza, sin tu correo ni tu nombre, a <strong>fal.ai</strong> (Estados
+                Unidos) o a <strong>Tripo</strong> (China), según el proveedor que tengamos activo. La transferencia se
+                ampara en las cláusulas contractuales tipo de la Comisión Europea (art. 46 del RGPD); en el caso de
+                Estados Unidos, también en el Marco de Privacidad de Datos UE-EE. UU. si el proveedor está adherido.
+              </List.Item>
+
+              <List.Item>
                 <strong>Vercel</strong>: alojamiento de la web.
               </List.Item>
               <List.Item>

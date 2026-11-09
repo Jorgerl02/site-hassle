@@ -24,6 +24,7 @@ WORKER_KEYS: tuple[str, ...] = (
     "BLENDER_BIN",
     "NOTIFY_URL",
     "WORKER_SHARED_SECRET",
+    "WORKER_DAILY_BUDGET_USD",
 )
 
 

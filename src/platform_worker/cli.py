@@ -5,7 +5,8 @@
 
 Settings come from ``platform_worker.config.load_settings``: the process environment over
 ``.env`` (or ``WORKER_ENV_FILE``): ``SUPABASE_URL``, ``SUPABASE_SERVICE_ROLE_KEY``, ``PROVIDER``,
-``TRIPO_API_KEY``, ``FAL_KEY``, ``FAL_MODEL`` and ``BLENDER_BIN``.
+``TRIPO_API_KEY``, ``FAL_KEY``, ``FAL_MODEL``, ``BLENDER_BIN`` and ``WORKER_DAILY_BUDGET_USD``.
+
 """
 
 from __future__ import annotations
@@ -26,7 +27,10 @@ from platform_worker.pipeline import STATUS_QUEUED, process_piece
 from platform_worker.storage import Storage
 
 DEFAULT_WORKDIR = Path("runs/platform")
-STALE_MINUTES = 30
+# A piece longer than this without a heartbeat (``claimed_at`` is refreshed before every
+# candidate and delivery) is taken for orphaned. Run ONE worker only: the queue is safe
+# against two, but the daily budget and the stale sweep assume a single process.
+STALE_MINUTES = 90
 REQUEUE_EVERY_CYCLES = 10
 # ``piece <id>`` only re-runs pieces that have no result waiting for review or the client;
 # ``generating`` (maybe another worker is on it) needs ``--force``.

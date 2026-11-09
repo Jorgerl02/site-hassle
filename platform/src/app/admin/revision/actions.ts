@@ -64,9 +64,9 @@ export async function markSelectedModel(pieceId: string, modelId: string): Promi
   if (!model || model.attempt !== piece.attempt) throw new ReviewError("Ese modelo no es de este intento.");
   if (!isDeliverable(model)) throw new ReviewError(NOT_DELIVERABLE_MESSAGE);
 
-  // TODO: two updates are not atomic. Replace with a partial unique index on
-  // piece_models (piece_id, attempt) where selected, or a single SQL function
-  // that switches the selection in one statement (Task 1 schema).
+  // Unset first, then set: the partial unique index `piece_models_one_selected_idx`
+  // (one selected per piece and attempt) makes a concurrent double selection fail
+  // instead of leaving two rows selected.
   // Paths stay as stored (a non-selected candidate keeps its `cand_n/` paths).
   const unset = await db
     .from("piece_models")
@@ -94,7 +94,10 @@ export async function showToClient(pieceId: string, modelId?: string): Promise<v
   if (error) throw new Error(`No se pudo comprobar el modelo elegido: ${error.message}`);
   if (!selected || selected.length === 0) throw new ReviewError("Elige el modelo que verá el cliente.");
   if (selected.length > 1) {
-    throw new Error(`Pieza ${piece.id}: ${selected.length} modelos marcados como elegidos en el intento ${piece.attempt}`);
+    // Cannot happen with the partial unique index (one selected per attempt); say it clearly anyway.
+    throw new ReviewError(
+      `Hay ${selected.length} modelos marcados como elegidos en el intento ${piece.attempt}. Elige uno y vuelve a intentarlo.`,
+    );
   }
   if (!isDeliverable(selected[0])) throw new ReviewError(NOT_DELIVERABLE_MESSAGE);
   await updateReviewPiece(piece.id, piece.attempt, { status: "ready", review_note: null, reject_reason: null });
@@ -127,7 +130,54 @@ export async function rejectInternally(pieceId: string, reason: string): Promise
   await updateReviewPiece(piece.id, piece.attempt, { status: "rejected", reject_reason: text });
 }
 
+/**
+ * Updates a `failed` piece only if it is still `failed` on the expected attempt.
+ */
+async function updateFailedPiece(pieceId: string, fields: Record<string, unknown>) {
+  if (!isUuid(pieceId)) throw new ReviewError("La pieza no existe.");
+  const { data, error } = await adminDb()
+    .from("pieces")
+    .update(fields)
+    .eq("id", pieceId)
+    .eq("status", "failed")
+    .select("id");
+  if (error) throw new ReviewError(`No se pudo guardar: ${error.message}`);
+  if (!data || data.length === 0) throw new ReviewError("Esta pieza ya no está fallida.");
+}
+
+/** «Reintentar» a failed piece: back to the queue on the same attempt (no version is used). */
+export async function retryFailed(pieceId: string): Promise<void> {
+  await requireAdmin();
+  await updateFailedPiece(pieceId, { status: "queued", claimed_at: null, error: null, not_before: null });
+}
+
+/** «Rechazar» a failed piece: closed at no cost with a reason the customer will read. */
+export async function rejectFailed(pieceId: string, reason: string): Promise<void> {
+  await requireAdmin();
+  const text = cleanText(reason);
+  if (!text) throw new ReviewError("Escribe el motivo: lo verá el cliente.");
+  await updateFailedPiece(pieceId, { status: "rejected", reject_reason: text });
+}
+
+/** Form entry point for the failed pieces of the queue page (`useActionState`). */
+export async function submitFailed(_prev: ReviewActionResult, formData: FormData): Promise<ReviewActionResult> {
+  await requireAdmin();
+  const intent = formData.get("intent");
+  const pieceId = cleanText(formData.get("pieceId"));
+  try {
+    if (intent === "retry") await retryFailed(pieceId);
+    else if (intent === "reject") await rejectFailed(pieceId, cleanText(formData.get("note")));
+    else return { ok: false, message: "Acción desconocida." };
+  } catch (error) {
+    if (error instanceof ReviewError) return { ok: false, message: error.message };
+    throw error;
+  }
+  revalidatePath("/admin/revision");
+  return { ok: true, message: intent === "retry" ? "Pieza devuelta a la cola." : "Pieza rechazada." };
+}
+
 /** Form entry point for the detail screen (`useActionState`). */
+
 export async function submitReview(_prev: ReviewActionResult, formData: FormData): Promise<ReviewActionResult> {
   await requireAdmin();
   const intent = formData.get("intent");

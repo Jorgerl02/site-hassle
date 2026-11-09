@@ -347,7 +347,7 @@ def test_concurrent_approve_of_two_pieces_with_one_credit(svc: httpx.Client, a: 
 def test_fourth_piece_of_the_day_hits_daily_limit(svc: httpx.Client, a: User) -> None:
     for n in range(3):
         r = a.client.post(
-            "/rest/v1/pieces",
+            "/rest/v1/pieces?select=id,user_id,status,attempt",
             json={
                 "name": f"test_{n}",
                 "kind": "mesita",
@@ -396,9 +396,10 @@ def test_client_inserts_photos_only_for_own_queued_piece(
     r = a.client.post("/rest/v1/piece_photos", json=photo(ready, a.id))
     assert r.status_code in (401, 403), r.text
     r = a.client.post("/rest/v1/piece_photos", json=photo(queued, b.id))  # wrong prefix
-    assert r.status_code in (401, 403), r.text
+    assert r.status_code in (400, 401, 403), r.text  # 400: the path trigger runs first
+
     r = b.client.post("/rest/v1/piece_photos", json=photo(queued, b.id))  # not his piece
-    assert r.status_code in (401, 403), r.text
+    assert r.status_code in (400, 401, 403), r.text
 
 
 # ---------------------------------------------------------------- versions and rejection
@@ -409,7 +410,7 @@ def test_request_new_version_until_max_versions(svc: httpx.Client, a: User) -> N
     for expected_attempt in (2, 3):
         r = rpc(a.client, "request_new_version", p_piece_id=piece["id"])
         assert r.status_code == 200, r.text
-        assert r.json()["status"] == "queued" and r.json()["attempt"] == expected_attempt
+        assert r.json() == {"ok": True, "status": "queued", "attempt": expected_attempt}
         patch_piece(svc, piece["id"], status="ready")
     r = rpc(a.client, "request_new_version", p_piece_id=piece["id"])
     assert r.status_code >= 400 and error_message(r) == "max_versions", r.text
@@ -420,7 +421,8 @@ def test_reject_piece(svc: httpx.Client, a: User) -> None:
     piece = insert_piece(svc, a.id, status="ready")
     r = rpc(a.client, "reject_piece", p_piece_id=piece["id"], p_reason="No se parece")
     assert r.status_code == 200, r.text
-    assert r.json()["status"] == "rejected" and r.json()["reject_reason"] == "No se parece"
+    assert r.json() == {"ok": True, "status": "rejected", "attempt": 1}
+    assert get_piece(svc, piece["id"])["reject_reason"] == "No se parece"
     r = rpc(a.client, "reject_piece", p_piece_id=piece["id"], p_reason="otra vez")
     assert r.status_code >= 400 and error_message(r) == "invalid_state", r.text
 
@@ -510,10 +512,10 @@ def test_user_cannot_see_or_act_on_another_users_piece(svc: httpx.Client, a: Use
         },
     ).raise_for_status()
 
-    assert b.client.get(f"/rest/v1/pieces?id=eq.{piece['id']}").json() == []
+    assert b.client.get(f"/rest/v1/pieces?id=eq.{piece['id']}&select=id").json() == []
     assert b.client.get(f"/rest/v1/piece_photos?piece_id=eq.{piece['id']}").json() == []
     assert b.client.get(f"/rest/v1/credit_ledger?user_id=eq.{a.id}").json() == []
-    assert len(a.client.get(f"/rest/v1/pieces?id=eq.{piece['id']}").json()) == 1
+    assert len(a.client.get(f"/rest/v1/pieces?id=eq.{piece['id']}&select=id").json()) == 1
 
     for name, params in (
         ("approve_piece", {"p_piece_id": piece["id"]}),
@@ -554,7 +556,8 @@ def test_models_hidden_until_ready_and_admin_queue_is_service_only(
     for row in (model(1, 0, True), model(2, 0, True), model(2, 1, False)):
         svc.post("/rest/v1/piece_models", json=row).raise_for_status()
 
-    assert a.client.get(f"/rest/v1/piece_models?piece_id=eq.{piece['id']}").json() == []
+    own_models = f"/rest/v1/piece_models?piece_id=eq.{piece['id']}&select=attempt,selected"
+    assert a.client.get(own_models).json() == []
     r = svc.get(f"/rest/v1/admin_review_queue?id=eq.{piece['id']}")
     assert r.status_code == 200, r.text
     rows = r.json()
@@ -565,8 +568,9 @@ def test_models_hidden_until_ready_and_admin_queue_is_service_only(
     assert r.status_code in (401, 403), r.text
 
     patch_piece(svc, piece["id"], status="ready")
-    visible = a.client.get(f"/rest/v1/piece_models?piece_id=eq.{piece['id']}").json()
-    assert sorted(m["provider"] for m in visible) == ["p20", "p21"]  # current attempt only
+    visible = a.client.get(own_models).json()
+    # Current attempt only (attempt 2: the selected candidate and the other one).
+    assert sorted((m["attempt"], m["selected"]) for m in visible) == [(2, False), (2, True)]
 
 
 # ---------------------------------------------------------------- Storage
@@ -633,3 +637,147 @@ def test_buckets_exist_with_expected_visibility(svc: httpx.Client) -> None:
     assert public.get("previews") is True
     assert public.get("models") is False
     assert public.get("renders") is False
+
+
+# ---------------------------------------------------------------- final review hardening
+
+
+def test_owner_reads_only_customer_columns(svc: httpx.Client, a: User) -> None:
+    piece = insert_piece(svc, a.id, status="ready", review_note="interna", route="E")
+    svc.post(
+        "/rest/v1/piece_models",
+        json={"piece_id": piece["id"], "attempt": 1, "selected": True, "cost_usd": 0.3},
+    ).raise_for_status()
+    base = f"/rest/v1/pieces?id=eq.{piece['id']}"
+    r = a.client.get(f"{base}&select=id,status,attempt,error,support,reject_reason")
+    assert r.status_code == 200 and len(r.json()) == 1, r.text
+    for column in ("review_note", "route", "claimed_at", "provider_cost_usd", "not_before", "*"):
+        r = a.client.get(f"{base}&select={column}")
+        assert r.status_code in (401, 403), (column, r.text)
+    models = f"/rest/v1/piece_models?piece_id=eq.{piece['id']}"
+    r = a.client.get(f"{models}&select=id,attempt,preview_path,selected")
+    assert r.status_code == 200 and len(r.json()) == 1, r.text
+    for column in ("meta", "cost_usd", "provider", "*"):
+        r = a.client.get(f"{models}&select={column}")
+        assert r.status_code in (401, 403), (column, r.text)
+
+
+def test_client_insert_checks_and_support(a: User) -> None:
+    base = {"name": "test_ok", "kind": "aparador", "width_cm": 120, "height_cm": 80, "depth_cm": 45}
+    r = a.client.post("/rest/v1/pieces", json={**base, "support": "caja"})
+    assert r.status_code == 201, r.text
+    for bad in (
+        {"support": "flotando"},
+        {"name": "x"},
+        {"name": "x" * 81},
+        {"notes": "n" * 501},
+        {"width_cm": 401},
+        {"depth_cm": 0.5},
+    ):
+        r = a.client.post("/rest/v1/pieces", json={**base, **bad})
+        assert r.status_code >= 400, (bad, r.text)
+
+
+def test_photo_rows_bound_to_owner_folder_and_capped(svc: httpx.Client, a: User) -> None:
+    piece = insert_piece(svc, a.id)
+    folder = f"{a.id}/{piece['id']}"
+
+    def add(path: str, position: int = 1) -> httpx.Response:
+        return a.client.post(
+            "/rest/v1/piece_photos",
+            json={"piece_id": piece["id"], "storage_path": path, "position": position},
+        )
+
+    for bad in (
+        f"{folder}/../../{uuid.uuid4()}/1.jpg",
+        f"{folder}/x/1.jpg",
+        f"{folder}/1.gif",
+        f"{folder}/1.jpg/../2.jpg",
+    ):
+        r = add(bad)
+        assert r.status_code >= 400, (bad, r.text)
+    for n in range(1, 5):
+        assert add(f"{folder}/{n}.jpg", n).status_code == 201
+    r = add(f"{folder}/5.jpg", 5)
+    assert r.status_code >= 400 and "too_many_photos" in error_message(r), r.text
+    assert add(f"{folder}/thumb.jpg", 0).status_code == 201
+    assert add(f"{folder}/thumb.png", 0).status_code >= 400
+    # The service role is bound by the same rule.
+    r = svc.post(
+        "/rest/v1/piece_photos",
+        json={"piece_id": piece["id"], "storage_path": f"{uuid.uuid4()}/{piece['id']}/1.jpg"},
+    )
+    assert r.status_code >= 400, r.text
+
+
+def test_claim_skips_recent_piece_without_photos(
+    svc: httpx.Client, users: dict[str, User], a: User
+) -> None:
+    skip_if_foreign_work(svc, users)
+    waiting = insert_piece(svc, a.id, created_at=iso_ago(60 * 24 * 365))
+    patch_piece(svc, waiting["id"], created_at=iso_ago(1))
+    deferred = insert_piece(svc, a.id, created_at=iso_ago(60 * 24 * 300))
+    patch_piece(
+        svc, deferred["id"], not_before=(datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    )
+    ready = insert_piece(svc, a.id, created_at=iso_ago(2))
+    svc.post(
+        "/rest/v1/piece_photos",
+        json={"piece_id": ready["id"], "storage_path": f"{a.id}/{ready['id']}/1.jpg"},
+    ).raise_for_status()
+    r = rpc(svc, "claim_next_piece")
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == ready["id"]
+    r = rpc(svc, "claim_next_piece")
+    assert r.json() is None or r.json().get("id") is None, r.text
+    assert get_piece(svc, waiting["id"])["status"] == "queued"
+    assert get_piece(svc, deferred["id"])["status"] == "queued"
+
+
+def test_attribution_is_not_client_writable(svc: httpx.Client, a: User) -> None:
+    r = a.client.patch(f"/rest/v1/profiles?id=eq.{a.id}", json={"attribution": {"ref": "x"}})
+    assert r.status_code in (401, 403), r.text
+    r = svc.get(f"/rest/v1/profiles?id=eq.{a.id}&select=attribution")
+    assert r.json() == [{"attribution": {"utm_source": "test", "ref": "a"}}]
+
+
+def test_photo_objects_must_follow_the_layout(svc: httpx.Client, a: User) -> None:
+    jpeg = {"Content-Type": "image/jpeg"}
+    piece_id = str(uuid.uuid4())
+    bad = [f"{a.id}/not-a-uuid/1.jpg", f"{a.id}/{piece_id}/evil.jpg", f"{a.id}/x.jpg"]
+    good = f"{a.id}/{piece_id}/thumb.jpg"
+    try:
+        for path in bad:
+            r = a.client.post(
+                f"/storage/v1/object/photos/{path}", content=b"\xff\xd8", headers=jpeg
+            )
+            assert r.status_code >= 400, (path, r.text)
+        r = a.client.post(f"/storage/v1/object/photos/{good}", content=b"\xff\xd8", headers=jpeg)
+        assert r.status_code == 200, r.text
+    finally:
+        svc.request("DELETE", "/storage/v1/object/photos", json={"prefixes": [good, *bad]})
+
+
+def test_one_selected_model_per_attempt(svc: httpx.Client, a: User) -> None:
+    piece = insert_piece(svc, a.id, status="review")
+    row = {"piece_id": piece["id"], "attempt": 1, "selected": True}
+    svc.post("/rest/v1/piece_models", json={**row, "candidate": 1}).raise_for_status()
+    r = svc.post("/rest/v1/piece_models", json={**row, "candidate": 2})
+    assert r.status_code == 409, r.text
+    r = svc.post("/rest/v1/piece_models", json={**row, "candidate": 2, "selected": False})
+    assert r.status_code == 201, r.text
+
+
+def test_provider_spend_today_is_service_only(svc: httpx.Client, a: User) -> None:
+    r = rpc(svc, "provider_spend_today")
+    assert r.status_code == 200 and isinstance(r.json(), (int, float)), r.text
+    r = rpc(a.client, "provider_spend_today")
+    assert r.status_code in (401, 403, 404), r.text
+
+
+def test_refund_rows_are_unique_by_stripe_event(svc: httpx.Client, a: User) -> None:
+    event = f"evt_test_{uuid.uuid4().hex}"
+    row = {"user_id": a.id, "delta": -1, "reason": "refund", "stripe_event_id": event}
+    svc.post("/rest/v1/credit_ledger", json=row).raise_for_status()
+    r = svc.post("/rest/v1/credit_ledger", json=row)
+    assert r.status_code == 409, r.text

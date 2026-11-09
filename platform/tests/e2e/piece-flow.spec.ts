@@ -31,7 +31,17 @@ test.afterAll(async () => {
 });
 
 test("creates a piece from the form and shows it queued", async ({ page }) => {
+  // W4: the panel hydrates without a mismatch (Emotion styles go to the head).
+  const hydrationErrors: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.type() === "error" && /Hydration|#418|418/.test(msg.text())) hydrationErrors.push(msg.text());
+  });
+  page.on("pageerror", (error) => {
+    if (/Hydration|#418/.test(error.message)) hydrationErrors.push(error.message);
+  });
   await signInAs(page, db, owner.email);
+  await page.waitForLoadState("networkidle");
+  expect(hydrationErrors).toEqual([]);
   await page.getByRole("link", { name: "Nueva pieza" }).click();
   await expect(page).toHaveURL(/\/piezas\/nueva$/);
 
@@ -45,6 +55,7 @@ test("creates a piece from the form and shows it queued", async ({ page }) => {
   await page.getByLabel("Alto").fill("60");
   await page.getByLabel("Fondo").fill("6,5");
   await page.getByText("Sí", { exact: true }).click();
+  await page.getByText("Sobre paneles laterales", { exact: true }).click();
   await page.getByLabel("Añadir fotos").setInputFiles(P12_PNG);
   await expect(page.getByRole("img", { name: /Foto 1: p12\.png/ })).toBeVisible();
   await page.getByRole("button", { name: "Crear pieza" }).click();
@@ -56,7 +67,14 @@ test("creates a piece from the form and shows it queued", async ({ page }) => {
   await expect(page.getByRole("list", { name: "Progreso de la pieza" })).toBeVisible();
 
   const { data: piece } = await db.from("pieces").select("*").eq("id", pieceId).single();
-  expect(piece).toMatchObject({ user_id: owner.id, kind: "cabecero", depth_cm: 6.5, rectilinear: true });
+  expect(piece).toMatchObject({
+    user_id: owner.id,
+    kind: "cabecero",
+    depth_cm: 6.5,
+    rectilinear: true,
+    support: "paneles",
+  });
+
   // The worker never sees a piece without photos: the rows exist next to the piece.
   const { data: photos } = await db.from("piece_photos").select("storage_path").eq("piece_id", pieceId);
   expect(photos).toEqual([{ storage_path: `${owner.id}/${pieceId}/1.png` }]);

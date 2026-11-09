@@ -3,6 +3,7 @@ import { Fraunces, Inter } from "next/font/google";
 import type { ReactNode } from "react";
 import { Analytics } from "@/components/Analytics";
 import { CookieConsent } from "@/components/CookieConsent";
+import { EmotionRegistry } from "@/components/ui/emotion-registry";
 import { Provider } from "@/components/ui/provider";
 import { PRODUCT_NAME, siteUrl } from "@/lib/site";
 import "./globals.css";
@@ -51,10 +52,13 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html lang="es" className={`${serif.variable} ${sans.variable}`} suppressHydrationWarning>
       <body>
-        <Provider>
-          {children}
-          <CookieConsent />
-        </Provider>
+        <EmotionRegistry>
+          <Provider>
+            {children}
+            <CookieConsent />
+          </Provider>
+        </EmotionRegistry>
+
         <Analytics />
       </body>
     </html>

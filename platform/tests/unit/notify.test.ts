@@ -11,6 +11,8 @@ vi.mock("@/lib/supabase/admin", () => ({
 import { POST } from "@/app/api/internal/notify/route";
 import {
   RESEND_ENDPOINT,
+  notifyBudgetExhausted,
+  notifyPieceFailed,
   notifyPieceInReview,
   notifyPieceReady,
   sendEmail,
@@ -153,6 +155,34 @@ describe("notifyPieceInReview", () => {
   });
 });
 
+describe("admin alerts (failed, budget)", () => {
+  it("emails the admin when a piece fails", async () => {
+    const fetch = okFetch();
+    await notifyPieceFailed(PIECE_ID, deps({ fetch }));
+    const body = JSON.parse((fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
+    expect(body.to).toEqual(["jorge@example.com"]);
+    expect(body.subject).toBe("Pieza fallida: «Cabecero Rigole»");
+    expect(body.text).toContain("https://pieza3d.example/admin/revision");
+  });
+
+  it("emails the admin once a day when the budget runs out", async () => {
+    const fetch = okFetch();
+    await notifyBudgetExhausted(PIECE_ID, deps({ fetch }));
+    const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string).subject).toBe("Presupuesto diario del proveedor agotado");
+    expect((init.headers as Record<string, string>)["Idempotency-Key"]).toMatch(/^budget\/\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("needs ADMIN_NOTIFY_EMAIL", async () => {
+    const fetch = okFetch();
+    expect(await notifyPieceFailed(PIECE_ID, deps({ fetch, adminEmail: undefined }))).toEqual({
+      sent: false,
+      reason: "no_recipient",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe("POST /api/internal/notify", () => {
   const SECRET = "worker-secret-for-tests";
   const request = (body: unknown, auth?: string) =>
@@ -194,4 +224,13 @@ describe("POST /api/internal/notify", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, sent: false, reason: "not_configured" });
   });
+
+  it("accepts the failed and budget notices", async () => {
+    for (const status of ["failed", "budget"]) {
+      const response = await POST(request({ pieceId: PIECE_ID, status }, `Bearer ${SECRET}`));
+      expect(response.status).toBe(200);
+    }
+    expect((await POST(request({ pieceId: PIECE_ID, status: "toString" }, `Bearer ${SECRET}`))).status).toBe(400);
+  });
+
 });

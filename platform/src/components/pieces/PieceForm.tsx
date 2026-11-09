@@ -22,10 +22,12 @@ import {
   KIND_LABEL,
   PIECE_KINDS,
   RECTILINEAR_OPTIONS,
+  SUPPORT_OPTIONS,
   looksExcluded,
   validatePieceInput,
   type PieceField,
   type RectilinearAnswer,
+  type SupportAnswer,
 } from "@/lib/validation";
 import { PhotoDropzone, type SelectedPhoto } from "./PhotoDropzone";
 
@@ -36,6 +38,7 @@ export interface PieceFormDefaults {
   heightCm: string;
   depthCm: string;
   rectilinear: RectilinearAnswer;
+  support: SupportAnswer;
   notes: string;
 }
 
@@ -46,6 +49,7 @@ const EMPTY_PIECE: PieceFormDefaults = {
   heightCm: "",
   depthCm: "",
   rectilinear: "no_se",
+  support: "no_se",
   notes: "",
 };
 
@@ -88,6 +92,7 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
   const [message, setMessage] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [kind, setKind] = useState(defaults.kind);
+  const [rectilinear, setRectilinear] = useState<string>(defaults.rectilinear);
   const [text, setText] = useState({ name: defaults.name, notes: defaults.notes });
   const [pending, startTransition] = useTransition();
 
@@ -102,6 +107,7 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
       heightCm: field("heightCm"),
       depthCm: field("depthCm"),
       rectilinear: field("rectilinear"),
+      support: field("support"),
       notes: field("notes"),
       photos: photos.map((p) => ({ name: p.file.name, type: p.file.type, size: p.file.size, width: p.width, height: p.height })),
     });
@@ -215,7 +221,13 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
 
           <Fieldset.Root invalid={Boolean(errors.rectilinear)}>
             <Fieldset.Legend fontWeight="500">¿Es una pieza recta, como una caja, un panel o un cabecero?</Fieldset.Legend>
-            <RadioGroup.Root name="rectilinear" defaultValue={defaults.rectilinear} colorPalette="clay" mt="2">
+            <RadioGroup.Root
+              name="rectilinear"
+              defaultValue={defaults.rectilinear}
+              onValueChange={(e) => setRectilinear(e.value ?? "no_se")}
+              colorPalette="clay"
+              mt="2"
+            >
               <Stack direction="row" gap="6">
                 {RECTILINEAR_OPTIONS.map((option) => (
                   <RadioGroup.Item key={option.value} value={option.value}>
@@ -228,7 +240,27 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
             </RadioGroup.Root>
             <Fieldset.ErrorText>{errors.rectilinear}</Fieldset.ErrorText>
           </Fieldset.Root>
+
+          {rectilinear !== "no" ? (
+            <Fieldset.Root invalid={Boolean(errors.support)}>
+              <Fieldset.Legend fontWeight="500">¿Cómo se apoya la pieza?</Fieldset.Legend>
+              <Fieldset.HelperText>Nos ayuda a reconstruir la base tal y como es.</Fieldset.HelperText>
+              <RadioGroup.Root name="support" defaultValue={defaults.support} colorPalette="clay" mt="2">
+                <Stack direction={{ base: "column", sm: "row" }} gap={{ base: 3, sm: 6 }} wrap="wrap">
+                  {SUPPORT_OPTIONS.map((option) => (
+                    <RadioGroup.Item key={option.value} value={option.value}>
+                      <RadioGroup.ItemHiddenInput />
+                      <RadioGroup.ItemIndicator />
+                      <RadioGroup.ItemText>{option.label}</RadioGroup.ItemText>
+                    </RadioGroup.Item>
+                  ))}
+                </Stack>
+              </RadioGroup.Root>
+              <Fieldset.ErrorText>{errors.support}</Fieldset.ErrorText>
+            </Fieldset.Root>
+          ) : null}
         </Stack>
+
 
         <Field.Root invalid={Boolean(errors.photos)}>
           <Field.Label>Fotos</Field.Label>

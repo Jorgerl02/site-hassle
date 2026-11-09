@@ -4,6 +4,8 @@ import { notFound } from "next/navigation";
 import { getCurrentUser, type CurrentUser } from "@/lib/auth";
 import type { Json, PieceKind, PieceStatus } from "@/lib/database.types";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { SUPPORT_LABEL, type SupportAnswer } from "@/lib/validation";
+
 
 /** Signed URLs for the review screens live one hour. */
 export const SIGNED_URL_SECONDS = 60 * 60;
@@ -14,7 +16,8 @@ export const SCALE_ERROR_LIMIT = 0.03;
 /** `pieces.attempt` is limited to 1..3 by the schema. */
 export const MAX_ATTEMPT = 3;
 
-export const NOT_DELIVERABLE_MESSAGE = "Este candidato no tiene archivos descargables";
+export const NOT_DELIVERABLE_MESSAGE = "Este candidato no tiene archivos descargables.";
+
 
 /**
  * A candidate can be shown to the customer only if the paid download will work:
@@ -151,6 +154,7 @@ interface PieceRow {
   height_cm: number;
   depth_cm: number;
   rectilinear: boolean | null;
+  support: string | null;
   notes: string | null;
   status: PieceStatus;
   attempt: number;
@@ -249,6 +253,57 @@ export async function listReviewQueue(): Promise<QueueItem[]> {
   });
 }
 
+// ---------- Failed pieces ----------
+
+export interface FailedItem {
+  id: string;
+  name: string;
+  kindLabel: string;
+  dimensions: string;
+  attempt: number;
+  route: string | null;
+  /** Technical detail written by the worker (never shown to the customer). */
+  error: string | null;
+  email: string | null;
+  waiting: string;
+}
+
+interface FailedRow {
+  id: string;
+  name: string;
+  kind: PieceKind;
+  width_cm: number;
+  height_cm: number;
+  depth_cm: number;
+  attempt: number;
+  route: string | null;
+  error: string | null;
+  updated_at: string;
+  profiles: { email: string | null } | null;
+}
+
+/** Pieces in `failed`, oldest failure first, with the worker's technical error. */
+export async function listFailedPieces(): Promise<FailedItem[]> {
+  const { data, error } = await adminDb()
+    .from("pieces")
+    .select("id, name, kind, width_cm, height_cm, depth_cm, attempt, route, error, updated_at, profiles(email)")
+    .eq("status", "failed")
+    .order("updated_at", { ascending: true });
+  if (error) throw new Error(`No se pudieron leer las piezas fallidas: ${error.message}`);
+  const now = Date.now();
+  return ((data ?? []) as unknown as FailedRow[]).map((r) => ({
+    id: r.id,
+    name: r.name,
+    kindLabel: KIND_LABEL[r.kind] ?? r.kind,
+    dimensions: formatDimensions(r.width_cm, r.height_cm, r.depth_cm),
+    attempt: r.attempt,
+    route: r.route,
+    error: r.error,
+    email: r.profiles?.email ?? null,
+    waiting: formatWaiting(r.updated_at, now),
+  }));
+}
+
 // ---------- Detail ----------
 
 export interface AxisError {
@@ -287,6 +342,8 @@ export interface ReviewDetail {
   route: string | null;
   notes: string | null;
   rectilinear: boolean | null;
+  /** Customer's «¿Cómo se apoya la pieza?» answer, as a label (null when not asked). */
+  supportLabel: string | null;
   reviewNote: string | null;
   email: string | null;
   waiting: string;
@@ -317,7 +374,9 @@ export async function getReviewDetail(pieceId: string): Promise<ReviewDetail | n
   const db = adminDb();
   const { data: pieceData, error: pieceError } = await db
     .from("pieces")
-    .select("id, name, kind, width_cm, height_cm, depth_cm, rectilinear, notes, status, attempt, route, review_note, updated_at, user_id")
+    .select(
+      "id, name, kind, width_cm, height_cm, depth_cm, rectilinear, support, notes, status, attempt, route, review_note, updated_at, user_id",
+    )
     .eq("id", pieceId)
     .maybeSingle();
   if (pieceError) throw new Error(`No se pudo leer la pieza: ${pieceError.message}`);
@@ -395,6 +454,7 @@ export async function getReviewDetail(pieceId: string): Promise<ReviewDetail | n
     route: piece.route,
     notes: piece.notes,
     rectilinear: piece.rectilinear,
+    supportLabel: piece.support ? (SUPPORT_LABEL[piece.support as SupportAnswer] ?? piece.support) : null,
     reviewNote: piece.review_note,
     email: (profile as { email: string | null } | null)?.email ?? null,
     waiting: formatWaiting(piece.updated_at),

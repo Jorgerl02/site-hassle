@@ -6,7 +6,7 @@ import { useActionState } from "react";
 import { sendMagicLink, type SignInState } from "./actions";
 
 const CALLBACK_ERRORS: Record<string, string> = {
-  enlace: "El enlace ha caducado o ya se ha usado. Pide uno nuevo.",
+  enlace: "El enlace ha caducado o ya se ha usado. Pide otro y ábrelo en este mismo dispositivo.",
 };
 
 export function SignInForm() {

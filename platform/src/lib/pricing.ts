@@ -52,3 +52,7 @@ export function formatEur(cents: number): string {
   const amount = rest === 0 ? euros : `${euros},${String(rest).padStart(2, "0")}`;
   return `${sign}${amount}\u00a0€`;
 }
+
+/** Required checkbox before paying (digital content delivered at once: no 14-day withdrawal). */
+export const WAIVER_TEXT =
+  "Acepto que el contenido digital se entrega de inmediato y renuncio al derecho de desistimiento.";
