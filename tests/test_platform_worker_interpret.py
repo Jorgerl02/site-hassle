@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw
 
 from platform_worker.interpret import (
     Interpretation,
+    NoObject,
     SilhouetteInterpreter,
     bottom_support,
     check_dimensions,
@@ -202,17 +203,51 @@ def test_a_column_without_a_solid_top_is_not_a_pedestal():
     assert bottom_support(prepare_mask(coat_rack())).support != "pie_central"
 
 
-def test_interpreter_without_a_usable_photo_uses_text_and_dimensions():
+@pytest.mark.parametrize(
+    "error", [OSError("no photo"), RuntimeError("onnxruntime failed"), MemoryError("bomb")]
+)
+def test_a_failing_masker_degrades_to_text_and_dimensions(error):
     def broken(_path: Path) -> np.ndarray:
-        raise OSError("no photo")
+        raise error
 
     interpreter = SilhouetteInterpreter(masker=broken)
     result = interpreter.interpret(
         [Path("x.jpg")], width_cm=100, height_cm=80, depth_cm=40, name="Aparador de roble"
     )
     assert (result.rectilinear, result.kind, result.support) == (True, "aparador", None)
-    nothing = interpreter.interpret([], width_cm=100, height_cm=80, depth_cm=40)
+    assert result.reasons[0].startswith("photo: could not be analysed")
+    assert type(error).__name__ in result.reasons[0]
+    nothing = interpreter.interpret([Path("x.jpg")], width_cm=100, height_cm=80, depth_cm=40)
     assert (nothing.rectilinear, nothing.confidence) == (None, 0.0)
+
+
+def _object_in_frame(frame: int, side: int) -> np.ndarray:
+    mask = np.zeros((frame, frame), dtype=bool)
+    mask[:side, :side] = True
+    return mask
+
+
+@pytest.mark.parametrize(
+    ("mask", "why"),
+    [
+        (np.ones((1, 1), dtype=bool), "fills 100%"),
+        (np.ones((3, 3), dtype=bool), "fills 100%"),
+        (np.ones((10, 30), dtype=bool), "fills 100%"),
+        (np.full((500, 400), 255, dtype=np.uint8), "fills 100%"),  # all-white photo
+        (np.zeros((200, 200), dtype=bool), "no object"),
+        (_object_in_frame(1000, 50), "covers only"),  # 0.25 % of the frame
+        (_object_in_frame(100, 15), "only 15×15 px"),  # 2 % of the frame but tiny
+    ],
+)
+def test_degenerate_masks_are_no_object(mask, why):
+    with pytest.raises(NoObject):
+        prepare_mask(mask)
+    result = SilhouetteInterpreter(masker=lambda _p: mask).interpret(
+        [Path("x.jpg")], width_cm=100, height_cm=80, depth_cm=40
+    )
+    assert (result.rectilinear, result.confidence, result.support) == (None, 0.0, None)
+    assert result.reasons[0].startswith("photo: no object") and why in result.reasons[0]
+    assert check_dimensions(mask, 100, 80, 40) == []
 
 
 def test_text_outweighs_a_weak_silhouette_but_not_a_round_one():
@@ -251,6 +286,8 @@ def test_text_outweighs_a_weak_silhouette_but_not_a_round_one():
         ("Mesa redonda", "", "mesa", 0),
         ("Round coffee table", "", "mesa", 0),
         ("Mesa redonda de pie central", "", "mesa", 0),
+        ("Mesa de cantos redondeados", "", "mesa", 1),  # rounded corners: still a box
+        ("Table with rounded corners", "", "mesa", 1),
         ("", "Mueble: banco de entrada", "otro", 1),
         ("Mi pieza", "es una silla", "silla", -1),
     ],
@@ -274,8 +311,29 @@ def test_text_hint_prefers_the_name_and_ignores_unknown_words():
 def test_check_dimensions_flags_the_owners_pedestal_case():
     warnings = check_dimensions(pedestal_table(), 60, 30, 25)
     assert len(warnings) == 2
-    assert "check the width and the height" in warnings[0]
-    assert "is the depth really 25 cm?" in warnings[1]
+    assert warnings[0].startswith("From the photo, the height looks closer to ~")
+    assert "than 30 cm" in warnings[0]
+    assert warnings[1] == (
+        "If the top is round, width and depth are usually similar — is the depth really "
+        "25 cm? (Ignore this if it is oval.)"
+    )
+
+
+def test_check_dimensions_names_the_implied_height():
+    # Silhouette aspect 1.1, entered 60 × 30 × 25: from the slightly-from-above bound,
+    # height ≈ 60 / 1.1 − 0.35 · 25 ≈ 45.8 → "~45 cm" (owner's example).
+    seen = Interpretation(True, None, None, 0.9, photo_aspect=1.1)
+    assert check_dimensions(seen, 60, 30, 25) == [
+        "From the photo, the height looks closer to ~45 cm than 30 cm. "
+        "Please check the height (and the width, 60 cm)."
+    ]
+    flat = Interpretation(True, None, None, 0.9, photo_aspect=4.0)  # wider than entered
+    assert "closer to ~15 cm than 45 cm" in check_dimensions(flat, 60, 45, 10)[0]
+
+
+@pytest.mark.parametrize("dims", [(0, 30, 25), (60, 0, 25), (60, 30, 0), (-1, 30, 25)])
+def test_check_dimensions_ignores_non_positive_dimensions(dims):
+    assert check_dimensions(pedestal_table(), *dims) == []
 
 
 def test_check_dimensions_accepts_consistent_dimensions():
@@ -286,7 +344,11 @@ def test_check_dimensions_accepts_consistent_dimensions():
 def test_check_dimensions_from_an_interpretation():
     round_table = Interpretation(False, None, "mesa", 0.9, top_shape="round", photo_aspect=1.0)
     assert check_dimensions(round_table, 60, 60, 60) == []
+    assert check_dimensions(round_table, 60, 60, 46) == []  # 1.30: within 0.75–1.33
     assert len(check_dimensions(round_table, 60, 60, 30)) == 1  # round top, 60 vs 30
+    assert len(check_dimensions(round_table, 30, 30, 60)) == 1  # 0.5
+    rect_table = Interpretation(True, None, "mesa", 0.9, top_shape="rect", photo_aspect=1.0)
+    assert check_dimensions(rect_table, 60, 60, 30) == []
     # Round caps on a piece that is not a table (round-ended sideboard): no depth warning.
     sideboard = Interpretation(False, "paneles", "aparador", 0.9, top_shape="round")
     assert check_dimensions(sideboard, 160, 80, 40) == []
@@ -321,6 +383,19 @@ def test_merge_explicit_customer_answers_win():
     assert merged["conflict"] == []  # contradicted, but not with ≥ 0.85 confidence
 
 
+def test_merge_trusts_a_confidence_exactly_at_the_threshold():
+    exact = Interpretation(True, "caja", "mesita", 0.6, support_confidence=0.6)
+    merged = merge_answers(DEFAULTS, exact, min_confidence=0.6)
+    assert (merged["kind"], merged["rectilinear"], merged["support"]) == (
+        "mesita",
+        True,
+        "caja",
+    )
+    assert merged["routing_kind"] == "box"
+    below = Interpretation(True, "caja", "mesita", 0.599, support_confidence=0.599)
+    assert merge_answers(DEFAULTS, below)["source"]["rectilinear"] == "default"
+
+
 def test_merge_low_confidence_falls_back_to_defaults():
     unsure = Interpretation(True, "caja", "mesa", 0.55, support_confidence=0.55)
     merged = merge_answers(DEFAULTS, unsure)
@@ -329,11 +404,69 @@ def test_merge_low_confidence_falls_back_to_defaults():
     assert merge_answers(DEFAULTS, unsure, min_confidence=0.5)["rectilinear"] is True
 
 
-def test_merge_skips_support_for_organic_pieces_except_a_pedestal():
+def test_merge_skips_support_for_organic_pieces():
     organic = Interpretation(False, "patas", "sillon", 0.9, support_confidence=0.8)
-    assert merge_answers(DEFAULTS, organic)["support"] == "no_se"
-    pedestal = Interpretation(False, "pie_central", None, 0.9, support_confidence=0.9)
-    assert merge_answers(DEFAULTS, pedestal)["support"] == "pie_central"
+    merged = merge_answers(DEFAULTS, organic)
+    assert (merged["support"], merged["routing_kind"]) == ("no_se", None)
+
+
+def test_merge_routes_a_pedestal_without_storing_it_as_support():
+    pedestal = Interpretation(
+        True,
+        "pie_central",
+        "mesa",
+        0.85,
+        top_shape="round",
+        base_ratio=0.5,
+        support_confidence=0.9,
+    )
+    merged = merge_answers(DEFAULTS, pedestal)
+    assert merged["support"] == "no_se"  # pieces.support never gets pie_central
+    assert merged["source"]["support"] == "default"
+    assert merged["routing_kind"] == "pedestal"
+    assert merged["pedestal_params"] == {"base_diameter_ratio": 0.5, "top_shape": "round"}
+    oval = merge_answers({**DEFAULTS, "width_cm": 120, "depth_cm": 80}, pedestal)
+    assert oval["pedestal_params"] == {"base_diameter_ratio": 0.75, "top_shape": "oval"}
+    # A customer who says it is not straight keeps the organic route.
+    assert merge_answers({**DEFAULTS, "rectilinear": False}, pedestal)["routing_kind"] is None
+
+
+@pytest.mark.parametrize(
+    ("support", "notes", "routing"),
+    [
+        ("patas", "", "table"),
+        ("paneles", "", "panel_table"),
+        ("caja", "", "box"),
+        ("caja", "sobre un zócalo", "box_legs"),
+        ("pie_central", "", None),  # not a customer value: counts as unanswered
+        ("no_se", "", None),
+    ],
+)
+def test_merge_routing_kind_from_the_customer_support(support, notes, routing):
+    customer = {"kind": "mesa", "rectilinear": True, "support": support, "notes": notes}
+    merged = merge_answers(customer, Interpretation(None, None, None, 0.0))
+    assert merged["routing_kind"] == routing
+    assert merged["support"] in ("patas", "paneles", "caja", "no_se")
+    assert merged["pedestal_params"] is None
+
+
+def test_merge_headboard_without_support_is_a_box():
+    customer = {"kind": "cabecero", "rectilinear": True, "support": "no_se"}
+    assert merge_answers(customer, Interpretation(None, None, None, 0.0))["routing_kind"] == "box"
+
+
+def test_merge_no_conflict_when_the_customer_agrees_with_the_photo():
+    customer = {"kind": "mesa", "rectilinear": True, "support": "paneles"}
+    photo = Interpretation(True, "paneles", "mesa", 0.95, support_confidence=0.95)
+    merged = merge_answers(customer, photo)
+    assert merged["conflict"] == []
+    assert merged["routing_kind"] == "panel_table"
+
+
+def test_merge_no_support_conflict_for_an_organic_piece():
+    customer = {"kind": "sillon", "rectilinear": False, "support": "patas"}
+    photo = Interpretation(False, "caja", "sillon", 0.9, support_confidence=0.9)
+    assert merge_answers(customer, photo)["conflict"] == []
 
 
 def test_merge_reports_confident_contradictions_as_conflicts():
@@ -344,6 +477,7 @@ def test_merge_reports_confident_contradictions_as_conflicts():
     )
     merged = merge_answers(customer, photo)
     assert (merged["rectilinear"], merged["support"]) == (True, "patas")  # customer kept
+    assert (merged["routing_kind"], merged["pedestal_params"]) == ("table", None)
     assert {c["field"] for c in merged["conflict"]} == {"rectilinear", "support"}
     support = next(c for c in merged["conflict"] if c["field"] == "support")
     assert support == {
@@ -407,3 +541,4 @@ def test_real_travertine_pedestal(evaluation):
     assert len(case.warnings) == 2
     assert [c["field"] for c in case.merged["conflict"]] == ["support"]
     assert case.merged["support"] == "patas"  # the customer's answer is kept for review
+    assert case.merged["routing_kind"] == "table"

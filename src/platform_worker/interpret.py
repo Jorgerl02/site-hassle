@@ -23,12 +23,12 @@ import math
 import re
 import unicodedata
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from harness.prep.clean import BBOX_PERCENTILES
 from harness.variants.f_router import THIN_MAX_RATIO, THIN_MIN_CM
@@ -37,6 +37,18 @@ Support = Literal["patas", "paneles", "caja", "pie_central"]
 TopShape = Literal["rect", "round"]
 # ``pie_central`` is only inferred (the form and ``pieces.support`` offer the other three).
 SUPPORTS: tuple[str, ...] = ("patas", "paneles", "caja", "pie_central")
+# Values ``pieces.support`` accepts (CHECK constraint); the only ones merge_answers returns.
+DB_SUPPORTS: tuple[str, ...] = ("patas", "paneles", "caja", "no_se")
+CUSTOMER_SUPPORTS: tuple[str, ...] = ("patas", "paneles", "caja")
+# Parametric kind of route E chosen by merge_answers (``routing_kind``).
+RoutingKind = Literal["table", "panel_table", "box", "box_legs", "pedestal"]
+SUPPORT_ROUTING: dict[str, RoutingKind] = {"patas": "table", "paneles": "panel_table"}
+BOX_KINDS: frozenset[str] = frozenset({"cabecero", "panel"})
+# Base words in the notes turn a «caja» answer into box_legs (same rule as intake.py).
+BASE_WORDS = re.compile(r"\b(patas?|zocalo)\b")
+# E's pedestal: base_diameter_ratio range, and |w − d| / max above which the top is oval.
+PEDESTAL_BASE_RANGE = (0.15, 0.95)
+PEDESTAL_ROUND_TOLERANCE = 0.02
 # Values of the ``piece_kind`` enum (platform database).
 PIECE_KINDS: tuple[str, ...] = (
     "mesa",
@@ -63,6 +75,13 @@ CONFLICT_CONFIDENCE = 0.85
 # Silhouette analysis works on the mask cropped to its percentile bbox and resized so its
 # long side has this many pixels (cheap, and thresholds stay resolution-independent).
 WORK_SIZE = 256
+# Degenerate masks are "no object": a crop under MIN_CROP_PX on a side, or a mask covering
+# less than MIN_FRAME_FILL or more than MAX_FRAME_FILL of the frame (an all-white photo).
+MIN_CROP_PX = 20
+MIN_FRAME_FILL = 0.01
+MAX_FRAME_FILL = 0.97
+# rembg runs on the photo downscaled to this long side (speed, memory).
+REMBG_MAX_SIDE = 1600
 
 # Straight outline: a run must span this fraction of the bbox's longer side and may drift
 # this many work pixels across its length (slightly rotated edges still count).
@@ -127,7 +146,7 @@ ASPECT_TOLERANCE = 0.30
 # A three-quarter view widens the silhouette up to hypot(width, depth); a view from
 # slightly above adds part of the depth to the height (product shots: ≲ 20° elevation).
 ELEVATION_DEPTH_SHARE = 0.35
-ROUND_TOP_TOLERANCE = 0.35
+ROUND_TOP_RATIO = (0.75, 1.33)  # width / depth of a round top
 TABLE_KINDS: frozenset[str] = frozenset({"mesa", "mesita"})
 
 
@@ -247,8 +266,9 @@ TEXT_HINTS: tuple[tuple[str, str, float], ...] = (
 )
 # Words that cancel a rectilinear hint ("mesa redonda", "round table", "curvado"): a round
 # table may be organic or a buildable pedestal ("mesa redonda de pie central"), so the
-# photo decides.
-ROUND_WORDS: tuple[str, ...] = ("redond", "ovalad", "round", "oval", "curv")
+# photo decides. Regexes after a word boundary: "redondeado"/"rounded" (rounded corners of
+# a box) do not count.
+ROUND_WORDS: tuple[str, ...] = (r"redond(?!e)", "ovalad", r"round(?!ed)", "oval", "curv")
 ROUND_EVIDENCE = 0.0
 
 
@@ -304,9 +324,15 @@ def thin_kind(width_cm: float, height_cm: float) -> str:
 # --------------------------------------------------------------------------- silhouette
 
 
+class NoObject(ValueError):
+    """The mask does not show a usable object (see :func:`prepare_mask`)."""
+
+
 def prepare_mask(mask: np.ndarray | Image.Image, size: int = WORK_SIZE) -> np.ndarray:
     """Boolean mask cropped to its percentile bbox (as ``validate_input`` measures it) and
-    resized so its long side is ``size`` px. Raises ValueError when empty.
+    resized so its long side is ``size`` px. Raises :class:`NoObject` (a ValueError) for
+    a degenerate mask: empty, under 1 % or over 97 % of the frame, or a crop under 20 px a
+    side.
 
     The percentile crop ignores stray rembg specks and drops the partial first/last rows
     of a slightly tilted edge, which :func:`cap_roundness` relies on (a tight crop made
@@ -319,11 +345,18 @@ def prepare_mask(mask: np.ndarray | Image.Image, size: int = WORK_SIZE) -> np.nd
     arr = arr if arr.dtype == bool else arr > 0
     ys, xs = np.nonzero(arr)
     if xs.size == 0:
-        raise ValueError("empty mask")
+        raise NoObject("background removal found no object")
+    frame_fill = xs.size / arr.size
+    if frame_fill > MAX_FRAME_FILL:
+        raise NoObject(f"the mask fills {frame_fill:.0%} of the photo (no background found)")
+    if frame_fill < MIN_FRAME_FILL:
+        raise NoObject(f"the object covers only {frame_fill:.1%} of the photo")
     x_lo, x_hi = np.percentile(xs, BBOX_PERCENTILES)
     y_lo, y_hi = np.percentile(ys, BBOX_PERCENTILES)
     crop = arr[int(y_lo) : int(math.ceil(y_hi)) + 1, int(x_lo) : int(math.ceil(x_hi)) + 1]
     h, w = crop.shape
+    if min(h, w) < MIN_CROP_PX:
+        raise NoObject(f"the object is only {w}×{h} px")
     scale = size / max(h, w)
     new_size = (max(1, round(w * scale)), max(1, round(h * scale)))
     img = Image.fromarray(crop.astype(np.uint8) * 255).resize(new_size, Image.Resampling.BOX)
@@ -610,6 +643,7 @@ def combine(
     if features is None and hint is None and not thin:
         return Interpretation(None, None, None, 0.0, reasons or ["no evidence"])
     p = 1 / (1 + math.exp(-z / CONFIDENCE_TEMPERATURE))
+    rectilinear = None if z == 0 else p >= 0.5  # neutral evidence only: no decision
 
     kind = hint.kind if hint is not None else None
     if thin and kind not in ("cabecero", "panel"):
@@ -626,7 +660,7 @@ def combine(
             chosen, support_confidence = support.support, support.confidence
             base_ratio = support.base_ratio
     return Interpretation(
-        rectilinear=p >= 0.5,
+        rectilinear=rectilinear,
         support=chosen,
         kind=kind,
         confidence=round(max(p, 1 - p), 3),
@@ -642,11 +676,14 @@ Masker = Callable[[Path], np.ndarray]
 
 
 def rembg_mask(path: Path) -> np.ndarray:
-    """Object mask of a photo with the harness's background removal (rembg)."""
+    """Object mask of a photo with the harness's background removal (rembg), on the
+    EXIF-upright photo downscaled to ``REMBG_MAX_SIDE`` px on its long side."""
     from harness.prep.clean import _object_mask, _remove_background
 
     with Image.open(path) as img:
-        return np.asarray(_object_mask(_remove_background(img.convert("RGB")))) > 0
+        rgb = ImageOps.exif_transpose(img).convert("RGB")
+    rgb.thumbnail((REMBG_MAX_SIDE, REMBG_MAX_SIDE), Image.Resampling.LANCZOS)
+    return np.asarray(_object_mask(_remove_background(rgb))) > 0
 
 
 class SilhouetteInterpreter:
@@ -667,15 +704,19 @@ class SilhouetteInterpreter:
     ) -> Interpretation:
         features: SilhouetteFeatures | None = None
         support: SupportReading | None = None
+        problem = "photo: none" if not photos else None
         if photos:
+            # Any failure (rembg/onnx RuntimeError, DecompressionBombError, unreadable file,
+            # degenerate mask) degrades to text + dimensions; it never fails the piece.
             try:
                 mask = prepare_mask(self._masker(Path(photos[0])))
-            except (OSError, ValueError):
-                mask = None
-            if mask is not None:
                 features = silhouette_features(mask)
                 support = bottom_support(mask)
-        return combine(
+            except NoObject as exc:
+                problem = f"photo: no object ({exc}) → ignored"
+            except Exception as exc:
+                problem = f"photo: could not be analysed ({type(exc).__name__}: {exc}) → ignored"
+        result = combine(
             features=features,
             support=support,
             hint=text_hint(name, notes),
@@ -683,6 +724,9 @@ class SilhouetteInterpreter:
             width_cm=width_cm,
             height_cm=height_cm,
         )
+        if problem is None:
+            return result
+        return replace(result, reasons=[problem, *result.reasons])
 
 
 # --------------------------------------------------------------------------- consistency
@@ -690,6 +734,12 @@ class SilhouetteInterpreter:
 
 def _cm(value: float) -> str:
     return f"{value:g} cm"
+
+
+def _about_cm(value: float) -> str:
+    """Rounded for a customer: to 5 cm from 20 cm up, else to the centimetre."""
+    rounded = 5 * round(value / 5) if value >= 20 else round(value)
+    return f"~{rounded:g} cm"
 
 
 def check_dimensions(
@@ -703,12 +753,16 @@ def check_dimensions(
     - Proportions: the silhouette's width/height must fall within ±30 % of the range a
       front-to-three-quarter view of a ``width × height × depth`` piece can show: from
       ``width / (height + 0.35 · depth)`` (seen slightly from above) to
-      ``hypot(width, depth) / height`` (seen at an angle).
-    - A round top with width and depth differing by more than 35 %, only for a table-like
-      piece (central pedestal, or kind mesa/mesita): round-ended sideboards and arched coat
-      racks also have round caps.
+      ``hypot(width, depth) / height`` (seen at an angle). The warning trusts the width
+      and names the height the photo implies at the nearest end of that range.
+    - A round top whose width/depth ratio is outside 0.75–1.33, only for a table-like piece
+      (central pedestal, or kind mesa/mesita): round-ended sideboards and arched coat racks
+      also have round caps.
 
-    Empty when there is nothing to compare (no silhouette)."""
+    Empty when there is nothing to compare: a degenerate mask, an interpretation without a
+    silhouette, or a non-positive dimension."""
+    if min(width_cm, height_cm, depth_cm) <= 0:
+        return []
     if isinstance(interpretation_or_mask, Interpretation):
         aspect = interpretation_or_mask.photo_aspect
         top_shape = interpretation_or_mask.top_shape
@@ -717,30 +771,60 @@ def check_dimensions(
             or interpretation_or_mask.kind in TABLE_KINDS
         )
     else:
-        mask = prepare_mask(interpretation_or_mask)
+        try:
+            mask = prepare_mask(interpretation_or_mask)
+        except ValueError:
+            return []
         features = silhouette_features(mask)
         aspect, top_shape = features.aspect, features.top_shape
         table_like = bottom_support(mask).support == "pie_central"
     warnings: list[str] = []
-    if aspect is not None and height_cm > 0:
+    if aspect:
         low = width_cm / (height_cm + ELEVATION_DEPTH_SHARE * depth_cm)
         high = math.hypot(width_cm, depth_cm) / height_cm
-        if aspect < low / (1 + ASPECT_TOLERANCE) or aspect > high * (1 + ASPECT_TOLERANCE):
+        implied = None
+        if aspect < low / (1 + ASPECT_TOLERANCE):  # taller in the photo than entered
+            implied = width_cm / aspect - ELEVATION_DEPTH_SHARE * depth_cm
+        elif aspect > high * (1 + ASPECT_TOLERANCE):  # wider in the photo than entered
+            implied = math.hypot(width_cm, depth_cm) / aspect
+        if implied is not None:
             warnings.append(
-                f"In the photo the piece is about {aspect:.1f} times as wide as it is tall, "
-                f"but {_cm(width_cm)} wide × {_cm(height_cm)} tall is "
-                f"{width_cm / height_cm:.1f}: please check the width and the height."
+                f"From the photo, the height looks closer to {_about_cm(implied)} than "
+                f"{_cm(height_cm)}. Please check the height (and the width, {_cm(width_cm)})."
             )
-    if top_shape == "round" and table_like and max(width_cm, depth_cm) > 0:
-        if abs(width_cm - depth_cm) / max(width_cm, depth_cm) > ROUND_TOP_TOLERANCE:
-            warnings.append(
-                "A round top usually has similar width and depth: "
-                f"is the depth really {_cm(depth_cm)}?"
-            )
+    ratio = width_cm / depth_cm
+    if (
+        top_shape == "round"
+        and table_like
+        and not ROUND_TOP_RATIO[0] <= ratio <= ROUND_TOP_RATIO[1]
+    ):
+        warnings.append(
+            "If the top is round, width and depth are usually similar — is the depth really "
+            f"{_cm(depth_cm)}? (Ignore this if it is oval.)"
+        )
     return warnings
 
 
 # --------------------------------------------------------------------------- merge
+
+
+def _pedestal_params(inferred: Interpretation, customer: dict[str, Any]) -> dict[str, Any]:
+    """E ``pedestal`` params: ``base_diameter_ratio`` is relative to min(width, depth), the
+    silhouette's ``base_ratio`` to the top's width as seen (≈ width), so it is rescaled
+    when the dimensions are known and clamped to E's range; ``top_shape`` is "oval" when
+    width and depth differ by more than 2 %."""
+    ratio = inferred.base_ratio
+    w, d = customer.get("width_cm"), customer.get("depth_cm")
+    top_shape = "round"
+    if w and d and float(w) > 0 and float(d) > 0:
+        w, d = float(w), float(d)
+        if ratio is not None:
+            ratio = ratio * w / min(w, d)
+        if abs(w - d) / max(w, d) > PEDESTAL_ROUND_TOLERANCE:
+            top_shape = "oval"
+    if ratio is not None:
+        ratio = round(min(max(ratio, PEDESTAL_BASE_RANGE[0]), PEDESTAL_BASE_RANGE[1]), 3)
+    return {"base_diameter_ratio": ratio, "top_shape": top_shape}
 
 
 def merge_answers(
@@ -750,21 +834,35 @@ def merge_answers(
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     conflict_confidence: float = CONFLICT_CONFIDENCE,
 ) -> dict[str, Any]:
-    """Effective ``{"kind", "rectilinear", "support", "source", "conflict"}`` of a piece.
+    """Effective answers of a piece and the parametric route they imply.
+
+    Returns ``{"kind", "rectilinear", "support", "source", "conflict", "routing_kind",
+    "pedestal_params"}``.
 
     ``customer`` holds the answers stored on the piece (defaults: kind "otro", rectilinear
-    None, support "no_se"). Precedence per field: an explicit customer answer, then the
-    inferred value when its confidence ≥ ``min_confidence`` (``confidence`` for kind and
-    rectilinear, ``support_confidence`` for support), then the default (kind "otro",
-    rectilinear None so the kind-based heuristic downstream decides, support "no_se").
-    ``source`` maps each field to "customer", "inferred" or "default". "otro" cannot be told
-    from the default, so it never overrides an inferred kind. Inferred support is only used
-    when the piece is not organic, except ``pie_central`` (a round pedestal table).
+    None, support "no_se"); it may also carry ``notes``, ``width_cm`` and ``depth_cm``.
+    Precedence per field: an explicit customer answer, then the inferred value when its
+    confidence ≥ ``min_confidence`` (``confidence`` for kind and rectilinear,
+    ``support_confidence`` for support), then the default (kind "otro", rectilinear None so
+    the kind-based heuristic downstream decides, support "no_se"). ``source`` maps each
+    field to "customer", "inferred" or "default". "otro" cannot be told from the default,
+    so it never overrides an inferred kind; a customer support outside patas/paneles/caja
+    counts as unanswered.
+
+    ``support`` is always a ``pieces.support`` value (patas|paneles|caja|no_se): an inferred
+    central pedestal is not one, so it only shows in ``routing_kind`` = "pedestal" with
+    ``pedestal_params`` ``{"base_diameter_ratio", "top_shape"}`` (else None). Inferred
+    support is only used when the piece is not organic.
+
+    ``routing_kind`` (route E's parametric kind, or None for its own heuristic / the
+    organic route): pedestal as above; patas → "table", paneles → "panel_table", caja →
+    "box", or "box_legs" when the notes say «patas»/«zócalo»; no support on a headboard or
+    panel → "box". None when the piece is not rectilinear.
 
     ``conflict`` lists ``{"field", "customer", "inferred", "confidence"}`` for explicit
-    customer rectilinear/support answers that the photo contradicts with confidence ≥
-    ``conflict_confidence``: the customer's value is kept, and the worker should send the
-    piece to manual review instead of trusting it."""
+    customer answers that the photo contradicts with confidence ≥ ``conflict_confidence``
+    (support only while the piece is not organic): the customer's value is kept, and the
+    worker should send the piece to manual review instead of trusting it."""
     trusted = inferred.confidence >= min_confidence
     source: dict[str, str] = {}
     conflict: list[dict[str, Any]] = []
@@ -799,11 +897,13 @@ def merge_answers(
         rectilinear, source["rectilinear"] = None, "default"
 
     support = customer.get("support")
-    inferred_support = inferred.support if inferred.support_confidence >= min_confidence else None
-    if support in SUPPORTS:
+    confident_support = inferred.support if inferred.support_confidence >= min_confidence else None
+    pedestal = False
+    if support in CUSTOMER_SUPPORTS:
         source["support"] = "customer"
         if (
-            inferred.support is not None
+            rectilinear is not False
+            and inferred.support is not None
             and inferred.support != support
             and inferred.support_confidence >= conflict_confidence
         ):
@@ -815,10 +915,25 @@ def merge_answers(
                     "confidence": inferred.support_confidence,
                 }
             )
-    elif inferred_support and (rectilinear is not False or inferred_support == "pie_central"):
-        support, source["support"] = inferred_support, "inferred"
     else:
         support, source["support"] = DEFAULT_SUPPORT, "default"
+        if confident_support and rectilinear is not False:
+            if confident_support == "pie_central":
+                pedestal = True
+            elif confident_support in DB_SUPPORTS:
+                support, source["support"] = confident_support, "inferred"
+
+    routing_kind: RoutingKind | None = None
+    if rectilinear is not False:
+        if pedestal:
+            routing_kind = "pedestal"
+        elif support in SUPPORT_ROUTING:
+            routing_kind = SUPPORT_ROUTING[support]
+        elif support == "caja":
+            notes = normalise(str(customer.get("notes") or ""))
+            routing_kind = "box_legs" if BASE_WORDS.search(notes) else "box"
+        elif kind in BOX_KINDS:
+            routing_kind = "box"
 
     return {
         "kind": kind,
@@ -826,4 +941,6 @@ def merge_answers(
         "support": support,
         "source": source,
         "conflict": conflict,
+        "routing_kind": routing_kind,
+        "pedestal_params": _pedestal_params(inferred, customer) if pedestal else None,
     }
