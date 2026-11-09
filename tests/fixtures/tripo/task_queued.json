@@ -1,1 +1,1 @@
-{"code": 0, "data": {"task_id": "1ec04ced-4b87-44f6-a296-beee80777941", "type": "image_to_model", "status": "queued", "input": {}, "output": {}, "progress": 0, "create_time": 1762588800, "queuing_num": 3}}
+{"code": 0, "data": {"task_id": "1ec04ced-4b87-44f6-a296-beee80777941", "type": "image_to_model", "status": "queued", "progress": 0, "created_at": "2026-11-09T10:00:00Z"}}
