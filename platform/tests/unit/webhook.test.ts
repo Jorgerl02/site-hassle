@@ -106,10 +106,45 @@ describe("handleStripeEvent", () => {
     expect(db.balance(USER)).toBe(10);
   });
 
-  it("refuses sessions without a user or with an unknown pack", async () => {
-    expect((await handleStripeEvent(checkoutEvent({ client_reference_id: null }), db.deps)).handled).toBe(false);
-    expect((await handleStripeEvent(checkoutEvent({ metadata: { pack: "pieza_99" } }), db.deps)).handled).toBe(false);
-    expect(db.ledger).toHaveLength(0);
+  it("refuses paid sessions without a user or with an unknown pack, logging them as errors", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const noUser = await handleStripeEvent(checkoutEvent({ client_reference_id: null }), db.deps);
+      expect(noUser).toEqual({ handled: false, reason: "no_user" });
+      const unknown = await handleStripeEvent(checkoutEvent({ metadata: { pack: "pieza_99" } }), db.deps);
+      expect(unknown).toEqual({ handled: false, reason: "unknown_pack" });
+      expect(db.ledger).toHaveLength(0);
+      expect(log).toHaveBeenCalledTimes(2);
+      for (const [message] of log.mock.calls) {
+        expect(message).toContain("cs_test_123");
+        expect(message).toContain("amount_total=6900");
+      }
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("grants but flags a paid amount that does not match the pack price", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await handleStripeEvent(checkoutEvent({ amount_total: 100 }), db.deps);
+      expect(result.handled).toBe(true);
+      expect(db.balance(USER)).toBe(10);
+      expect(log).toHaveBeenCalledOnce();
+      expect(log.mock.calls[0][0]).toMatch(/cs_test_123 amount mismatch: amount_total=100, pieza_10 costs 6900/);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("does not log when the amount matches", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await handleStripeEvent(checkoutEvent(), db.deps);
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
   });
 });
 

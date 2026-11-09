@@ -30,24 +30,28 @@ function param(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
+type ReturnState = "paid" | "pending" | null;
+
 /**
  * Back from Checkout the webhook may not have arrived yet: fulfil from the
  * session itself (idempotent with the webhook), only for the signed-in owner.
+ * Returns null unless the session was retrieved and belongs to the user.
  */
-async function confirmReturn(sessionId: string | undefined, userId: string): Promise<boolean> {
+async function confirmReturn(sessionId: string | undefined, userId: string): Promise<ReturnState> {
   const stripe = getStripe();
-  if (!stripe || !sessionId?.startsWith("cs_")) return false;
+  if (!stripe || !sessionId?.startsWith("cs_")) return null;
   try {
     const session = await stripe.checkout.sessions.retrieve(sessionId);
-    if (session.client_reference_id !== userId) return false;
+    if (session.client_reference_id !== userId) return null;
+    if (session.payment_status === "unpaid") return "pending";
     const result = await fulfillCheckoutSession(
       session,
       supabaseFulfillmentDeps(() => createAdminClient() as unknown as LedgerClient),
     );
-    return result.handled;
+    return result.handled ? "paid" : null;
   } catch (error) {
     console.error("[stripe] return confirmation failed", error);
-    return false;
+    return null;
   }
 }
 
@@ -55,8 +59,7 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
   // Redirects to /entrar before anything streams when there is no session.
   const { user } = await requireUser();
   const params = await searchParams;
-  const returnedOk = param(params.ok) === "1";
-  const paid = returnedOk ? await confirmReturn(param(params.session_id), user.id) : false;
+  const returnState = param(params.ok) === "1" ? await confirmReturn(param(params.session_id), user.id) : null;
   const paymentError = param(params.error) === "pago";
 
   const supabase = await createServerClient();
@@ -86,11 +89,12 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
             <Heading as="h1" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500">
               Créditos
             </Heading>
-            {returnedOk ? (
+            {returnState === "paid" ? (
+              <Notice tone="success">Pago recibido. Tus créditos ya están en tu saldo.</Notice>
+            ) : null}
+            {returnState === "pending" ? (
               <Notice tone="success">
-                {paid
-                  ? "Pago recibido. Tus créditos ya están en tu saldo."
-                  : "Pago recibido. Tus créditos aparecerán en unos segundos; si no los ves, recarga la página."}
+                Pago pendiente de confirmación. Sumaremos tus créditos en cuanto el banco lo confirme.
               </Notice>
             ) : null}
             {paymentError ? (

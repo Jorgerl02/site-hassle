@@ -35,6 +35,9 @@ export async function createCheckoutSession(packId: string): Promise<string> {
   const base = await origin();
   const session = await stripe.checkout.sessions.create({
     mode: "payment",
+    // Card only (Apple Pay / Google Pay ride on it): paid on return, no delayed methods like SEPA.
+    // stripe@23 types expose this filter rather than `payment_method_types`.
+    allowed_payment_method_types: ["card"],
     line_items: [{ price: price.id, quantity: 1 }],
     client_reference_id: user.id,
     customer_email: user.email ?? undefined,

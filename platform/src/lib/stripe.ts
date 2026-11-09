@@ -53,10 +53,21 @@ export async function fulfillCheckoutSession(
   // `no_payment_required` would only happen with a 100 % coupon; we never create one.
   if (session.payment_status !== "paid") return { handled: false, reason: "not_paid" };
   const userId = session.client_reference_id;
-  if (!userId) return { handled: false, reason: "no_user" };
   // Credits come from our own pack table; metadata only names the pack.
   const pack = getPack(session.metadata?.pack ?? "");
-  if (!pack) return { handled: false, reason: "unknown_pack" };
+  if (!userId || !pack) {
+    const reason = !userId ? "no_user" : "unknown_pack";
+    // Money was taken but nothing will be credited: needs a human.
+    console.error(
+      `[stripe] paid session ${session.id} refused (${reason}); amount_total=${session.amount_total} pack=${session.metadata?.pack ?? "-"}`,
+    );
+    return { handled: false, reason };
+  }
+  if (session.amount_total !== pack.priceCents) {
+    console.error(
+      `[stripe] session ${session.id} amount mismatch: amount_total=${session.amount_total}, ${pack.id} costs ${pack.priceCents}; granting anyway`,
+    );
+  }
 
   await deps.recordPurchase({
     userId,
