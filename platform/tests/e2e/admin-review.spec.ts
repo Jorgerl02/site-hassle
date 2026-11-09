@@ -303,3 +303,27 @@ test("regenerate keeps only the shape fields and stores the chosen material in t
   await cleanupPiece(db, piece); // a running worker must never pick the test piece up
   expect(row).toEqual({ status: "queued", attempt: 2, review_note: "Tela más clara.\nmaterial:linen" });
 });
+
+test("«Retirar» refuses a piece whose current decision is not automatic", async ({ browser }) => {
+  const piece = await seedReviewPiece(db, customer, `test_ Mesa auto cambiada ${Date.now()}`);
+  pieces.push(piece);
+  await markAutoPublished(piece, "ready");
+  const page = await adminPage(browser);
+  await page.goto("/admin/revision");
+  const item = page.getByTestId("auto-published-item").filter({ hasText: piece.name });
+  await expect(item).toBeVisible();
+
+  // Meanwhile the attempt was shown by an admin instead (manual decision): the action must refuse.
+  const { data: model } = await db.from("piece_models").select("meta").eq("id", piece.modelIds[0]).single();
+  const meta = model?.meta as Record<string, unknown>;
+  await db
+    .from("piece_models")
+    .update({ meta: { ...meta, auto_review: { decision: "manual", gate: "rules", reasons: ["x"] } } })
+    .eq("id", piece.modelIds[0]);
+  await item.getByRole("button", { name: "Retirar" }).click();
+  await expect(item.getByTestId("withdraw-message")).toHaveText(
+    "Solo se pueden retirar las piezas que publicó el worker automáticamente.",
+  );
+  const { data: row } = await db.from("pieces").select("status").eq("id", piece.id).single();
+  expect(row?.status).toBe("ready");
+});

@@ -106,6 +106,14 @@ class FakeDB:
         self.pieces.setdefault(piece_id, {"id": piece_id}).update(fields)
         return self.pieces[piece_id]
 
+    def update_piece_if(self, piece_id: str, expected: dict[str, Any], **fields: Any) -> bool:
+        # PATCH …&status=eq.generating&attempt=eq.N: nothing changes when the row moved.
+        piece = self.pieces.get(piece_id, {})
+        if any(piece.get(k) != v for k, v in expected.items()):
+            return False
+        self.update_piece(piece_id, **fields)
+        return True
+
     def insert_model(self, row: dict[str, Any]) -> dict[str, Any]:
         json.dumps(row)  # what PostgREST receives must be JSON
         self.models.append(row)
@@ -1184,3 +1192,138 @@ def test_vlm_judge_runs_with_the_photos_and_renders(tmp_path, monkeypatch) -> No
     assert len(seen["photos"]) == 1 and PIECE_ID not in seen["blind_id"]
     review = _selected(db)["meta"]["auto_review"]
     assert review["gate"] == "vlm" and review["scores"]["geometria"] == 4
+
+
+# ---------------------------------------------------------------- fix round 1 (wiring)
+
+
+class MovedDB(FakeDB):
+    """An admin (or the customer) moves the piece while the worker is uploading."""
+
+    def __init__(self, *args, move: dict[str, Any], **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.move = move
+
+    def delete_models(self, piece_id: str, attempt: int) -> None:
+        self.pieces[piece_id].update(self.move)
+        super().delete_models(piece_id, attempt)
+
+
+@pytest.mark.parametrize("move", [{"status": "review"}, {"status": "queued", "attempt": 2}])
+def test_publishing_is_a_compare_and_swap(tmp_path, monkeypatch, move) -> None:
+    monkeypatch.setitem(CAND_ERRORS, "cand_1", 0.001)
+    sent = _notices(monkeypatch)
+    see(TRAVERTINE)
+    db, storage, _ = setup(tmp_path, **TRAVERTINE_ROW)
+    moved = MovedDB([dict(db.pieces[PIECE_ID])], db.photos, move=move)
+    row = dict(moved.pieces[PIECE_ID])
+    assert run(moved, storage, row, tmp_path) == pipeline.STATUS_SUPERSEDED
+    assert sent == []  # neither the customer nor the admin hears about it
+    assert all(f.get("status") not in ("ready", "review") for _, f in moved.updates)
+    assert {k: moved.pieces[PIECE_ID][k] for k in move} == move
+
+
+def test_manual_review_without_model_is_a_compare_and_swap(tmp_path, monkeypatch) -> None:
+    sent = _notices(monkeypatch)
+    see(Interpretation(True, None, None, 0.55, []))
+    db, storage, _ = setup(tmp_path, name="Pieza", kind="otro")
+    moved = MovedDB([dict(db.pieces[PIECE_ID])], db.photos, move={"status": "rejected"})
+    assert run(moved, storage, dict(moved.pieces[PIECE_ID]), tmp_path) == "superseded"
+    assert sent == [] and moved.pieces[PIECE_ID]["status"] == "rejected"
+
+
+def test_glb_over_the_size_limit_goes_to_manual_review(tmp_path, monkeypatch) -> None:
+    def heavy(cand_dir, piece, **kwargs):
+        result = fake_deliver(cand_dir, piece, **kwargs)
+        result.glb_bytes = 6_200_000  # still over 5 MB after the retry
+        assert result.within_limit is False
+        return result
+
+    monkeypatch.setattr(pipeline, "deliver", heavy)
+    monkeypatch.setitem(CAND_ERRORS, "cand_1", 0.001)
+    see(TRAVERTINE)
+    db, storage, row = setup(tmp_path, **TRAVERTINE_ROW)
+    assert run(db, storage, row, tmp_path) == "review"
+    meta = _selected(db)["meta"]
+    assert "El GLB pesa 6,2 MB tras el reintento: supera el límite de 5 MB" in meta["warnings"]
+    assert meta["auto_review"]["decision"] == "manual"
+
+
+def test_failed_photo_colour_with_a_material_is_a_warning(tmp_path, monkeypatch, fake_material):
+    def no_colour(photo):
+        raise RuntimeError("rembg sin modelo")
+
+    monkeypatch.setattr(pipeline, "photo_mean_color", no_colour)
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá de lino", rectilinear=False)
+    run(db, storage, row, tmp_path, provider=FakeProvider(SAMPLE_GLB))
+    assert fake_material[0]["rgb"] is None
+    meta = _selected(db)["meta"]
+    assert any(w.startswith("No se pudo medir el color de la foto") for w in meta["warnings"])
+    assert meta["material"]["target_error"] == "RuntimeError: rembg sin modelo"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"attempt": 2}, "Intento 2"),
+        ({"review_note": "Retirada de la publicación automática."}, "nota del admin"),
+    ],
+)
+def test_admin_touched_pieces_go_back_to_manual_review(tmp_path, monkeypatch, overrides, reason):
+    monkeypatch.setitem(CAND_ERRORS, "cand_1", 0.001)
+    see(TRAVERTINE)
+    db, storage, row = setup(tmp_path, **TRAVERTINE_ROW, **overrides)
+    assert run(db, storage, row, tmp_path) == "review"
+    assert reason in _selected(db)["meta"]["auto_review"]["reasons"][0]
+    assert db.pieces[PIECE_ID].get("review_note") == overrides.get("review_note")
+
+
+def test_auto_publishing_never_clears_the_review_note(tmp_path, monkeypatch) -> None:
+    monkeypatch.setitem(CAND_ERRORS, "cand_1", 0.001)
+    see(TRAVERTINE)
+    db, storage, row = setup(tmp_path, **TRAVERTINE_ROW)
+    assert run(db, storage, row, tmp_path) == "ready"
+    [final] = [f for _, f in db.updates if f.get("status") == "ready"]
+    assert "review_note" not in final
+
+
+def test_render_failure_drops_only_that_candidate(tmp_path, monkeypatch) -> None:
+    def render(glb, out_dir, **kwargs):
+        if Path(glb).parent.name == "cand_2":
+            raise RuntimeError("Blender murió renderizando")
+        return fake_render_views(glb, out_dir, **kwargs)
+
+    monkeypatch.setattr(pipeline, "render_views", render)
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá", rectilinear=False)
+    assert run(db, storage, row, tmp_path, provider=FakeProvider(SAMPLE_GLB)) == "review"
+    assert _selected(db)["candidate"] == 1
+    other = next(m for m in db.models if m["candidate"] == 2)
+    assert other["glb_path"] is None and other["meta"]["error"].startswith("Renders: RuntimeError")
+    log = (tmp_path / "runs" / PIECE_ID / "1" / "error.log").read_text(encoding="utf-8")
+    assert "candidato 2" in log and "Blender murió renderizando" in log
+
+
+class PartialInsertDB(FakeDB):
+    """Supabase drops after the first ``piece_models`` row."""
+
+    def insert_model(self, row):
+        if self.models:
+            raise ConnectionError("Supabase no responde")
+        return super().insert_model(row)
+
+
+def test_provider_cost_survives_a_partial_insert(tmp_path) -> None:
+    class Priced(FakeProvider):
+        def generate(self, images, dst_glb, *, seed=None):
+            outcome = super().generate(images, dst_glb, seed=seed)
+            outcome.cost_usd = 0.6
+            return outcome
+
+    db, storage, _ = setup(tmp_path, kind="sofa", name="Sofá", rectilinear=False)
+    partial = PartialInsertDB([dict(db.pieces[PIECE_ID], provider_cost_usd=0.1)], db.photos)
+    row = dict(partial.pieces[PIECE_ID])
+    assert run(partial, storage, row, tmp_path, provider=Priced(SAMPLE_GLB)) == "failed"
+    # Row 1 (cand_1, not selected) was written and counts through piece_models; the
+    # selected cand_2 was not: its 0,60 $ goes to provider_cost_usd on top of the prior 0,10.
+    assert [m["candidate"] for m in partial.models] == [1]
+    assert partial.pieces[PIECE_ID]["provider_cost_usd"] == pytest.approx(0.7)

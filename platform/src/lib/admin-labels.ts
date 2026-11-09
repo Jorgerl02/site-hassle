@@ -289,3 +289,8 @@ export function pieceAnalysis(metaValue: unknown): PieceAnalysis | null {
     autoReview: review,
   };
 }
+
+/** The worker published this model's attempt by itself (`meta.auto_review.decision === "auto"`). */
+export function isAutoPublished(metaValue: unknown): boolean {
+  return record(record(metaValue).auto_review).decision === "auto";
+}

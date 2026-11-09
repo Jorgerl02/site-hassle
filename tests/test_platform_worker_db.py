@@ -94,6 +94,21 @@ def test_update_piece_patches_by_id(httpx_mock: HTTPXMock, db: WorkerDB) -> None
     assert db.update_piece("p-1", status="review", error=None)["status"] == "review"
 
 
+def test_update_piece_if_is_a_compare_and_swap(httpx_mock: HTTPXMock, db: WorkerDB) -> None:
+    url = f"{URL}/rest/v1/pieces?id=eq.p-1&status=eq.generating&attempt=eq.2"
+    httpx_mock.add_response(
+        method="PATCH",
+        url=url,
+        match_headers={**AUTH, "Prefer": "return=representation"},
+        match_json={"status": "ready"},
+        json=[{**PIECE, "status": "ready"}],
+    )
+    httpx_mock.add_response(method="PATCH", url=url, json=[])  # someone moved it meanwhile
+    expected = {"status": "generating", "attempt": 2}
+    assert db.update_piece_if("p-1", expected, status="ready") is True
+    assert db.update_piece_if("p-1", expected, status="ready") is False
+
+
 def test_insert_model_returns_the_row(httpx_mock: HTTPXMock, db: WorkerDB) -> None:
     row = {"piece_id": "p-1", "attempt": 1, "candidate": 1, "selected": True}
     httpx_mock.add_response(

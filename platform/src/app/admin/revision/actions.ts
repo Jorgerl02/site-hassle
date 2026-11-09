@@ -8,6 +8,7 @@ import {
   MAX_ATTEMPT,
   NOT_DELIVERABLE_MESSAGE,
   adminDb,
+  isAutoPublished,
   isDeliverable,
   isMaterialChoice,
   isUuid,
@@ -207,17 +208,35 @@ export async function retryFailed(pieceId: string, shape: ShapeFields = {}): Pro
 
 /**
  * «Retirar» an automatically published piece: `ready → review`, only while the
- * customer has not downloaded it (`approved` stays). The admin then reviews it
- * as any other piece.
+ * customer has not downloaded it (`approved` stays) and only when the worker
+ * published its current attempt by itself (selected model's latest
+ * `meta.auto_review.decision` is `auto`; a piece the admin showed is not
+ * withdrawn from here). The update is conditional on `ready` + that attempt.
  */
 export async function withdrawAutoPublished(pieceId: string): Promise<void> {
   await requireAdmin();
   if (!isUuid(pieceId)) throw new ReviewError("La pieza no existe.");
-  const { data, error } = await adminDb()
+  const db = adminDb();
+  const { data: piece, error: pieceError } = await db.from("pieces").select("status, attempt").eq("id", pieceId).maybeSingle();
+  if (pieceError) throw new ReviewError(`No se pudo leer la pieza: ${pieceError.message}`);
+  if (!piece) throw new ReviewError("La pieza no existe.");
+  const { data: model, error: modelError } = await db
+    .from("piece_models")
+    .select("meta")
+    .eq("piece_id", pieceId)
+    .eq("attempt", piece.attempt)
+    .eq("selected", true)
+    .maybeSingle();
+  if (modelError) throw new ReviewError(`No se pudo leer el modelo: ${modelError.message}`);
+  if (!isAutoPublished(model?.meta ?? null)) {
+    throw new ReviewError("Solo se pueden retirar las piezas que publicó el worker automáticamente.");
+  }
+  const { data, error } = await db
     .from("pieces")
     .update({ status: "review", review_note: "Retirada de la publicación automática." })
     .eq("id", pieceId)
     .eq("status", "ready")
+    .eq("attempt", piece.attempt)
     .select("id");
   if (error) throw new ReviewError(`No se pudo retirar: ${error.message}`);
   if (!data || data.length === 0) {

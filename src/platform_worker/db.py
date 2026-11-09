@@ -74,6 +74,22 @@ class WorkerDB:
         rows = response.json()
         return rows[0] if rows else {}
 
+    def update_piece_if(self, piece_id: str, expected: dict[str, Any], **fields: Any) -> bool:
+        """Compare-and-swap: update the piece only while every ``expected`` column still has
+        that value (e.g. ``{"status": "generating", "attempt": 2}``); True if a row changed.
+        Nothing changes when an admin or the customer moved the piece meanwhile."""
+        params = {"id": f"eq.{piece_id}"}
+        for column, value in expected.items():
+            params[column] = "is.null" if value is None else f"eq.{value}"
+        response = self._http.patch(
+            f"{self.rest}/pieces",
+            params=params,
+            json=fields,
+            headers={**self._headers, "Prefer": "return=representation"},
+        )
+        _raise_for(response, "pieces (conditional update)")
+        return bool(response.json())
+
     def get_piece(self, piece_id: str) -> dict[str, Any] | None:
         response = self._http.get(
             f"{self.rest}/pieces",

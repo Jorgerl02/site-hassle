@@ -371,3 +371,11 @@ def test_startup_warns_without_gltf_transform_or_materials(tmp_path: Path) -> No
     folder = tmp_path / "materials"
     (folder / "oak").mkdir(parents=True)
     assert cli.startup_warnings(tool, folder) == []
+
+
+def test_later_attempts_and_admin_notes_are_manual() -> None:
+    review = decide(attempt=2)
+    assert not review.auto and review.reasons[0].startswith("Intento 2")
+    review = decide(review_note="material:oak")
+    assert not review.auto and "nota del admin" in review.reasons[0]
+    assert decide(review_note="  ").auto

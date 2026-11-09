@@ -86,6 +86,10 @@ NO_PROVIDER_ERROR = (
 
 STATUS_REVIEW = "review"
 STATUS_READY = "ready"  # published automatically (``autopublish``)
+STATUS_GENERATING = "generating"
+# Returned when the final write found the piece no longer ``generating`` on this attempt
+# (an admin or the customer moved it meanwhile): nothing is published nor notified.
+STATUS_SUPERSEDED = "superseded"
 STATUS_NEEDS_PHOTOS = "needs_photos"
 STATUS_FAILED = "failed"
 STATUS_REJECTED = "rejected"  # excluded categories (lámpara, metal, vidrio)
@@ -786,9 +790,26 @@ def _manual_without_model(
             "selected": False,
         }
     )
-    db.update_piece(piece_id, status=STATUS_REVIEW, error=None)
+    if not _finish(db, piece_id, attempt, status=STATUS_REVIEW, error=None):
+        return STATUS_SUPERSEDED
     notify_status(piece_id, STATUS_REVIEW)
     return STATUS_REVIEW
+
+
+def _finish(db: Any, piece_id: str, attempt: int, **fields: Any) -> bool:
+    """The final status write as a compare-and-swap on ``generating`` + this attempt, so a
+    piece an admin or the customer moved meanwhile is never overwritten (False: nothing
+    changed; the caller must not publish nor notify)."""
+    changed = db.update_piece_if(
+        piece_id, {"status": STATUS_GENERATING, "attempt": attempt}, **fields
+    )
+    if not changed:
+        log.warning(
+            "La pieza %s ya no está en generación en el intento %d: no se publica ni se avisa",
+            piece_id,
+            attempt,
+        )
+    return bool(changed)
 
 
 def process_piece(
@@ -820,12 +841,14 @@ def process_piece(
     start = time.monotonic()
     prior_cost = float(piece_row.get("provider_cost_usd") or 0)
     runs: list[CandidateRun] = []
-    models_written = False
+    # Candidates whose ``piece_models`` row exists: their cost already counts in the day's
+    # spend through that row, so a failure only adds the cost of the others.
+    written: set[int] = set()
 
     def failed_cost() -> float | None:
         """Accumulated provider cost to record on failure (None: nothing new to add)."""
-        spent = sum(c.cost_usd for c in runs)
-        return prior_cost + spent if spent and not models_written else None
+        spent = sum(c.cost_usd for c in runs if c.index not in written)
+        return prior_cost + spent if spent else None
 
     try:
         env = settings if settings is not None else load_settings()
@@ -935,15 +958,18 @@ def process_piece(
                 outputs[cand.index] = build_outputs(
                     piece, cand, photos, blender_bin=blender_bin, provenance=provenance
                 )
-            except DeliverError as exc:
-                cand.error = f"Entrega: {type(exc).__name__}: {exc}"[:ERROR_MAX_CHARS]
+            except Exception as exc:  # renders, contact sheet or delivery: lose this one only
+                stage = "Entrega" if isinstance(exc, DeliverError) else "Renders"
+                cand.error = f"{stage}: {type(exc).__name__}: {exc}"[:ERROR_MAX_CHARS]
+                with (work / "error.log").open("a", encoding="utf-8") as fh:
+                    fh.write(f"candidato {cand.index}\n{traceback.format_exc()}\n")
         delivered = [c for c in ok if c.index in outputs]
         if not delivered:
             errors = "; ".join(c.error for c in ok if c.error) or "sin candidatos"
             return _fail(
                 db,
                 piece_id,
-                f"No se pudo entregar ningún modelo: {errors}",
+                f"No se pudo renderizar ni entregar ningún modelo: {errors}",
                 provider_cost_usd=failed_cost(),
             )
         selected = min(
@@ -960,15 +986,29 @@ def process_piece(
         def warnings_of(cand: CandidateRun) -> list[str]:
             out = list(dimension_warnings)
             out += [str(w) for w in (cand.gen_meta or {}).get("warnings") or []]
+            if plan.material_id and plan.target_error and cand.material is not None:
+                out.append(
+                    f"No se pudo medir el color de la foto ({plan.target_error}): el material "
+                    f"«{plan.material_id}» conserva su color de biblioteca"
+                )
             out += [str(w) for w in (cand.material or {}).get("warnings") or []]
             if cand.index in outputs:
-                out += list(outputs[cand.index].result.warnings or [])
+                result = outputs[cand.index].result
+                out += list(result.warnings or [])
+                if result.within_limit is False:
+                    mb = f"{(result.glb_bytes or 0) / 1_000_000:.1f}".replace(".", ",")
+                    out.append(
+                        f"El GLB pesa {mb} MB tras el reintento: supera el límite de "
+                        f"{result.size_limit_bytes / 1_000_000:.0f} MB"
+                    )
             return out
 
         tolerance = resolve_scale_tolerance()
         selected_files = files[selected.index]
         review = autopublish.decide(
             enabled=autopublish.auto_publish_enabled(env),
+            attempt=attempt,
+            review_note=piece_row.get("review_note"),
             route=routing.route,
             deliverable=bool(
                 selected_files["glb_path"]
@@ -1033,17 +1073,15 @@ def process_piece(
                     "selected": is_selected,
                 }
             )
-            models_written = True
-        if review.auto:
-            # Same fields as the admin's «Mostrar al cliente»; the web emails the customer.
-            db.update_piece(
-                piece_id, status=STATUS_READY, error=None, review_note=None, reject_reason=None
-            )
-            notify_status(piece_id, STATUS_READY, settings=env)
-            return STATUS_READY
-        db.update_piece(piece_id, status=STATUS_REVIEW, error=None)
-        notify_status(piece_id, STATUS_REVIEW, settings=env)
-        return STATUS_REVIEW
+            written.add(cand.index)
+        # Compare-and-swap on generating + attempt: nothing is published nor notified when
+        # an admin or the customer moved the piece meanwhile. ``review_note`` is kept.
+        status = STATUS_READY if review.auto else STATUS_REVIEW
+        extra = {"reject_reason": None} if review.auto else {}
+        if not _finish(db, piece_id, attempt, status=status, error=None, **extra):
+            return STATUS_SUPERSEDED
+        notify_status(piece_id, status, settings=env)
+        return status
     except Exception as exc:
         (work / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
         return _fail(

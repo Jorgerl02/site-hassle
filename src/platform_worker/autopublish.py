@@ -15,6 +15,9 @@ an AI model cannot approve with guarantees.
    that decides the shape comes from the customer or from the photo reading with
    confidence ≥ ``RULES_MIN_CONFIDENCE``.
 5. ``AUTO_PUBLISH`` (default on); off → always manual.
+6. A piece an admin already handled — a later attempt (``attempt > 1``: regenerated, or a
+   new version the customer asked for) or one with a ``review_note`` (regenerate note,
+   «Retirar») — always goes back to manual review.
 
 The result is stored in ``piece_models.meta.auto_review`` (reasons in Spanish: the admin
 reads them).
@@ -106,6 +109,8 @@ def decide(
     *,
     enabled: bool,
     route: str,
+    attempt: int = 1,
+    review_note: str | None = None,
     deliverable: bool,
     max_error: float | None,
     tolerance: float,
@@ -123,6 +128,10 @@ def decide(
     if not enabled:
         return AutoReview(DECISION_MANUAL, gate, ["Publicación automática desactivada"])
     reasons: list[str] = []
+    if attempt > 1:
+        reasons.append(f"Intento {attempt}: las versiones nuevas las revisa el admin")
+    if review_note and review_note.strip():
+        reasons.append("La pieza tiene una nota del admin (regenerada o retirada)")
     if not deliverable:
         reasons.append("El candidato elegido no tiene vista previa, GLB y USDZ")
     if max_error is None or not max_error < tolerance:

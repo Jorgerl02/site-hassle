@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   MATERIAL_OPTIONS,
+  isAutoPublished,
   isMaterialChoice,
   noteWithMaterial,
   pickShape,
@@ -100,5 +101,14 @@ describe("pieceAnalysis", () => {
       auto_review: { decision: "auto", gate: "vlm", reasons: ["Juez visual"], scores: { parecido: 5, geometria: 4, materiales: 4 } },
     })!;
     expect(analysis.autoReview).toMatchObject({ auto: true, gate: "juez visual", scores: "parecido 5 · geometría 4 · materiales 4" });
+  });
+});
+
+describe("isAutoPublished («Retirar» guard)", () => {
+  it("is true only for the worker's own auto decision", () => {
+    expect(isAutoPublished({ auto_review: { decision: "auto", gate: "rules" } })).toBe(true);
+    expect(isAutoPublished({ auto_review: { decision: "manual" } })).toBe(false);
+    expect(isAutoPublished({ post: {} })).toBe(false);
+    expect(isAutoPublished(null)).toBe(false);
   });
 });
