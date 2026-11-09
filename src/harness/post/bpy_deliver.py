@@ -1,17 +1,23 @@
 """Web delivery executed INSIDE Blender (5.x):
 
     BLENDER_BIN --background --python bpy_deliver.py -- --in model_post.glb
-        --out-glb model_web.glb --out-usdz model.usdz --meta deliver_meta.json
-        [--max-tris 60000] [--max-tex 2048] [--jpeg-quality 85] [--draco-level 6]
-        [--tmp-dir DIR]
+        --out-glb model_raw.glb --out-usdz model.usdz --meta deliver_meta.json
+        [--max-tris 60000] [--max-tex 2048] [--jpeg-quality 85] [--tmp-dir DIR]
+        [--preview-glb preview_raw.glb --preview-usdz model_preview.usdz
+         [--preview-max-tris 15000] [--preview-max-tex 512]]
 
 Steps: import the post-processed GLB (already scaled, base centre at the origin) → bake
-transforms and join meshes → Decimate to ≤ max-tris triangles → clamp textures to ≤ max-tex
-px → re-encode every texture as JPEG (quality ``--jpeg-quality``), or PNG when a material
-uses its Alpha output and some pixel has alpha < 1 → export ``model_web.glb``
-(Draco, images as JPEG; textures that really need alpha stay PNG) → export ``model.usdz``
+transforms and join meshes (the scale lives in the vertices, every node is identity) →
+Decimate to ≤ max-tris triangles → clamp textures to ≤ max-tex px → re-encode every texture
+as JPEG (quality ``--jpeg-quality``), or PNG when a material uses its Alpha output and some
+pixel has alpha < 1 → export ``--out-glb`` (plain GLB, no Draco: ``deliver.py`` turns it
+into the web GLB with gltf-transform, KHR_mesh_quantization + WebP) → export ``model.usdz``
 with the USD exporter (UsdPreviewSurface materials, textures packed in the archive, Y-up,
-metres) → META.json with sizes in bytes, triangles and textures.
+metres) → with ``--preview-glb``: decimate again to ≤ preview-max-tris, re-encode the
+textures at ≤ preview-max-tex and export the preview GLB (plain) and preview USDZ → check
+each USDZ with ``UsdUtils.ComplianceChecker(arkit=True)`` and look for non-uniform scale ops
+(Pietra by Bianca: AR Quick Look silently refuses a USDZ whose node carries a non-uniform
+scale; baked geometry opens) → META.json with sizes in bytes, triangles and textures.
 
 A USDZ failure does not abort the GLB: it is recorded as ``usdz_error`` in the meta.
 
@@ -43,7 +49,8 @@ except ImportError:  # running inside Blender: the sibling module is on the scri
 DEFAULT_MAX_TRIS = 60_000
 DEFAULT_MAX_TEX = 2048
 DEFAULT_JPEG_QUALITY = 85
-DEFAULT_DRACO_LEVEL = 6
+DEFAULT_PREVIEW_MAX_TRIS = 15_000
+DEFAULT_PREVIEW_MAX_TEX = 512
 USDZ_DOWNSCALE_PRESETS = (256, 512, 1024, 2048, 4096)
 
 
@@ -58,8 +65,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--jpeg-quality", dest="jpeg_quality", type=int, default=DEFAULT_JPEG_QUALITY
     )
-    parser.add_argument("--draco-level", dest="draco_level", type=int, default=DEFAULT_DRACO_LEVEL)
     parser.add_argument("--tmp-dir", dest="tmp_dir", default=None)
+    parser.add_argument("--preview-glb", dest="preview_glb", default=None)
+    parser.add_argument("--preview-usdz", dest="preview_usdz", default=None)
+    parser.add_argument(
+        "--preview-max-tris", dest="preview_max_tris", type=int, default=DEFAULT_PREVIEW_MAX_TRIS
+    )
+    parser.add_argument(
+        "--preview-max-tex", dest="preview_max_tex", type=int, default=DEFAULT_PREVIEW_MAX_TEX
+    )
     ns = parser.parse_args(argv)
     if ns.max_tris < 1:
         parser.error("--max-tris debe ser ≥ 1")
@@ -67,6 +81,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--max-tex debe ser ≥ 1")
     if not 1 <= ns.jpeg_quality <= 100:
         parser.error("--jpeg-quality debe estar entre 1 y 100")
+    if (ns.preview_glb is None) != (ns.preview_usdz is None):
+        parser.error("--preview-glb y --preview-usdz van juntos")
+    if ns.preview_max_tris < 1 or ns.preview_max_tex < 1:
+        parser.error("los límites de la previsualización deben ser ≥ 1")
     return ns
 
 
@@ -192,6 +210,7 @@ def _process_textures(bpy, max_px: int, quality: int, tmp_dir: str) -> list[dict
                 "encoded_bytes": os.path.getsize(path),
             }
         )
+        bpy.data.images.remove(image)  # unused now: a later pass must not re-encode it
     return report
 
 
@@ -219,6 +238,72 @@ def _export_usdz(bpy, path: str, max_tex: int) -> None:
     )
 
 
+def usd_scale_issues(stage) -> list[str]:
+    """Prims whose ``xformOp:scale`` is not uniform (AR Quick Look refuses them)."""
+    from pxr import UsdGeom  # bundled with Blender
+
+    issues = []
+    for prim in stage.Traverse():
+        xformable = UsdGeom.Xformable(prim)
+        if not xformable:
+            continue
+        for op in xformable.GetOrderedXformOps():
+            if op.GetOpType() != UsdGeom.XformOp.TypeScale:
+                continue
+            value = op.Get()
+            if value is not None and max(value) - min(value) > 1e-6:
+                issues.append(f"{prim.GetPath()}: escala no uniforme {tuple(value)}")
+    return issues
+
+
+def arkit_check(path: str) -> dict | None:
+    """``UsdUtils.ComplianceChecker(arkit=True)`` errors / failed checks plus the
+    non-uniform scale ops; ``None`` when ``pxr`` is not available."""
+    try:
+        from pxr import Usd, UsdUtils
+    except ImportError:
+        return None
+    checker = UsdUtils.ComplianceChecker(arkit=True, skipARKitRootLayerCheck=False)
+    checker.CheckCompliance(path)
+    stage = Usd.Stage.Open(path)
+    return {
+        "errors": [str(e) for e in checker.GetErrors()],
+        "failed_checks": [str(e) for e in checker.GetFailedChecks()],
+        "scale_issues": usd_scale_issues(stage) if stage else ["no se pudo abrir el USDZ"],
+    }
+
+
+def _export_glb(bpy, path: str, quality: int) -> None:
+    if os.path.exists(path):
+        os.remove(path)
+    bpy.ops.export_scene.gltf(
+        filepath=path,
+        export_format="GLB",
+        use_selection=False,
+        export_apply=True,
+        export_yup=True,
+        export_image_format="JPEG",
+        export_image_quality=quality,
+        export_jpeg_quality=quality,
+    )
+
+
+def _try_usdz(bpy, path: str, max_tex: int) -> tuple[str | None, dict | None]:
+    """Export a USDZ and check it; returns ``(error, arkit report)``."""
+    if os.path.exists(path):
+        os.remove(path)
+    try:
+        _export_usdz(bpy, path, max_tex)
+    except Exception as exc:  # noqa: BLE001 — the GLB is still useful without USDZ
+        return f"{type(exc).__name__}: {exc}", None
+    if not os.path.isfile(path):
+        return "el exportador USD no escribió el archivo", None
+    try:
+        return None, arkit_check(path)
+    except Exception as exc:  # noqa: BLE001 — a checker failure must not lose the file
+        return None, {"checker_error": f"{type(exc).__name__}: {exc}"}
+
+
 def main(argv: list[str]) -> int:
     import bpy  # only available inside Blender
     from mathutils import Matrix
@@ -235,29 +320,33 @@ def main(argv: list[str]) -> int:
     tris_after = _decimate(bpy, obj, args.max_tris)
     textures = _process_textures(bpy, args.max_tex, args.jpeg_quality, tmp_dir)
 
-    for path in (args.out_glb, args.out_usdz):
-        if os.path.exists(path):
-            os.remove(path)
-    bpy.ops.export_scene.gltf(
-        filepath=args.out_glb,
-        export_format="GLB",
-        use_selection=False,
-        export_apply=True,
-        export_yup=True,
-        export_image_format="JPEG",
-        export_image_quality=args.jpeg_quality,
-        export_jpeg_quality=args.jpeg_quality,
-        export_draco_mesh_compression_enable=True,
-        export_draco_mesh_compression_level=args.draco_level,
-    )
+    _export_glb(bpy, args.out_glb, args.jpeg_quality)
+    usdz_error, usdz_arkit = _try_usdz(bpy, args.out_usdz, args.max_tex)
 
-    usdz_error = None
-    try:
-        _export_usdz(bpy, args.out_usdz, args.max_tex)
-        if not os.path.isfile(args.out_usdz):
-            usdz_error = "el exportador USD no escribió el archivo"
-    except Exception as exc:  # noqa: BLE001 — the GLB is still useful without USDZ
-        usdz_error = f"{type(exc).__name__}: {exc}"
+    preview = None
+    if args.preview_glb:
+        preview_tris = _decimate(bpy, obj, min(args.preview_max_tris, args.max_tris))
+        preview_tmp = os.path.join(tmp_dir, "preview")
+        os.makedirs(preview_tmp, exist_ok=True)
+        preview_textures = _process_textures(
+            bpy, min(args.preview_max_tex, args.max_tex), args.jpeg_quality, preview_tmp
+        )
+        _export_glb(bpy, args.preview_glb, args.jpeg_quality)
+        preview_usdz_error, preview_arkit = _try_usdz(
+            bpy, args.preview_usdz, min(args.preview_max_tex, args.max_tex)
+        )
+        preview = {
+            "glb_out": args.preview_glb,
+            "usdz_out": args.preview_usdz,
+            "glb_bytes": file_size(args.preview_glb),
+            "usdz_bytes": file_size(args.preview_usdz),
+            "usdz_error": preview_usdz_error,
+            "usdz_arkit": preview_arkit,
+            "tris_after": preview_tris,
+            "max_tris": args.preview_max_tris,
+            "max_tex": args.preview_max_tex,
+            "textures": preview_textures,
+        }
 
     meta = {
         "glb_in": args.glb_in,
@@ -267,15 +356,16 @@ def main(argv: list[str]) -> int:
         "glb_bytes": file_size(args.out_glb),
         "usdz_bytes": file_size(args.out_usdz),
         "usdz_error": usdz_error,
+        "usdz_arkit": usdz_arkit,
         "tris_before": tris_before,
         "tris_after": tris_after,
         "tris_within_limit": tris_after <= args.max_tris,
         "max_tris": args.max_tris,
         "max_tex": args.max_tex,
         "jpeg_quality": args.jpeg_quality,
-        "draco": True,
-        "draco_level": args.draco_level,
+        "draco": False,
         "textures": textures,
+        "preview": preview,
         "blender_version": bpy.app.version_string,
         "seconds": time.monotonic() - start,
     }

@@ -1,9 +1,27 @@
-"""Web delivery of a post-processed candidate: light Draco GLB, USDZ for AR Quick Look and a
-``viewer.html`` built on ``<model-viewer>``.
+"""Web delivery of a post-processed candidate: web GLB (KHR_mesh_quantization + WebP), USDZ
+for AR Quick Look, a light public preview (GLB + USDZ) and a ``viewer.html`` built on
+``<model-viewer>``.
 
-Runs ``bpy_deliver.py`` through the core Blender launcher on ``<cand_dir>/model_post.glb``.
-If ``model_web.glb`` exceeds ``size_limit_bytes`` it retries ONCE with half the triangles
-and textures clamped to 1024 px; the final ``deliver_meta.json`` records every attempt.
+Runs ``bpy_deliver.py`` through the core Blender launcher on ``<cand_dir>/model_post.glb``
+(decimation, texture clamp, JPEG re-encode, USDZ, preview pass), then
+``gltf-transform optimize --compress quantize --texture-compress webp`` (Node, via ``npx``)
+on the plain GLBs Blender wrote. If ``model_web.glb`` exceeds ``size_limit_bytes`` it
+retries ONCE with half the triangles and textures clamped to 1024 px; the final
+``deliver_meta.json`` records every attempt.
+
+Pietra by Bianca (``scripts/3d/README.md``) proved this combination on real devices:
+quantization and ``EXT_texture_webp`` are decoded natively by model-viewer, while meshopt
+failed to load on device and Draco / KTX2 fetch decoders from a CDN. USDZ keeps JPEG / PNG
+(AR Quick Look accepts no WebP). The preview ships its own USDZ (``ios-src``): without it
+model-viewer generates one on tap and that ``await`` breaks Safari's user activation, so AR
+does not open on iPhone.
+
+gltf-transform CLI 4.5.1 ``optimize --help`` read on 2026-11-09: ``--compress`` one of
+draco / meshopt / quantize / false (default meshopt), ``--texture-compress`` ktx2 / webp /
+avif / auto / false, ``--texture-size`` (max px, default 2048), ``--simplify`` (default
+true: turned off here, the triangle budget is Blender's decimation). Docs
+(gltf-transform.dev, ``quantize``): UVs outside [0, 1] are left unquantized, so tiled
+material UVs survive.
 
 model-viewer docs consulted on 2026-11-08 (modelviewer.dev via Context7): ``ar``,
 ``ar-modes`` (webxr / scene-viewer / quick-look), ``ios-src`` (USDZ for Quick Look),
@@ -17,13 +35,21 @@ import html
 import json
 import shutil
 import string
+import struct
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from harness.core.blender import BlenderRun, run_blender_script
 from harness.core.models import Piece
-from harness.post.bpy_deliver import DEFAULT_JPEG_QUALITY, DEFAULT_MAX_TEX, DEFAULT_MAX_TRIS
+from harness.post.bpy_deliver import (
+    DEFAULT_JPEG_QUALITY,
+    DEFAULT_MAX_TEX,
+    DEFAULT_MAX_TRIS,
+    DEFAULT_PREVIEW_MAX_TEX,
+    DEFAULT_PREVIEW_MAX_TRIS,
+)
 
 BPY_DELIVER_SCRIPT = Path(__file__).with_name("bpy_deliver.py")
 VIEWER_TEMPLATE = Path(__file__).with_name("viewer_template.html")
@@ -33,7 +59,16 @@ USDZ_FILENAME = "model.usdz"
 VIEWER_FILENAME = "viewer.html"
 DELIVER_META_FILENAME = "deliver_meta.json"
 DELIVER_LOG_FILENAME = "deliver_blender.log"
-TMP_DIRNAME = ".deliver_tmp"  # re-encoded textures, removed after the run
+TMP_DIRNAME = ".deliver_tmp"  # re-encoded textures and plain GLBs, removed after the run
+RAW_GLB_FILENAME = "model_raw.glb"  # Blender's plain GLB, input of gltf-transform
+PREVIEW_DIRNAME = "preview"
+PREVIEW_GLB_FILENAME = "model_preview.glb"
+PREVIEW_USDZ_FILENAME = "model_preview.usdz"
+PREVIEW_RAW_GLB_FILENAME = "preview_raw.glb"
+PREVIEW_MAX_TRIS = DEFAULT_PREVIEW_MAX_TRIS
+PREVIEW_MAX_TEX = DEFAULT_PREVIEW_MAX_TEX
+GLTF_TRANSFORM_PACKAGE = "@gltf-transform/cli@4.5.1"
+OPTIMIZE_TIMEOUT_S = 600
 DEFAULT_SIZE_LIMIT_BYTES = 5_000_000
 RETRY_MAX_TEX = 1024
 DEFAULT_TIMEOUT_S = 600
@@ -72,6 +107,12 @@ class DeliverResult:
     seconds: float = 0.0
     log: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+    optimize_error: str | None = None  # gltf-transform failed: the plain GLB was shipped
+    preview_glb_path: Path | None = None
+    preview_usdz_path: Path | None = None
+    preview_glb_bytes: int | None = None
+    preview_usdz_bytes: int | None = None
+    preview_tris_after: int | None = None
 
     @property
     def within_limit(self) -> bool:
@@ -92,8 +133,13 @@ def build_args(
     max_tex: int = DEFAULT_MAX_TEX,
     jpeg_quality: int = DEFAULT_JPEG_QUALITY,
     tmp_dir: Path | None = None,
+    preview_glb: Path | None = None,
+    preview_usdz: Path | None = None,
+    preview_max_tris: int = PREVIEW_MAX_TRIS,
+    preview_max_tex: int = PREVIEW_MAX_TEX,
 ) -> list[str]:
-    """Arguments passed to ``bpy_deliver.py`` after ``--``."""
+    """Arguments passed to ``bpy_deliver.py`` after ``--``. ``out_glb`` (and
+    ``preview_glb``) are the PLAIN GLBs that gltf-transform then optimizes."""
     args = [
         "--in", str(glb_in),
         "--out-glb", str(out_glb),
@@ -105,7 +151,64 @@ def build_args(
     ]  # fmt: skip
     if tmp_dir is not None:
         args += ["--tmp-dir", str(tmp_dir)]
+    if preview_glb is not None and preview_usdz is not None:
+        args += [
+            "--preview-glb", str(preview_glb),
+            "--preview-usdz", str(preview_usdz),
+            "--preview-max-tris", str(preview_max_tris),
+            "--preview-max-tex", str(preview_max_tex),
+        ]  # fmt: skip
     return args
+
+
+def build_optimize_args(src: Path, dst: Path, *, texture_size: int, npx: str = "npx") -> list[str]:
+    """``npx gltf-transform optimize`` with the Pietra-proven flags: KHR_mesh_quantization
+    (not meshopt, not Draco), WebP textures ≤ ``texture_size`` px and no simplification."""
+    return [
+        npx, "--yes", GLTF_TRANSFORM_PACKAGE, "optimize", str(src), str(dst),
+        "--compress", "quantize",
+        "--texture-compress", "webp",
+        "--texture-size", str(texture_size),
+        "--simplify", "false",
+    ]  # fmt: skip
+
+
+def optimize_glb(
+    src: Path, dst: Path, *, texture_size: int, timeout: int = OPTIMIZE_TIMEOUT_S
+) -> tuple[str | None, str]:
+    """Run gltf-transform on ``src`` → ``dst``. On failure (no Node, CLI error, timeout)
+    copy ``src`` to ``dst`` so delivery still has a valid (heavier) GLB and return
+    ``(error, log)``; ``(None, log)`` on success."""
+    npx = shutil.which("npx")
+    dst.unlink(missing_ok=True)
+    error: str | None = None
+    log = ""
+    if npx is None:
+        error = "npx no está instalado (Node.js): se entrega el GLB sin optimizar"
+    else:
+        cmd = build_optimize_args(src, dst, texture_size=texture_size, npx=npx)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+            log = f"$ {' '.join(cmd)}\n[exit {proc.returncode}]\n{proc.stdout}\n{proc.stderr}"
+            if proc.returncode != 0 or not dst.is_file():
+                error = f"gltf-transform terminó con código {proc.returncode}"
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            error = f"gltf-transform no se pudo ejecutar: {type(exc).__name__}: {exc}"
+            log = error
+    if error is not None:
+        shutil.copyfile(src, dst)
+    return error, log
+
+
+def glb_extensions(path: Path) -> list[str]:
+    """``extensionsUsed`` of a GLB (reads only its JSON chunk)."""
+    with open(path, "rb") as fh:
+        header = fh.read(20)
+        if len(header) < 20 or header[:4] != b"glTF":
+            return []
+        json_len = struct.unpack_from("<I", header, 12)[0]
+        gltf = json.loads(fh.read(json_len))
+    return sorted(gltf.get("extensionsUsed", []))
 
 
 def parse_deliver_meta(meta_path: Path, log: str = "") -> dict[str, Any]:
@@ -166,24 +269,69 @@ def _run_once(
     *,
     max_tris: int,
     max_tex: int,
+    preview: bool,
+    preview_max_tris: int,
+    preview_max_tex: int,
     timeout: int,
     blender_bin: Path | None,
 ) -> tuple[dict[str, Any], str]:
-    out_glb, out_usdz = out_dir / WEB_GLB_FILENAME, out_dir / USDZ_FILENAME
-    meta_path = out_dir / DELIVER_META_FILENAME
-    for stale in (out_glb, out_usdz, meta_path):
-        stale.unlink(missing_ok=True)  # never parse outputs from a previous run
+    tmp_dir = out_dir / TMP_DIRNAME
+    raw_glb, out_glb = tmp_dir / RAW_GLB_FILENAME, out_dir / WEB_GLB_FILENAME
+    out_usdz, meta_path = out_dir / USDZ_FILENAME, out_dir / DELIVER_META_FILENAME
+    preview_dir = out_dir / PREVIEW_DIRNAME
+    preview_raw = tmp_dir / PREVIEW_RAW_GLB_FILENAME
+    preview_glb = preview_dir / PREVIEW_GLB_FILENAME
+    preview_usdz = preview_dir / PREVIEW_USDZ_FILENAME
+    stale = [raw_glb, out_glb, out_usdz, meta_path, preview_raw, preview_glb, preview_usdz]
+    for path in stale:
+        path.unlink(missing_ok=True)  # never parse outputs from a previous run
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    if preview:
+        preview_dir.mkdir(parents=True, exist_ok=True)
     args = build_args(
-        glb_in, out_glb, out_usdz, meta_path,
-        max_tris=max_tris, max_tex=max_tex, tmp_dir=out_dir / TMP_DIRNAME,
+        glb_in, raw_glb, out_usdz, meta_path,
+        max_tris=max_tris, max_tex=max_tex, tmp_dir=tmp_dir,
+        preview_glb=preview_raw if preview else None,
+        preview_usdz=preview_usdz if preview else None,
+        preview_max_tris=preview_max_tris, preview_max_tex=preview_max_tex,
     )  # fmt: skip
     run = run_blender_script(BPY_DELIVER_SCRIPT, args, timeout=timeout, blender_bin=blender_bin)
     log = _log_text(run)
     if not run.ok:
         raise BlenderDeliverError(f"bpy_deliver.py terminó con código {run.returncode}", log)
-    if not out_glb.is_file():
-        raise BlenderDeliverError(f"Blender no escribió {out_glb}", log)
-    return parse_deliver_meta(meta_path, log), log
+    if not raw_glb.is_file():
+        raise BlenderDeliverError(f"Blender no escribió {raw_glb}", log)
+    meta = parse_deliver_meta(meta_path, log)
+
+    meta["glb_raw_bytes"] = int(meta["glb_bytes"])
+    error, opt_log = optimize_glb(raw_glb, out_glb, texture_size=max_tex)
+    meta.update(
+        {
+            "glb_out": str(out_glb),
+            "glb_bytes": out_glb.stat().st_size,
+            "optimize_error": error,
+            "compress": None if error else "quantize",
+            "texture_format": None if error else "webp",
+            "extensions_used": glb_extensions(out_glb),
+        }
+    )
+    logs = [log, opt_log]
+    preview_meta = meta.get("preview")
+    if preview and isinstance(preview_meta, dict) and preview_raw.is_file():
+        p_error, p_log = optimize_glb(
+            preview_raw, preview_glb, texture_size=min(preview_max_tex, max_tex)
+        )
+        logs.append(p_log)
+        preview_meta.update(
+            {
+                "glb_raw_bytes": preview_meta.get("glb_bytes"),
+                "glb_out": str(preview_glb),
+                "glb_bytes": preview_glb.stat().st_size,
+                "optimize_error": p_error,
+                "extensions_used": glb_extensions(preview_glb),
+            }
+        )
+    return meta, "\n\n".join(part for part in logs if part)
 
 
 def deliver(
@@ -197,15 +345,22 @@ def deliver(
     timeout: int = DEFAULT_TIMEOUT_S,
     blender_bin: Path | None = None,
     provenance: dict[str, Any] | None = None,
+    preview: bool = True,
+    preview_max_tris: int = PREVIEW_MAX_TRIS,
+    preview_max_tex: int = PREVIEW_MAX_TEX,
 ) -> DeliverResult:
-    """Build ``model_web.glb``, ``model.usdz``, ``viewer.html`` and ``deliver_meta.json``
-    from ``<cand_dir>/model_post.glb`` into ``out_dir`` (default: ``cand_dir``).
+    """Build ``model_web.glb``, ``model.usdz``, ``viewer.html``, ``deliver_meta.json`` and
+    (``preview=True``) ``preview/model_preview.glb`` + ``preview/model_preview.usdz``
+    (≤ ``preview_max_tris`` triangles, textures ≤ ``preview_max_tex`` px) from
+    ``<cand_dir>/model_post.glb`` into ``out_dir`` (default: ``cand_dir``).
 
     A GLB above ``size_limit_bytes`` triggers one retry with ``max_tris // 2`` and textures
     ≤ 1024 px; if it is still too big the result is returned with ``within_limit = False``
-    (no exception). ``provenance`` (``run_id``, ``variant``, ``candidate``…) is recorded in
-    ``deliver_meta.json`` next to ``piece_id``. Raises ``FileNotFoundError`` without the input GLB,
-    ``BlenderNotAvailable`` without a binary and ``BlenderDeliverError`` on Blender failures.
+    (no exception). If gltf-transform is unavailable or fails, the plain Blender GLB is
+    shipped and ``optimize_error`` says why. ``provenance`` (``run_id``, ``variant``,
+    ``candidate``…) is recorded in ``deliver_meta.json`` next to ``piece_id``. Raises
+    ``FileNotFoundError`` without the input GLB, ``BlenderNotAvailable`` without a binary
+    and ``BlenderDeliverError`` on Blender failures.
     """
     cand_dir = Path(cand_dir)
     glb_in = cand_dir / INPUT_GLB_FILENAME
@@ -221,7 +376,9 @@ def deliver(
     for tris_limit, tex_limit in plans:
         meta, log = _run_once(
             glb_in, out_dir,
-            max_tris=tris_limit, max_tex=tex_limit, timeout=timeout, blender_bin=blender_bin,
+            max_tris=tris_limit, max_tex=tex_limit, preview=preview,
+            preview_max_tris=preview_max_tris, preview_max_tex=preview_max_tex,
+            timeout=timeout, blender_bin=blender_bin,
         )  # fmt: skip
         logs.append(log)
         glb_bytes = int(meta["glb_bytes"])
@@ -230,6 +387,7 @@ def deliver(
                 "max_tris": tris_limit,
                 "max_tex": tex_limit,
                 "glb_bytes": glb_bytes,
+                "glb_raw_bytes": meta.get("glb_raw_bytes"),
                 "usdz_bytes": meta.get("usdz_bytes"),
                 "tris_after": int(meta["tris_after"]),
             }
@@ -247,6 +405,15 @@ def deliver(
         render_viewer(piece, usdz_name=USDZ_FILENAME if usdz_ok else None), encoding="utf-8"
     )
 
+    preview_meta = meta.get("preview") if preview else None
+    preview_glb = out_dir / PREVIEW_DIRNAME / PREVIEW_GLB_FILENAME
+    preview_usdz = out_dir / PREVIEW_DIRNAME / PREVIEW_USDZ_FILENAME
+    preview_glb_ok = isinstance(preview_meta, dict) and preview_glb.is_file()
+    preview_usdz_ok = (
+        isinstance(preview_meta, dict)
+        and preview_usdz.is_file()
+        and not preview_meta.get("usdz_error")
+    )
     result = DeliverResult(
         out_dir=out_dir,
         glb_path=out_dir / WEB_GLB_FILENAME,
@@ -266,6 +433,14 @@ def deliver(
         seconds=float(meta.get("seconds", 0.0)),
         log=log,
         raw=meta,
+        optimize_error=meta.get("optimize_error"),
+        preview_glb_path=preview_glb if preview_glb_ok else None,
+        preview_usdz_path=preview_usdz if preview_usdz_ok else None,
+        preview_glb_bytes=preview_glb.stat().st_size if preview_glb_ok else None,
+        preview_usdz_bytes=preview_usdz.stat().st_size if preview_usdz_ok else None,
+        preview_tris_after=(
+            int(preview_meta["tris_after"]) if preview_glb_ok and preview_meta else None
+        ),
     )
     meta.update({k: v for k, v in (provenance or {}).items() if v is not None})
     meta.update(
@@ -276,6 +451,23 @@ def deliver(
             "attempts": attempts,
             "viewer": VIEWER_FILENAME,
             "model_viewer_version": MODEL_VIEWER_VERSION,
+            "files": {
+                "glb": WEB_GLB_FILENAME,
+                "usdz": USDZ_FILENAME if usdz_ok else None,
+                "viewer": VIEWER_FILENAME,
+                "preview_glb": (
+                    f"{PREVIEW_DIRNAME}/{PREVIEW_GLB_FILENAME}" if preview_glb_ok else None
+                ),
+                "preview_usdz": (
+                    f"{PREVIEW_DIRNAME}/{PREVIEW_USDZ_FILENAME}" if preview_usdz_ok else None
+                ),
+            },
+            "sizes": {
+                "glb": result.glb_bytes,
+                "usdz": result.usdz_bytes,
+                "preview_glb": result.preview_glb_bytes,
+                "preview_usdz": result.preview_usdz_bytes,
+            },
         }
     )
     result.meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")

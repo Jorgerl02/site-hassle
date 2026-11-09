@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import struct
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -21,10 +22,14 @@ from harness.core.blender import BlenderRun
 from harness.core.models import Piece
 from harness.post import bpy_deliver, deliver
 from harness.post.deliver import (
+    GLTF_TRANSFORM_PACKAGE,
     MODEL_VIEWER_SRC,
     BlenderDeliverError,
     build_args,
+    build_optimize_args,
     format_dimensions,
+    glb_extensions,
+    optimize_glb,
     parse_deliver_meta,
     render_viewer,
 )
@@ -46,6 +51,18 @@ def test_bpy_parse_args_defaults() -> None:
     )
     assert (ns.max_tris, ns.max_tex, ns.jpeg_quality) == (60_000, 2048, 85)
     assert ns.tmp_dir is None
+    assert ns.preview_glb is None and ns.preview_usdz is None
+    assert (ns.preview_max_tris, ns.preview_max_tex) == (15_000, 512)
+
+
+def test_bpy_parse_args_preview_outputs_go_together() -> None:
+    base = ["--in", "a", "--out-glb", "b", "--out-usdz", "c", "--meta", "m"]
+    with pytest.raises(SystemExit):
+        bpy_deliver.parse_args(base + ["--preview-glb", "p.glb"])
+    with pytest.raises(SystemExit):
+        bpy_deliver.parse_args(
+            base + ["--preview-glb", "p", "--preview-usdz", "u", "--preview-max-tris", "0"]
+        )
 
 
 @pytest.mark.parametrize("bad", [["--max-tris", "0"], ["--max-tex", "0"], ["--jpeg-quality", "0"]])
@@ -82,8 +99,93 @@ def test_build_args_round_trips_through_bpy_parser(tmp_path: Path) -> None:
 
 def test_build_args_without_tmp_dir(tmp_path: Path) -> None:
     args = build_args(tmp_path / "a", tmp_path / "b", tmp_path / "c", tmp_path / "d")
-    assert "--tmp-dir" not in args
+    assert "--tmp-dir" not in args and "--preview-glb" not in args
     assert args[args.index("--max-tris") + 1] == "60000"
+
+
+def test_build_args_preview_round_trip(tmp_path: Path) -> None:
+    args = build_args(
+        tmp_path / "in.glb", tmp_path / "raw.glb", tmp_path / "m.usdz", tmp_path / "meta.json",
+        preview_glb=tmp_path / "p.glb", preview_usdz=tmp_path / "p.usdz",
+        preview_max_tris=10_000, preview_max_tex=256,
+    )  # fmt: skip
+    ns = bpy_deliver.parse_args(args)
+    assert ns.preview_glb == str(tmp_path / "p.glb")
+    assert ns.preview_usdz == str(tmp_path / "p.usdz")
+    assert (ns.preview_max_tris, ns.preview_max_tex) == (10_000, 256)
+
+
+# --------------------------------------------------------------------------- gltf-transform
+
+
+def test_build_optimize_args_pietra_flags(tmp_path: Path) -> None:
+    cmd = build_optimize_args(tmp_path / "raw.glb", tmp_path / "web.glb", texture_size=2048)
+    assert cmd[:4] == ["npx", "--yes", GLTF_TRANSFORM_PACKAGE, "optimize"]
+    assert re.fullmatch(r"@gltf-transform/cli@\d+\.\d+\.\d+", GLTF_TRANSFORM_PACKAGE)
+    assert cmd[4:6] == [str(tmp_path / "raw.glb"), str(tmp_path / "web.glb")]
+    flags = dict(zip(cmd[6::2], cmd[7::2], strict=True))
+    assert flags == {
+        "--compress": "quantize",  # KHR_mesh_quantization: not meshopt, not Draco
+        "--texture-compress": "webp",
+        "--texture-size": "2048",
+        "--simplify": "false",  # Blender's decimation owns the triangle budget
+    }
+    assert "draco" not in " ".join(cmd) and "meshopt" not in " ".join(cmd)
+
+
+def test_optimize_glb_runs_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(deliver.shutil, "which", lambda name: "/opt/node/bin/npx")
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        assert kwargs["timeout"] == 42 and kwargs["check"] is False
+        Path(cmd[5]).write_bytes(b"optimized")
+        return subprocess.CompletedProcess(cmd, 0, "done", "")
+
+    monkeypatch.setattr(deliver.subprocess, "run", fake_run)
+    src, dst = tmp_path / "raw.glb", tmp_path / "web.glb"
+    src.write_bytes(b"raw")
+    error, log = optimize_glb(src, dst, texture_size=512, timeout=42)
+    assert error is None and dst.read_bytes() == b"optimized"
+    assert (
+        calls[0][0] == "/opt/node/bin/npx"
+        and calls[0][calls[0].index("--texture-size") + 1] == "512"
+    )
+    assert "[exit 0]" in log
+
+
+def test_optimize_glb_falls_back_to_plain_glb(tmp_path: Path, monkeypatch) -> None:
+    src, dst = tmp_path / "raw.glb", tmp_path / "web.glb"
+    src.write_bytes(b"raw")
+    monkeypatch.setattr(deliver.shutil, "which", lambda name: None)
+    error, _ = optimize_glb(src, dst, texture_size=2048)
+    assert "npx" in error and dst.read_bytes() == b"raw"
+
+    monkeypatch.setattr(deliver.shutil, "which", lambda name: "/usr/bin/npx")
+    monkeypatch.setattr(
+        deliver.subprocess, "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "boom"),
+    )  # fmt: skip
+    error, log = optimize_glb(src, dst, texture_size=2048)
+    assert "código 1" in error and "boom" in log and dst.read_bytes() == b"raw"
+
+    def timeout(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(deliver.subprocess, "run", timeout)
+    error, _ = optimize_glb(src, dst, texture_size=2048)
+    assert "TimeoutExpired" in error and dst.read_bytes() == b"raw"
+
+
+def test_glb_extensions(tmp_path: Path) -> None:
+    glb = tmp_path / "a.glb"
+    _write_glb(glb, {"asset": {"version": "2.0"},
+                     "extensionsUsed": ["KHR_mesh_quantization", "EXT_texture_webp"]})  # fmt: skip
+    assert glb_extensions(glb) == ["EXT_texture_webp", "KHR_mesh_quantization"]
+    other = tmp_path / "b.glb"
+    other.write_bytes(b"not a glb at all, really")
+    assert glb_extensions(other) == []
 
 
 # --------------------------------------------------------------------------- meta parsing
@@ -138,6 +240,31 @@ def test_format_dimensions_decimal_comma(piece: Piece) -> None:
 # --------------------------------------------------------------------------- deliver (mocked)
 
 
+def _write_glb(path: Path, gltf: dict) -> None:
+    body = json.dumps(gltf).encode()
+    body += b" " * (-len(body) % 4)
+    path.write_bytes(
+        b"glTF" + struct.pack("<II", 2, 20 + len(body)) + struct.pack("<I", len(body)) + b"JSON"
+        + body
+    )  # fmt: skip
+
+
+@pytest.fixture
+def fake_npx(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """gltf-transform stand-in: copies the plain GLB to the output (same size) and records
+    the command."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(deliver.shutil, "which", lambda name: "/usr/bin/npx")
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        shutil.copyfile(cmd[4], cmd[5])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(deliver.subprocess, "run", fake_run)
+    return calls
+
+
 def _fake_blender(glb_sizes: list[int], calls: list[list[str]], usdz_error: str | None = None):
     """Stand-in for ``run_blender_script`` that writes outputs of the given sizes."""
 
@@ -150,7 +277,22 @@ def _fake_blender(glb_sizes: list[int], calls: list[list[str]], usdz_error: str 
         if usdz_error is None:
             Path(ns.out_usdz).write_bytes(b"\0" * 100)
         Path(ns.tmp_dir).mkdir(parents=True, exist_ok=True)
+        preview = None
+        if ns.preview_glb:
+            Path(ns.preview_glb).write_bytes(b"\0" * 300)
+            Path(ns.preview_usdz).write_bytes(b"\0" * 200)
+            preview = {
+                "glb_bytes": 300,
+                "usdz_bytes": 200,
+                "usdz_error": None,
+                "usdz_arkit": {"errors": [], "failed_checks": [], "scale_issues": []},
+                "tris_after": min(ns.preview_max_tris, 100_000),
+                "max_tris": ns.preview_max_tris,
+                "max_tex": ns.preview_max_tex,
+                "textures": [],
+            }
         meta = {
+            "preview": preview,
             "glb_bytes": size,
             "usdz_bytes": None if usdz_error else 100,
             "usdz_error": usdz_error,
@@ -176,7 +318,7 @@ def cand_dir(tmp_path: Path) -> Path:
 
 
 def test_deliver_within_limit_single_attempt(
-    cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
+    fake_npx: list[list[str]], cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(deliver, "run_blender_script", _fake_blender([1_000_000], calls))
@@ -196,7 +338,11 @@ def test_deliver_within_limit_single_attempt(
 
 
 def test_deliver_retries_once_when_too_big(
-    cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    fake_npx: list[list[str]],
+    cand_dir: Path,
+    piece: Piece,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(deliver, "run_blender_script", _fake_blender([6_000, 3_000], calls))
@@ -212,7 +358,7 @@ def test_deliver_retries_once_when_too_big(
 
 
 def test_deliver_still_too_big_after_retry_does_not_raise(
-    cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
+    fake_npx: list[list[str]], cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(deliver, "run_blender_script", _fake_blender([9_000, 8_000, 1], calls))
@@ -224,7 +370,7 @@ def test_deliver_still_too_big_after_retry_does_not_raise(
 
 
 def test_deliver_without_usdz_omits_ios_src(
-    cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
+    fake_npx: list[list[str]], cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[list[str]] = []
     fake = _fake_blender([1_000], calls, usdz_error="RuntimeError: boom")
@@ -270,6 +416,11 @@ def test_deliver_real_blender_synthetic_box(tmp_path: Path, piece: Piece) -> Non
     assert result.usdz_path is not None and result.usdz_path.is_file()
     assert result.tris_after == 12
     assert result.glb_bytes == result.glb_path.stat().st_size
+    assert result.optimize_error is None
+    assert "KHR_mesh_quantization" in glb_extensions(result.glb_path)
+    assert result.preview_glb_path == cand / "preview" / "model_preview.glb"
+    assert result.preview_usdz_path == cand / "preview" / "model_preview.usdz"
+    assert result.preview_tris_after == 12
 
 
 @pytest.mark.parametrize("piece_id", sorted(REAL_CANDS))
@@ -292,17 +443,46 @@ def test_deliver_real_blender_real_model(tmp_path: Path, piece: Piece, piece_id:
         assert textures
         for name in textures:
             assert _image_magic(usdz.read(name)[:8]) in {"JPEG", "PNG"}, name
-    gltf, binary_chunk = _read_glb(result.glb_path)
+    assert result.optimize_error is None
+    assert_web_glb(result.glb_path)
+    meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
+    assert meta["tris_within_limit"] is True
+    assert result.meta_path.read_text(encoding="utf-8").endswith("\n")
+    assert_usdz_arkit_ok(meta["usdz_arkit"])
+    # preview: ≤ 15k triangles, 512 px, quantize + WebP GLB and a Quick Look-valid USDZ
+    assert result.preview_tris_after is not None and result.preview_tris_after <= 15_000
+    assert_web_glb(result.preview_glb_path)
+    assert result.preview_glb_bytes < result.glb_bytes
+    assert all(max(t["after"]) <= 512 for t in meta["preview"]["textures"])
+    assert_usdz_arkit_ok(meta["preview"]["usdz_arkit"])
+    with zipfile.ZipFile(result.preview_usdz_path) as usdz:
+        names = [n for n in usdz.namelist() if n.startswith("textures/")]
+        assert names
+        assert all(_image_magic(usdz.read(n)[:12]) in {"JPEG", "PNG"} for n in names)
+    assert meta["files"]["preview_usdz"] == "preview/model_preview.usdz"
+    assert meta["sizes"]["preview_usdz"] == result.preview_usdz_path.stat().st_size
+
+
+def assert_web_glb(path: Path) -> None:
+    """Pietra-proven web GLB: KHR_mesh_quantization + EXT_texture_webp, no Draco/meshopt,
+    every embedded image really WebP."""
+    gltf, binary_chunk = _read_glb(path)
+    used = set(gltf.get("extensionsUsed", []))
+    assert {"KHR_mesh_quantization", "EXT_texture_webp"} <= used, used
+    assert not used & {"KHR_draco_mesh_compression", "EXT_meshopt_compression"}, used
     assert gltf["images"]
     for image in gltf["images"]:
         view = gltf["bufferViews"][image["bufferView"]]
         start = view.get("byteOffset", 0)
-        magic = _image_magic(binary_chunk[start : start + 8])
-        assert magic in {"JPEG", "PNG"}
-        assert image["mimeType"] == f"image/{magic.lower()}"
-    meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
-    assert meta["tris_within_limit"] is True
-    assert result.meta_path.read_text(encoding="utf-8").endswith("\n")
+        assert _image_magic(binary_chunk[start : start + 12]) == "WEBP"
+        assert image["mimeType"] == "image/webp"
+
+
+def assert_usdz_arkit_ok(report: dict | None) -> None:
+    """``UsdUtils.ComplianceChecker(arkit=True)`` run inside Blender by bpy_deliver."""
+    assert report is not None, "pxr no disponible en Blender"
+    assert report["errors"] == [] and report["failed_checks"] == [], report
+    assert report["scale_issues"] == [], report
 
 
 def _image_magic(head: bytes) -> str:
@@ -310,6 +490,8 @@ def _image_magic(head: bytes) -> str:
         return "JPEG"
     if head.startswith(b"\x89PNG"):
         return "PNG"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "WEBP"
     return repr(head)
 
 

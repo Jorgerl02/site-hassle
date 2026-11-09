@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "source": "ambientCG (https://ambientcg.com), 1K-JPG packages; asset names checked on 2026-11-09 via https://ambientcg.com/api/v2/full_json",
+  "maps": [
+    "Color",
+    "NormalGL",
+    "Roughness"
+  ],
+  "materials": [
+    {
+      "id": "travertine",
+      "label": {
+        "en": "Travertine",
+        "es": "Travertino"
+      },
+      "asset": "Travertine009",
+      "url": "https://ambientcg.com/get?file=Travertine009_1K-JPG.zip",
+      "license": "CC0",
+      "source_dimension_cm": 120,
+      "tile_cm": 40,
+      "matte": true,
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "normal_strength": 0.0,
+      "vertical_grain": true,
+      "notes": "Honed travertine: matte and without the porous normal relief (Pietra by Bianca recipe)."
+    },
+    {
+      "id": "white_marble",
+      "label": {
+        "en": "White marble",
+        "es": "Mármol blanco"
+      },
+      "asset": "Marble012",
+      "url": "https://ambientcg.com/get?file=Marble012_1K-JPG.zip",
+      "license": "CC0",
+      "source_dimension_cm": null,
+      "tile_cm": 80,
+      "matte": false,
+      "roughness": 0.3,
+      "metallic": 0.0,
+      "normal_strength": 0.0,
+      "vertical_grain": false,
+      "notes": "Polished white marble with grey veins: keeps its Roughness map."
+    },
+    {
+      "id": "oak",
+      "label": {
+        "en": "Light oak",
+        "es": "Roble claro"
+      },
+      "asset": "Wood049",
+      "url": "https://ambientcg.com/get?file=Wood049_1K-JPG.zip",
+      "license": "CC0",
+      "source_dimension_cm": 80,
+      "tile_cm": 80,
+      "matte": true,
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "normal_strength": 0.4,
+      "vertical_grain": true,
+      "notes": "Tagged oak on ambientCG; tone-matched to the photo."
+    },
+    {
+      "id": "walnut",
+      "label": {
+        "en": "Walnut",
+        "es": "Nogal"
+      },
+      "asset": "Wood051",
+      "url": "https://ambientcg.com/get?file=Wood051_1K-JPG.zip",
+      "license": "CC0",
+      "source_dimension_cm": 80,
+      "tile_cm": 80,
+      "matte": true,
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "normal_strength": 0.4,
+      "vertical_grain": true,
+      "notes": "Dark espresso hardwood (no walnut asset on ambientCG); tone-matched to the photo."
+    },
+    {
+      "id": "white_plaster",
+      "label": {
+        "en": "White lacquer or plaster",
+        "es": "Lacado o yeso blanco"
+      },
+      "asset": "Plaster001",
+      "url": "https://ambientcg.com/get?file=Plaster001_1K-JPG.zip",
+      "license": "CC0",
+      "source_dimension_cm": null,
+      "tile_cm": 100,
+      "matte": true,
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "normal_strength": 0.2,
+      "vertical_grain": false,
+      "notes": "Clean white plaster; a soft normal keeps flat lacquered panels from looking like plastic."
+    },
+    {
+      "id": "boucle",
+      "label": {
+        "en": "Bouclé / wool",
+        "es": "Bouclé / lana"
+      },
+      "asset": "Carpet016",
+      "url": "https://ambientcg.com/get?file=Carpet016_1K-JPG.zip",
+      "license": "CC0",
+      "source_dimension_cm": 170,
+      "tile_cm": 25,
+      "matte": true,
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "normal_strength": 1.0,
+      "vertical_grain": false,
+      "notes": "Beige soft wool loops; tiled much smaller than the carpet scan so the loops read as bouclé."
+    },
+    {
+      "id": "linen",
+      "label": {
+        "en": "Linen",
+        "es": "Lino"
+      },
+      "asset": "Fabric066",
+      "url": "https://ambientcg.com/get?file=Fabric066_1K-JPG.zip",
+      "license": "CC0",
+      "source_dimension_cm": 40,
+      "tile_cm": 30,
+      "matte": true,
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "normal_strength": 0.6,
+      "vertical_grain": false,
+      "notes": "Rough plain weave; its sage colour is replaced by the photo's tone."
+    },
+    {
+      "id": "leather",
+      "label": {
+        "en": "Leather",
+        "es": "Piel"
+      },
+      "asset": "Leather028",
+      "url": "https://ambientcg.com/get?file=Leather028_1K-JPG.zip",
+      "license": "CC0",
+      "source_dimension_cm": 45,
+      "tile_cm": 45,
+      "matte": false,
+      "roughness": 0.6,
+      "metallic": 0.0,
+      "normal_strength": 0.6,
+      "vertical_grain": false,
+      "notes": "Brown grained leather with its Roughness map (soft sheen)."
+    }
+  ]
+}
