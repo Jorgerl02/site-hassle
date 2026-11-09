@@ -164,6 +164,7 @@ describe("nameFromFileName", () => {
   it("turns the first photo's file name into an editable name", () => {
     expect(nameFromFileName("cabecero_rigole-02.JPG")).toBe("Cabecero rigole 02");
     expect(nameFromFileName("oak side table.webp")).toBe("Oak side table");
+    expect(nameFromFileName("travertine-pedestal.png")).toBe("Travertine pedestal");
     expect(nameFromFileName(".jpg")).toBe("");
     expect(nameFromFileName(`${"x".repeat(100)}.png`)).toHaveLength(80);
   });

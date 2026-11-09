@@ -15,7 +15,7 @@ import {
   Text,
   Textarea,
 } from "@chakra-ui/react";
-import { useRef, useState, useTransition, type FormEvent } from "react";
+import { useRef, useState, useTransition, type FormEvent, type SetStateAction } from "react";
 import { createPiece } from "@/app/piezas/nueva/actions";
 import { trackOnce } from "@/lib/analytics";
 import type { Attribution } from "@/lib/attribution";
@@ -116,10 +116,22 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE, source, attribution 
   const [progress, setProgress] = useState<string | null>(null);
   const [kind, setKind] = useState(defaults.kind);
   const [rectilinear, setRectilinear] = useState<string>(defaults.rectilinear);
-  // Until the customer types a name (or one is copied from an earlier piece),
-  // it follows the first photo's file name.
-  const [typedName, setTypedName] = useState<string | null>(defaults.name || null);
-  const name = typedName ?? (photos[0] ? nameFromFileName(photos[0].file.name) : "");
+  // The name is prefilled from the first photo's file name only while the field
+  // is empty and the customer has not typed in it; the suggestion replaces the
+  // (empty) value, it is never appended to what is there.
+  const [name, setName] = useState(defaults.name);
+  const nameTouched = useRef(Boolean(defaults.name));
+  const latestPhotos = useRef(photos);
+
+  function onPhotosChange(update: SetStateAction<SelectedPhoto[]>) {
+    const next = typeof update === "function" ? update(latestPhotos.current) : update;
+    latestPhotos.current = next;
+    setPhotos(next);
+    if (!nameTouched.current && next[0]) {
+      const suggestion = nameFromFileName(next[0].file.name);
+      setName((current) => (current.trim() === "" ? suggestion : current));
+    }
+  }
   const [notes, setNotes] = useState(defaults.notes);
   const [pending, startTransition] = useTransition();
   // The anonymous user created on a first submit is reused if that submit fails.
@@ -230,7 +242,7 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE, source, attribution 
             frame and at least 1,000 px on the long side. The first photo is the main one.
           </Field.HelperText>
           <Box w="full">
-            <PhotoDropzone photos={photos} onChange={setPhotos} invalid={Boolean(errors.photos)} disabled={pending} />
+            <PhotoDropzone photos={photos} onChange={onPhotosChange} invalid={Boolean(errors.photos)} disabled={pending} />
           </Box>
           <Field.ErrorText>{errors.photos}</Field.ErrorText>
         </Field.Root>
@@ -260,7 +272,10 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE, source, attribution 
             maxLength={80}
             bg="bg.panel"
             autoComplete="off"
-            onChange={(e) => setTypedName(e.target.value)}
+            onChange={(e) => {
+              nameTouched.current = true;
+              setName(e.target.value);
+            }}
           />
           <Field.HelperText>We fill it in from the first photo&apos;s file name; change it if you like.</Field.HelperText>
           <Field.ErrorText>{errors.name}</Field.ErrorText>
