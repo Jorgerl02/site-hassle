@@ -13,6 +13,7 @@ Settings come from ``platform_worker.config.load_settings``: the process environ
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,7 +25,14 @@ from rich.console import Console
 from platform_worker import providers
 from platform_worker.config import load_settings
 from platform_worker.db import WorkerDB
-from platform_worker.pipeline import STATUS_QUEUED, process_piece
+from platform_worker.pipeline import (
+    STATUS_QUEUED,
+    STATUS_READY,
+    STATUS_REVIEW,
+    STATUS_SUPERSEDED,
+    piece_workdir,
+    process_piece,
+)
 from platform_worker.storage import Storage
 
 DEFAULT_WORKDIR = Path("runs/platform")
@@ -38,6 +46,10 @@ REQUEUE_EVERY_CYCLES = 10
 RETRYABLE_STATUSES = frozenset({"queued", "failed"})
 FORCE_STATUSES = frozenset({"generating"})
 CONFIG_EXIT_CODE = 2
+# Workdirs hold photos, meshes and renders: delete them once the result is stored. Those of
+# ``failed`` / ``needs_photos`` pieces stay for debugging until this many days old.
+CLEANUP_STATUSES = frozenset({STATUS_READY, STATUS_REVIEW, STATUS_SUPERSEDED})
+KEEP_WORKDIR_DAYS = 3
 
 app = typer.Typer(
     help="Worker de la plataforma: genera los modelos 3D de las piezas en cola.",
@@ -117,7 +129,47 @@ def _process(ctx: dict[str, Any], row: dict[str, Any], workdir: Path) -> str:
     )  # fmt: skip
     seconds = f"{time.monotonic() - start:.1f}".replace(".", ",")
     console.print(f"  → estado {status} en {seconds} s")
+    if status in CLEANUP_STATUSES and not ctx.get("keep_workdirs"):
+        _remove_workdir(workdir, row)
     return status
+
+
+def _remove_workdir(workdir: Path, row: dict[str, Any]) -> None:
+    """Delete this attempt's workdir (and its piece folder when left empty). Never raises."""
+    try:
+        attempt = int(row.get("attempt") or 1)
+        path = piece_workdir(workdir, str(row["id"]), attempt)
+        shutil.rmtree(path, ignore_errors=True)
+        try:
+            path.parent.rmdir()  # only succeeds when empty
+        except OSError:
+            pass
+    except Exception as exc:
+        err_console.print(f"[yellow]No se pudo borrar la carpeta de trabajo: {exc}[/yellow]")
+
+
+def _sweep_old_workdirs(workdir: Path, *, max_age_days: float = KEEP_WORKDIR_DAYS) -> None:
+    """Delete ``<workdir>/<piece>/<attempt>`` folders untouched for more than
+    ``max_age_days`` (kept after a failure). Never raises."""
+    try:
+        cutoff = time.time() - max_age_days * 86400
+        for piece_dir in Path(workdir).iterdir():
+            if not piece_dir.is_dir():
+                continue
+            for attempt_dir in piece_dir.iterdir():
+                try:
+                    if attempt_dir.is_dir() and attempt_dir.stat().st_mtime < cutoff:
+                        shutil.rmtree(attempt_dir, ignore_errors=True)
+                except OSError as exc:
+                    err_console.print(f"[yellow]No se pudo borrar {attempt_dir}: {exc}[/yellow]")
+            try:
+                piece_dir.rmdir()  # only succeeds when empty
+            except OSError:
+                pass
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        err_console.print(f"[yellow]No se pudieron limpiar carpetas antiguas: {exc}[/yellow]")
 
 
 def _requeue_stale(db: Any) -> None:
@@ -155,6 +207,8 @@ def run_loop(
     while max_cycles is None or cycle < max_cycles:
         if cycle % REQUEUE_EVERY_CYCLES == 0:
             _requeue_stale(db)
+            if not ctx.get("keep_workdirs"):
+                _sweep_old_workdirs(workdir)
         cycle += 1
         try:
             row = db.claim_next()
@@ -193,6 +247,12 @@ ProviderOpt = Annotated[
 WorkdirOpt = Annotated[
     Path, typer.Option("--workdir", help="Carpeta de trabajo (una subcarpeta por pieza).")
 ]
+KeepOpt = Annotated[
+    bool,
+    typer.Option(
+        "--keep-workdirs", help="No borra las carpetas de trabajo (por defecto se borran)."
+    ),
+]
 
 
 @app.command()
@@ -203,9 +263,11 @@ def run(
     ] = 10.0,
     provider: ProviderOpt = None,
     workdir: WorkdirOpt = DEFAULT_WORKDIR,
+    keep_workdirs: KeepOpt = False,
 ) -> None:
     """Reclama piezas en cola y las procesa en bucle."""
     ctx = build_context(provider)
+    ctx["keep_workdirs"] = keep_workdirs
     try:
         run_loop(ctx, once=once, poll_seconds=poll_seconds, workdir=workdir)
     except KeyboardInterrupt:
@@ -217,6 +279,7 @@ def piece(
     piece_id: Annotated[str, typer.Argument(help="Id de la pieza.")],
     provider: ProviderOpt = None,
     workdir: WorkdirOpt = DEFAULT_WORKDIR,
+    keep_workdirs: KeepOpt = False,
     force: Annotated[
         bool,
         typer.Option("--force", help="Reprocesa también una pieza en generación (huérfana)."),
@@ -224,6 +287,7 @@ def piece(
 ) -> None:
     """Procesa una pieza concreta (reintento manual), sin pasar por la cola."""
     ctx = build_context(provider)
+    ctx["keep_workdirs"] = keep_workdirs
     row = ctx["db"].get_piece(piece_id)
     if row is None:
         err_console.print(f"[red]No existe la pieza {piece_id}.[/red]")

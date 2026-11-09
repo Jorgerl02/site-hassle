@@ -451,6 +451,17 @@ llamada con las constantes de `src/harness/core/pricing.py` (fuentes en
   `total_cost_usd` no incluye lo gastado en pasos que terminaron en error (p. ej. vistas Gemini
   de un C cuyos candidatos fallaron todos): está en los `meta.json` de sus candidatos.
 
+## Worker en el Mac mini
+
+El worker de la plataforma corre siempre encendido en el Mac mini (alias SSH `mac-mini`) como LaunchAgent `es.pieza3d.worker`.
+
+- Desplegar: `scripts/deploy_worker.sh [host]` (rsync a `~/apps/pieza3d/`, `uv sync`, `npm ci`, materiales y reinicio del agente).
+- Primera vez, en el host: `scripts/install_worker_service.sh` (instala `deploy/es.pieza3d.worker.plist`).
+- Logs: `tail -f ~/Library/Logs/pieza3d-worker.log`
+- Parar: `launchctl bootout gui/$(id -u)/es.pieza3d.worker`. Arrancar: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/es.pieza3d.worker.plist`.
+- Solo un worker a la vez: el presupuesto diario y el barrido de piezas huérfanas asumen un único proceso.
+- Las carpetas de trabajo se borran al terminar una pieza (`ready`, `review`, `superseded`); las de `failed`/`needs_photos` se conservan 3 días. `--keep-workdirs` desactiva el borrado.
+
 ## Estructura del repositorio
 
 ```

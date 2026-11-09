@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchAgent template. plist does not expand $HOME in EnvironmentVariables, so the host
+     user is written literally (/Users/jorgeclawd); scripts/install_worker_service.sh
+     substitutes it with the actual $HOME when installing. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>es.pieza3d.worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd "$HOME/apps/pieza3d" &amp;&amp; exec "$HOME/.local/bin/uv" run --frozen platform-worker run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/jorgeclawd/.local/bin:/Users/jorgeclawd/.local/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/Users/jorgeclawd/apps/pieza3d</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/jorgeclawd/Library/Logs/pieza3d-worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jorgeclawd/Library/Logs/pieza3d-worker.log</string>
+</dict>
+</plist>
