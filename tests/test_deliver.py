@@ -12,6 +12,7 @@ import re
 import shutil
 import struct
 import subprocess
+import time
 import zipfile
 from pathlib import Path
 
@@ -119,9 +120,12 @@ def test_build_args_preview_round_trip(tmp_path: Path) -> None:
 
 
 def test_build_optimize_args_pietra_flags(tmp_path: Path) -> None:
-    cmd = build_optimize_args(tmp_path / "raw.glb", tmp_path / "web.glb", texture_size=2048)
-    assert cmd[:4] == ["npx", "--yes", GLTF_TRANSFORM_PACKAGE, "optimize"]
-    assert re.fullmatch(r"@gltf-transform/cli@\d+\.\d+\.\d+", GLTF_TRANSFORM_PACKAGE)
+    runner = ["/usr/bin/npx", "--no-install", GLTF_TRANSFORM_PACKAGE]
+    cmd = build_optimize_args(
+        tmp_path / "raw.glb", tmp_path / "web.glb", texture_size=2048, runner=runner
+    )
+    assert cmd[:4] == [*runner, "optimize"]
+    assert GLTF_TRANSFORM_PACKAGE == "@gltf-transform/cli@4.5.1"
     assert cmd[4:6] == [str(tmp_path / "raw.glb"), str(tmp_path / "web.glb")]
     flags = dict(zip(cmd[6::2], cmd[7::2], strict=True))
     assert flags == {
@@ -131,16 +135,43 @@ def test_build_optimize_args_pietra_flags(tmp_path: Path) -> None:
         "--simplify": "false",  # Blender's decimation owns the triangle budget
     }
     assert "draco" not in " ".join(cmd) and "meshopt" not in " ".join(cmd)
+    assert "--yes" not in cmd  # never downloads at delivery time
+    local = build_optimize_args(tmp_path / "a", tmp_path / "b", texture_size=512)
+    assert local[:2] == [str(deliver.LOCAL_GLTF_TRANSFORM), "optimize"]
+
+
+def test_tools_gltf_package_is_pinned() -> None:
+    package = json.loads((deliver.GLTF_TOOLS_DIR / "package.json").read_text(encoding="utf-8"))
+    assert package["dependencies"] == {"@gltf-transform/cli": "4.5.1"}
+    lock = json.loads((deliver.GLTF_TOOLS_DIR / "package-lock.json").read_text(encoding="utf-8"))
+    assert lock["packages"]["node_modules/@gltf-transform/cli"]["version"] == "4.5.1"
+    assert GLTF_TRANSFORM_PACKAGE.endswith("@" + package["dependencies"]["@gltf-transform/cli"])
+
+
+def test_gltf_transform_command_prefers_local_install(tmp_path: Path, monkeypatch) -> None:
+    local = tmp_path / "node_modules" / ".bin" / "gltf-transform"
+    monkeypatch.setattr(deliver, "LOCAL_GLTF_TRANSFORM", local)
+    monkeypatch.setattr(deliver.shutil, "which", lambda name: "/usr/bin/npx")
+    assert deliver.gltf_transform_command() == [
+        "/usr/bin/npx", "--no-install", GLTF_TRANSFORM_PACKAGE,
+    ]  # fmt: skip
+    local.parent.mkdir(parents=True)
+    local.write_text("#!/bin/sh\n")
+    assert deliver.gltf_transform_command() == [str(local)]
+    local.unlink()
+    monkeypatch.setattr(deliver.shutil, "which", lambda name: None)
+    assert deliver.gltf_transform_command() is None
 
 
 def test_optimize_glb_runs_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
+    monkeypatch.setattr(deliver, "LOCAL_GLTF_TRANSFORM", tmp_path / "missing")
     monkeypatch.setattr(deliver.shutil, "which", lambda name: "/opt/node/bin/npx")
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
         assert kwargs["timeout"] == 42 and kwargs["check"] is False
-        Path(cmd[5]).write_bytes(b"optimized")
+        Path(cmd[cmd.index("optimize") + 2]).write_bytes(b"optimized")
         return subprocess.CompletedProcess(cmd, 0, "done", "")
 
     monkeypatch.setattr(deliver.subprocess, "run", fake_run)
@@ -148,19 +179,18 @@ def test_optimize_glb_runs_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     src.write_bytes(b"raw")
     error, log = optimize_glb(src, dst, texture_size=512, timeout=42)
     assert error is None and dst.read_bytes() == b"optimized"
-    assert (
-        calls[0][0] == "/opt/node/bin/npx"
-        and calls[0][calls[0].index("--texture-size") + 1] == "512"
-    )
+    assert calls[0][:3] == ["/opt/node/bin/npx", "--no-install", GLTF_TRANSFORM_PACKAGE]
+    assert calls[0][calls[0].index("--texture-size") + 1] == "512"
     assert "[exit 0]" in log
 
 
 def test_optimize_glb_falls_back_to_plain_glb(tmp_path: Path, monkeypatch) -> None:
     src, dst = tmp_path / "raw.glb", tmp_path / "web.glb"
     src.write_bytes(b"raw")
+    monkeypatch.setattr(deliver, "LOCAL_GLTF_TRANSFORM", tmp_path / "missing")
     monkeypatch.setattr(deliver.shutil, "which", lambda name: None)
     error, _ = optimize_glb(src, dst, texture_size=2048)
-    assert "npx" in error and dst.read_bytes() == b"raw"
+    assert "npm ci" in error and dst.read_bytes() == b"raw"
 
     monkeypatch.setattr(deliver.shutil, "which", lambda name: "/usr/bin/npx")
     monkeypatch.setattr(
@@ -254,11 +284,13 @@ def fake_npx(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     """gltf-transform stand-in: copies the plain GLB to the output (same size) and records
     the command."""
     calls: list[list[str]] = []
+    monkeypatch.setattr(deliver, "LOCAL_GLTF_TRANSFORM", Path("/nonexistent/gltf-transform"))
     monkeypatch.setattr(deliver.shutil, "which", lambda name: "/usr/bin/npx")
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
-        shutil.copyfile(cmd[4], cmd[5])
+        at = cmd.index("optimize")
+        shutil.copyfile(cmd[at + 1], cmd[at + 2])
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(deliver.subprocess, "run", fake_run)
@@ -378,6 +410,115 @@ def test_deliver_without_usdz_omits_ios_src(
     result = deliver.deliver(cand_dir, piece)
     assert result.usdz_path is None and result.usdz_error == "RuntimeError: boom"
     assert "ios-src" not in result.viewer_path.read_text(encoding="utf-8")
+
+
+def test_deliver_preview_outputs_and_meta(
+    fake_npx: list[list[str]], cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(deliver, "run_blender_script", _fake_blender([1_000], calls))
+    result = deliver.deliver(cand_dir, piece)
+    ns = bpy_deliver.parse_args(calls[0])
+    assert ns.out_glb == str(cand_dir / deliver.TMP_DIRNAME / "model_raw.glb")
+    assert ns.preview_usdz == str(cand_dir / "preview" / "model_preview.usdz")
+    assert (ns.preview_max_tris, ns.preview_max_tex) == (15_000, 512)
+    # gltf-transform: web GLB at 2048 px, preview at 512 px
+    sizes = [c[c.index("--texture-size") + 1] for c in fake_npx]
+    assert sizes == ["2048", "512"]
+    assert result.preview_glb_path == cand_dir / "preview" / "model_preview.glb"
+    assert result.preview_usdz_path == cand_dir / "preview" / "model_preview.usdz"
+    assert (result.preview_glb_bytes, result.preview_usdz_bytes) == (300, 200)
+    assert result.preview_tris_after == 15_000 and result.warnings == []
+    meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
+    assert meta["compress"] == "quantize" and meta["texture_format"] == "webp"
+    assert meta["preview"]["compress"] == "quantize"
+    assert meta["preview"]["texture_format"] == "webp"
+    assert meta["files"] == {
+        "glb": "model_web.glb", "usdz": "model.usdz", "viewer": "viewer.html",
+        "preview_glb": "preview/model_preview.glb", "preview_usdz": "preview/model_preview.usdz",
+    }  # fmt: skip
+    assert meta["sizes"] == {"glb": 1_000, "usdz": 100, "preview_glb": 300, "preview_usdz": 200}
+    assert not {"draco", "draco_level", "jpeg_quality"} & set(meta)
+    assert meta["warnings"] == [] and meta["strict"] is False and meta["deadline_s"] == 900
+
+
+def test_deliver_without_preview(
+    fake_npx: list[list[str]], cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(deliver, "run_blender_script", _fake_blender([1_000], calls))
+    result = deliver.deliver(cand_dir, piece, preview=False)
+    assert "--preview-glb" not in calls[0] and len(fake_npx) == 1
+    assert result.preview_glb_path is None and result.preview_usdz_path is None
+    assert not (cand_dir / "preview").exists()
+
+
+def _failing_npx(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(deliver, "LOCAL_GLTF_TRANSFORM", Path("/nonexistent/gltf-transform"))
+    monkeypatch.setattr(deliver.shutil, "which", lambda name: "/usr/bin/npx")
+    monkeypatch.setattr(
+        deliver.subprocess, "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "sharp missing"),
+    )  # fmt: skip
+
+
+def test_deliver_optimize_failure_warns_and_ships_plain_glb(
+    cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _failing_npx(monkeypatch)
+    monkeypatch.setattr(deliver, "run_blender_script", _fake_blender([1_000], []))
+    result = deliver.deliver(cand_dir, piece)
+    assert result.optimize_error and result.glb_path.stat().st_size == 1_000
+    assert len(result.warnings) == 2  # web GLB and preview GLB
+    assert all("sin optimizar" in w for w in result.warnings)
+    meta = json.loads(result.meta_path.read_text(encoding="utf-8"))
+    assert meta["warnings"] == result.warnings
+    assert meta["compress"] is None and meta["preview"]["compress"] is None
+
+
+def test_deliver_strict_raises_on_optimize_failure(
+    cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _failing_npx(monkeypatch)
+    monkeypatch.setattr(deliver, "run_blender_script", _fake_blender([1_000], []))
+    with pytest.raises(deliver.OptimizeError, match="sharp missing"):
+        deliver.deliver(cand_dir, piece, strict=True)
+    assert not (cand_dir / deliver.TMP_DIRNAME).exists()
+
+
+def test_deliver_deadline_stops_before_retry(
+    fake_npx: list[list[str]], cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    slow = _fake_blender([9_000, 1_000], calls)
+
+    def slow_blender(script, args, timeout=600, blender_bin=None):
+        assert timeout <= 0.3  # the per-run timeout is capped by what is left
+        run = slow(script, args, timeout, blender_bin)
+        time.sleep(0.35)
+        return run
+
+    monkeypatch.setattr(deliver, "run_blender_script", slow_blender)
+    with pytest.raises(deliver.DeliverDeadlineExceeded, match="0.3 s"):
+        deliver.deliver(cand_dir, piece, size_limit_bytes=5_000, deadline_s=0.3)
+    assert len(calls) == 1  # the retry never started
+    assert not (cand_dir / deliver.TMP_DIRNAME).exists()
+
+
+def test_deliver_deadline_cuts_blender(
+    cand_dir: Path, piece: Piece, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def hanging(script, args, timeout=600, blender_bin=None):
+        raise subprocess.TimeoutExpired(["blender"], timeout)
+
+    monkeypatch.setattr(deliver, "run_blender_script", hanging)
+    with pytest.raises(deliver.DeliverDeadlineExceeded, match="Blender"):
+        deliver.deliver(cand_dir, piece, deadline_s=30)
+    # the per-run timeout (shorter than the deadline) keeps its own exception
+    with pytest.raises(subprocess.TimeoutExpired):
+        deliver.deliver(cand_dir, piece, timeout=5, deadline_s=900)
+    with pytest.raises(ValueError, match="deadline_s"):
+        deliver.deliver(cand_dir, piece, deadline_s=0)
 
 
 def test_deliver_blender_failure_raises_with_log(

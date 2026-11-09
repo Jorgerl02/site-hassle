@@ -1,0 +1,9 @@
+{
+  "name": "harness-gltf-tools",
+  "private": true,
+  "description": "Pinned glTF Transform CLI used by harness.post.deliver (KHR_mesh_quantization + WebP). Install with: npm ci --prefix tools/gltf",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@gltf-transform/cli": "4.5.1"
+  }
+}

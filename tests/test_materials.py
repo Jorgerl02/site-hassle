@@ -6,6 +6,7 @@ need the fetched maps (``uv run python scripts/fetch_materials.py``) and skip wi
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import io
 import json
@@ -69,6 +70,8 @@ def test_manifest_has_the_eight_cc0_materials() -> None:
         assert material.url == f"https://ambientcg.com/get?file={material.asset}_1K-JPG.zip"
         assert material.tile_cm > 0 and 0 <= material.roughness <= 1
         assert material.label_en and material.label_es
+        assert set(material.sha256) == {"Color", "NormalGL", "Roughness"}
+        assert all(len(h) == 64 and int(h, 16) >= 0 for h in material.sha256.values())
     # every detectable id exists in the manifest
     assert {mid for mid, _ in materials.MATERIAL_STEMS} == set(manifest)
 
@@ -442,6 +445,44 @@ def test_apply_material_polished_remaps_roughness(
     assert seen["rough_mean"] > 240  # oak's manifest roughness is 1 (clamped at white)
 
 
+def test_apply_material_warnings_and_missing_normal(
+    tmp_path: Path, maps_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict = {}
+    monkeypatch.setattr(materials, "run_blender_script", _fake_materials_blender(seen))
+    glb_in = tmp_path / "in.glb"
+    glb_in.write_bytes(b"glTF")
+    (maps_dir / "oak" / "NormalGL.jpg").unlink()
+    meta = apply_material(glb_in, tmp_path / "o.glb", material_id="oak", materials_dir=maps_dir)
+    assert meta["missing_maps"] == ["NormalGL"] and seen["ns"].normal is None
+    assert any("real_size_cm" in w for w in meta["warnings"])
+    assert any("NormalGL" in w for w in meta["warnings"])
+    meta = apply_material(
+        glb_in, tmp_path / "o.glb", material_id="travertine", real_size_cm=(60, 45, 60),
+        materials_dir=maps_dir,
+    )  # fmt: skip
+    assert meta["warnings"] == [] and meta["missing_maps"] == []  # travertine needs no normal
+
+
+@pytest.mark.parametrize(
+    "bad", [(256, 0, 0), (-1, 0, 0), (1.5, 2, 3), (1, 2), "abc", (True, 0, 0), None]
+)
+def test_validate_rgb_rejects(bad) -> None:
+    with pytest.raises(ValueError, match="target_rgb"):
+        materials.validate_rgb(bad)
+
+
+def test_validate_rgb_accepts_numpy_ints(tmp_path: Path, maps_dir: Path) -> None:
+    assert materials.validate_rgb(np.array([199, 182, 163])) == (199, 182, 163)
+    glb_in = tmp_path / "in.glb"
+    glb_in.write_bytes(b"glTF")
+    with pytest.raises(ValueError, match="target_rgb"):
+        apply_material(
+            glb_in, tmp_path / "o.glb", material_id="oak", target_rgb=(300, 0, 0),
+            materials_dir=maps_dir,
+        )  # fmt: skip
+
+
 def test_apply_material_errors(tmp_path: Path, maps_dir: Path, monkeypatch) -> None:
     glb_in = tmp_path / "in.glb"
     glb_in.write_bytes(b"glTF")
@@ -478,37 +519,133 @@ def _zip_for(asset: str, maps=("Color", "NormalGL", "Roughness")) -> bytes:
     return buf.getvalue()
 
 
+CDN = "https://acg-download.struffelproductions.com/file/ambientCG-Web/download/x.zip"
+
+
+def _unpinned(material_id: str) -> Material:
+    return dataclasses.replace(load_manifest()[material_id], sha256={})
+
+
+def _fake_download(fetch, archive_for, calls: list[str]):
+    def fake(url: str) -> tuple[bytes, str]:
+        fetch.check_url(url, fetch.REQUEST_HOSTS)
+        calls.append(url)
+        return archive_for(), CDN
+
+    return fake
+
+
 def test_fetch_extracts_verifies_and_is_idempotent(tmp_path: Path, monkeypatch) -> None:
     fetch = _load_fetch_script()
-    trav = load_manifest()["travertine"]
+    trav = _unpinned("travertine")
     calls: list[str] = []
-
-    def fake_download(url: str) -> bytes:
-        calls.append(url)
-        return _zip_for(trav.asset)
-
-    monkeypatch.setattr(fetch, "download", fake_download)
-    assert fetch.fetch(trav, tmp_path) == "descargado"
+    monkeypatch.setattr(
+        fetch, "download", _fake_download(fetch, lambda: _zip_for(trav.asset), calls)
+    )
+    status, hashes = fetch.fetch(trav, tmp_path)
+    assert status == "descargado" and set(hashes) == {"Color", "NormalGL", "Roughness"}
     folder = tmp_path / "travertine"
     assert sorted(p.name for p in folder.iterdir()) == [
         "Color.jpg", "NormalGL.jpg", "Roughness.jpg", "source.json",
     ]  # fmt: skip
     source = json.loads((folder / "source.json").read_text(encoding="utf-8"))
     assert source["license"] == "CC0" and len(source["maps"]["Color"]["sha256"]) == 64
+    assert source["final_url"] == CDN
     assert not (tmp_path / "evil.jpg").exists()
-    assert fetch.fetch(trav, tmp_path) == "ya estaba" and len(calls) == 1
+    assert [p.name for p in tmp_path.iterdir()] == ["travertine"]  # no staging left behind
+    assert fetch.fetch(trav, tmp_path)[0] == "ya estaba" and len(calls) == 1
     (folder / "NormalGL.jpg").write_bytes(b"broken")  # corrupt map → downloaded again
-    assert fetch.fetch(trav, tmp_path) == "descargado" and len(calls) == 2
-    assert fetch.fetch(trav, tmp_path, force=True) == "descargado" and len(calls) == 3
+    assert fetch.fetch(trav, tmp_path)[0] == "descargado" and len(calls) == 2
+    assert fetch.fetch(trav, tmp_path, force=True)[0] == "descargado" and len(calls) == 3
 
 
-def test_fetch_rejects_incomplete_zip(tmp_path: Path, monkeypatch) -> None:
+def test_fetch_failure_keeps_previous_folder(tmp_path: Path, monkeypatch) -> None:
     fetch = _load_fetch_script()
-    oak = load_manifest()["oak"]
-    monkeypatch.setattr(fetch, "download", lambda url: _zip_for(oak.asset, ("Color",)))
-    with pytest.raises(ValueError, match="NormalGL"):
-        fetch.fetch(oak, tmp_path)
-    assert fetch.main(["--dest", str(tmp_path), "--only", "oak"]) == 1
+    oak = _unpinned("oak")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        fetch, "download", _fake_download(fetch, lambda: _zip_for(oak.asset), calls)
+    )
+    fetch.fetch(oak, tmp_path)
+    before = (tmp_path / "oak" / "Color.jpg").read_bytes()
+    monkeypatch.setattr(
+        fetch, "download", _fake_download(fetch, lambda: _zip_for(oak.asset, ("Color",)), calls)
+    )
+    with pytest.raises(fetch.FetchError, match="NormalGL"):
+        fetch.fetch(oak, tmp_path, force=True)
+    assert (tmp_path / "oak" / "Color.jpg").read_bytes() == before  # untouched
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["oak"]  # staging removed
+    assert fetch.main(["--dest", str(tmp_path / "other"), "--only", "oak"]) == 1
+
+
+def test_fetch_pinned_hash_mismatch_and_update(tmp_path: Path, monkeypatch) -> None:
+    fetch = _load_fetch_script()
+    manifest = tmp_path / "materials.json"
+    shutil.copyfile(materials.MANIFEST_PATH, manifest)
+    pinned = load_manifest(manifest)["leather"]
+    assert len(pinned.sha256) == 3  # the real manifest pins every map
+    calls: list[str] = []
+    monkeypatch.setattr(
+        fetch, "download", _fake_download(fetch, lambda: _zip_for(pinned.asset), calls)
+    )
+    with pytest.raises(fetch.HashMismatch, match="update-hashes"):
+        fetch.fetch(pinned, tmp_path / "dest")
+    assert not (tmp_path / "dest" / "leather").exists()
+    args = ["--dest", str(tmp_path / "dest"), "--only", "leather", "--manifest", str(manifest)]
+    assert fetch.main(args) == 1
+    assert fetch.main([*args, "--update-hashes"]) == 0
+    updated = load_manifest(manifest)["leather"]
+    on_disk = tmp_path / "dest" / "leather" / "Color.jpg"
+    assert updated.sha256["Color"] == fetch.sha256_file(on_disk) != pinned.sha256["Color"]
+    assert load_manifest(manifest)["oak"].sha256 == load_manifest()["oak"].sha256
+    assert fetch.main(args) == 0  # now pinned: verifies and skips
+
+
+def test_fetch_caps_uncompressed_member_size(tmp_path: Path, monkeypatch) -> None:
+    fetch = _load_fetch_script()
+    linen = _unpinned("linen")
+    monkeypatch.setattr(fetch, "MAX_MAP_BYTES", 100)  # each synthetic JPEG is > 100 bytes
+    monkeypatch.setattr(fetch, "download", _fake_download(fetch, lambda: _zip_for(linen.asset), []))
+    with pytest.raises(fetch.FetchError, match="descomprimidos"):
+        fetch.fetch(linen, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("url", "ok"),
+    [
+        ("https://ambientcg.com/get?file=Wood049_1K-JPG.zip", True),
+        ("http://ambientcg.com/get?file=Wood049_1K-JPG.zip", False),
+        ("https://ambientcg.com.evil.example/get", False),
+        ("https://evil.example/ambientcg.com", False),
+        ("file:///etc/passwd", False),
+        (CDN, False),  # the CDN is only valid as a redirect target
+    ],
+)
+def test_fetch_check_url_request(url: str, ok: bool) -> None:
+    fetch = _load_fetch_script()
+    if ok:
+        fetch.check_url(url, fetch.REQUEST_HOSTS)
+    else:
+        with pytest.raises(fetch.FetchError, match="no permitida"):
+            fetch.check_url(url, fetch.REQUEST_HOSTS)
+
+
+def test_fetch_redirects_only_to_ambientcg_cdn() -> None:
+    import urllib.request
+
+    fetch = _load_fetch_script()
+    handler = fetch._CheckedRedirects()
+    req = urllib.request.Request("https://ambientcg.com/get?file=x.zip")
+    assert handler.redirect_request(req, None, 302, "Found", {}, CDN) is not None
+    for bad in ("http://acg-download.struffelproductions.com/x.zip", "https://evil.example/x"):
+        with pytest.raises(fetch.FetchError):
+            handler.redirect_request(req, None, 302, "Found", {}, bad)
+
+
+def test_fetch_download_rejects_bad_url_before_network() -> None:
+    fetch = _load_fetch_script()
+    with pytest.raises(fetch.FetchError):
+        fetch.download("http://ambientcg.com/get?file=x.zip")
 
 
 # --------------------------------------------------------------------------- real Blender

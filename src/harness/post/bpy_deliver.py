@@ -362,8 +362,7 @@ def main(argv: list[str]) -> int:
         "tris_within_limit": tris_after <= args.max_tris,
         "max_tris": args.max_tris,
         "max_tex": args.max_tex,
-        "jpeg_quality": args.jpeg_quality,
-        "draco": False,
+        "usdz_jpeg_quality": args.jpeg_quality,  # USDZ textures (the web GLB becomes WebP)
         "textures": textures,
         "preview": preview,
         "blender_version": bpy.app.version_string,

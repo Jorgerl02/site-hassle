@@ -23,7 +23,12 @@
       "metallic": 0.0,
       "normal_strength": 0.0,
       "vertical_grain": true,
-      "notes": "Honed travertine: matte and without the porous normal relief (Pietra by Bianca recipe)."
+      "notes": "Honed travertine: matte and without the porous normal relief (Pietra by Bianca recipe).",
+      "sha256": {
+        "Color": "6561c87d92aef321aef4095fbcc5518cec4d711e642be6beaa90d13829e6cd2b",
+        "NormalGL": "635256a78537253a2d2bc5fef5fcda6e4e03349b960c57f15cf721b7cf5ba098",
+        "Roughness": "f4094c2149e257f4b6e17e5c5da70101fcbffaf0ce4016ab5d6aac7e45112e37"
+      }
     },
     {
       "id": "white_marble",
@@ -41,7 +46,12 @@
       "metallic": 0.0,
       "normal_strength": 0.0,
       "vertical_grain": false,
-      "notes": "Polished white marble with grey veins: keeps its Roughness map."
+      "notes": "Polished white marble with grey veins: keeps its Roughness map.",
+      "sha256": {
+        "Color": "a34b55c889c6b3819d2c351b6409bfd0baf0a0a55b073441850627dfebcdcd1e",
+        "NormalGL": "2e9a56525ffbb7e80854b19985a5c921f91192698ea337f4834192479ba0063b",
+        "Roughness": "f7afd636d6cca0b470549959c514976186df58ac1013016b6c3919910a6d3a04"
+      }
     },
     {
       "id": "oak",
@@ -59,7 +69,12 @@
       "metallic": 0.0,
       "normal_strength": 0.4,
       "vertical_grain": true,
-      "notes": "Tagged oak on ambientCG; tone-matched to the photo."
+      "notes": "Tagged oak on ambientCG; tone-matched to the photo.",
+      "sha256": {
+        "Color": "451ee4dd719628289b4969f75dc583b5f77f8471d5d885ba5015fd90e7e5ce61",
+        "NormalGL": "e9aaec13f9c6199e7ec440433005a8c52a88332f26a3887fc057179089fb747a",
+        "Roughness": "7683f29e71c24b987e4a7dcc74d5a9ed5ab4cac2e145d507799ba9c9c2c4ef54"
+      }
     },
     {
       "id": "walnut",
@@ -77,7 +92,12 @@
       "metallic": 0.0,
       "normal_strength": 0.4,
       "vertical_grain": true,
-      "notes": "Dark espresso hardwood (no walnut asset on ambientCG); tone-matched to the photo."
+      "notes": "Dark espresso hardwood (no walnut asset on ambientCG); tone-matched to the photo.",
+      "sha256": {
+        "Color": "f3c6c5456457e8d05c1fee4d2f186f41d0aea2b8a06859b69ce2934e11aa8798",
+        "NormalGL": "9078dc50c43b55831ae322460fc96b62df68c7a148400bd7755ab2788fec1708",
+        "Roughness": "b5736b940d721b49922cb14eebd52fd34f134b7ef99331ecf28565ce40358098"
+      }
     },
     {
       "id": "white_plaster",
@@ -95,7 +115,12 @@
       "metallic": 0.0,
       "normal_strength": 0.2,
       "vertical_grain": false,
-      "notes": "Clean white plaster; a soft normal keeps flat lacquered panels from looking like plastic."
+      "notes": "Clean white plaster; a soft normal keeps flat lacquered panels from looking like plastic.",
+      "sha256": {
+        "Color": "d3fe43282859ab7293ad41f2fa3c29f02df077e5bc326cf90a65cc588a4ac5a4",
+        "NormalGL": "ea293c335a0b9243f0a825573b81304b8f99e60b2c067e493d0792adf96dfc72",
+        "Roughness": "6028dbe3cb2ea250eacf3fb87d2c4e5ae8c2a7ff10ecad7883c27d721f2f8e88"
+      }
     },
     {
       "id": "boucle",
@@ -113,7 +138,12 @@
       "metallic": 0.0,
       "normal_strength": 1.0,
       "vertical_grain": false,
-      "notes": "Beige soft wool loops; tiled much smaller than the carpet scan so the loops read as bouclé."
+      "notes": "Beige soft wool loops; tiled much smaller than the carpet scan so the loops read as bouclé.",
+      "sha256": {
+        "Color": "c6fca66d1d570d27a921d7cb35b1963e83844e2b8ceec70f0193db5e99e04123",
+        "NormalGL": "2820cad2593d1e1b58ce1fa38cb53e24be05bf935b40393c379be828a35755ea",
+        "Roughness": "307c7984100374da53261c51dee33665049e3fc5e0e90143da1f58b040298268"
+      }
     },
     {
       "id": "linen",
@@ -131,7 +161,12 @@
       "metallic": 0.0,
       "normal_strength": 0.6,
       "vertical_grain": false,
-      "notes": "Rough plain weave; its sage colour is replaced by the photo's tone."
+      "notes": "Rough plain weave; its sage colour is replaced by the photo's tone.",
+      "sha256": {
+        "Color": "e8d2fc74a7a7e8710986e35fc723771783745fc37a91ff1bd995465c0fe61690",
+        "NormalGL": "447c95581c84a7a1d2efb622faf331be72307f54c62995338e5cd60dcf7f3645",
+        "Roughness": "9c7724412af052e6260d5fe35e7f3a98b0732d7d594361e8ca3590c34e2e995a"
+      }
     },
     {
       "id": "leather",
@@ -149,7 +184,12 @@
       "metallic": 0.0,
       "normal_strength": 0.6,
       "vertical_grain": false,
-      "notes": "Brown grained leather with its Roughness map (soft sheen)."
+      "notes": "Brown grained leather with its Roughness map (soft sheen).",
+      "sha256": {
+        "Color": "7c57d49661aa7da4e34276ce997b152b886417af3945e216b9e7f52eb6862f71",
+        "NormalGL": "60436c54d7d69c1a3bbd0d5f7f0f70a55bdaec6570c8fbc1a84ee407ed4e08fa",
+        "Roughness": "ba67af328cdb7186cca82f7d9d260a14d8986230a43764533fae42869323b5ba"
+      }
     }
   ]
 }

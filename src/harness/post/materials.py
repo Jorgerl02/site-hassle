@@ -22,7 +22,7 @@ import json
 import re
 import shutil
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +77,7 @@ class Material:
     normal_strength: float
     vertical_grain: bool = False
     source_dimension_cm: float | None = None
+    sha256: dict[str, str] = field(default_factory=dict)  # pinned hash per map name
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Material:
@@ -94,6 +95,7 @@ class Material:
             normal_strength=float(data["normal_strength"]),
             vertical_grain=bool(data.get("vertical_grain", False)),
             source_dimension_cm=data.get("source_dimension_cm"),
+            sha256=dict(data.get("sha256") or {}),
         )
 
     def map_path(self, name: str, materials_dir: Path | None = None) -> Path:
@@ -311,7 +313,27 @@ def _prepare_maps(
         rough = tmp_dir / f"{material.id}_Roughness.jpg"
         Image.fromarray(values).save(rough, quality=JPEG_QUALITY)
     normal = paths["NormalGL"] if paths["NormalGL"].is_file() else None
+    missing_maps = []
+    if normal is None and material.normal_strength > 0:
+        missing_maps.append("NormalGL")
+    if not matte and not paths["Roughness"].is_file():
+        missing_maps.append("Roughness")
+    info["missing_maps"] = missing_maps
     return color, normal, rough, info
+
+
+def validate_rgb(value: Any) -> tuple[int, int, int]:
+    """Three integers in [0, 255]; raises ``ValueError`` otherwise."""
+    try:
+        r, g, b = value
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"target_rgb debe tener 3 componentes: {value!r}") from exc
+    rgb = []
+    for c in (r, g, b):
+        if isinstance(c, bool) or not isinstance(c, (int, np.integer)) or not 0 <= c <= 255:
+            raise ValueError(f"target_rgb debe ser 3 enteros entre 0 y 255: {value!r}")
+        rgb.append(int(c))
+    return rgb[0], rgb[1], rgb[2]
 
 
 def _log_text(run: BlenderRun) -> str:
@@ -348,6 +370,14 @@ def apply_material(
     if not glb_in.is_file():
         raise FileNotFoundError(f"No existe el GLB: {glb_in}")
     material = get_material(material_id)
+    if target_rgb is not None:
+        target_rgb = validate_rgb(target_rgb)
+    warnings: list[str] = []
+    if real_size_cm is None:
+        warnings.append(
+            "Sin medidas reales (real_size_cm): el tamaño del grano supone que el GLB está "
+            "en metros"
+        )
     effective_matte = bool(matte and material.matte)
     materials_dir = Path(materials_dir) if materials_dir is not None else DEFAULT_MATERIALS_DIR
     glb_out.parent.mkdir(parents=True, exist_ok=True)
@@ -386,5 +416,7 @@ def apply_material(
             **info,
         }
     )
+    warnings += [f"Falta el mapa {name} de {material.id}" for name in info["missing_maps"]]
+    meta["warnings"] = warnings
     meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return meta

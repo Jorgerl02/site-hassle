@@ -16,6 +16,12 @@ failed to load on device and Draco / KTX2 fetch decoders from a CDN. USDZ keeps 
 model-viewer generates one on tap and that ``await`` breaks Safari's user activation, so AR
 does not open on iPhone.
 
+The CLI is pinned in ``tools/gltf/package.json`` + ``package-lock.json`` and installed on
+the worker with ``npm ci --prefix tools/gltf`` (``scripts/setup_worker.sh``); delivery runs
+``tools/gltf/node_modules/.bin/gltf-transform``, else ``npx --no-install`` of the same
+pinned version (never downloads at delivery time), else ships the plain GLB with a warning
+(``strict=True`` raises instead). ``deadline_s`` bounds the whole delivery (both attempts).
+
 gltf-transform CLI 4.5.1 ``optimize --help`` read on 2026-11-09: ``--compress`` one of
 draco / meshopt / quantize / false (default meshopt), ``--texture-compress`` ktx2 / webp /
 avif / auto / false, ``--texture-size`` (max px, default 2048), ``--simplify`` (default
@@ -37,6 +43,7 @@ import shutil
 import string
 import struct
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -68,6 +75,10 @@ PREVIEW_RAW_GLB_FILENAME = "preview_raw.glb"
 PREVIEW_MAX_TRIS = DEFAULT_PREVIEW_MAX_TRIS
 PREVIEW_MAX_TEX = DEFAULT_PREVIEW_MAX_TEX
 GLTF_TRANSFORM_PACKAGE = "@gltf-transform/cli@4.5.1"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+GLTF_TOOLS_DIR = REPO_ROOT / "tools" / "gltf"
+LOCAL_GLTF_TRANSFORM = GLTF_TOOLS_DIR / "node_modules" / ".bin" / "gltf-transform"
+DEFAULT_DEADLINE_S = 900
 OPTIMIZE_TIMEOUT_S = 600
 DEFAULT_SIZE_LIMIT_BYTES = 5_000_000
 RETRY_MAX_TEX = 1024
@@ -79,7 +90,19 @@ MODEL_VIEWER_SRC = (
 )
 
 
-class BlenderDeliverError(RuntimeError):
+class DeliverError(RuntimeError):
+    """Base class of the delivery failures."""
+
+
+class OptimizeError(DeliverError):
+    """gltf-transform failed and ``strict=True`` was requested."""
+
+
+class DeliverDeadlineExceeded(DeliverError):
+    """The whole delivery took longer than ``deadline_s``."""
+
+
+class BlenderDeliverError(DeliverError):
     """Blender exited with an error or did not produce the expected outputs."""
 
     def __init__(self, message: str, log: str = "") -> None:
@@ -108,6 +131,7 @@ class DeliverResult:
     log: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
     optimize_error: str | None = None  # gltf-transform failed: the plain GLB was shipped
+    warnings: list[str] = field(default_factory=list)  # for the admin (fallbacks…)
     preview_glb_path: Path | None = None
     preview_usdz_path: Path | None = None
     preview_glb_bytes: int | None = None
@@ -161,11 +185,26 @@ def build_args(
     return args
 
 
-def build_optimize_args(src: Path, dst: Path, *, texture_size: int, npx: str = "npx") -> list[str]:
-    """``npx gltf-transform optimize`` with the Pietra-proven flags: KHR_mesh_quantization
-    (not meshopt, not Draco), WebP textures ≤ ``texture_size`` px and no simplification."""
+def gltf_transform_command() -> list[str] | None:
+    """How to launch the pinned CLI: the local install from ``tools/gltf`` (``npm ci``),
+    else ``npx --no-install`` of the pinned package (only if already in npm's cache; never
+    downloads), else ``None``."""
+    if LOCAL_GLTF_TRANSFORM.is_file():
+        return [str(LOCAL_GLTF_TRANSFORM)]
+    npx = shutil.which("npx")
+    if npx is not None:
+        return [npx, "--no-install", GLTF_TRANSFORM_PACKAGE]
+    return None
+
+
+def build_optimize_args(
+    src: Path, dst: Path, *, texture_size: int, runner: list[str] | None = None
+) -> list[str]:
+    """``gltf-transform optimize`` with the Pietra-proven flags: KHR_mesh_quantization
+    (not meshopt, not Draco), WebP textures ≤ ``texture_size`` px and no simplification.
+    ``runner`` is the launcher from :func:`gltf_transform_command`."""
     return [
-        npx, "--yes", GLTF_TRANSFORM_PACKAGE, "optimize", str(src), str(dst),
+        *(runner or [str(LOCAL_GLTF_TRANSFORM)]), "optimize", str(src), str(dst),
         "--compress", "quantize",
         "--texture-compress", "webp",
         "--texture-size", str(texture_size),
@@ -174,19 +213,22 @@ def build_optimize_args(src: Path, dst: Path, *, texture_size: int, npx: str = "
 
 
 def optimize_glb(
-    src: Path, dst: Path, *, texture_size: int, timeout: int = OPTIMIZE_TIMEOUT_S
+    src: Path, dst: Path, *, texture_size: int, timeout: float = OPTIMIZE_TIMEOUT_S
 ) -> tuple[str | None, str]:
-    """Run gltf-transform on ``src`` → ``dst``. On failure (no Node, CLI error, timeout)
+    """Run gltf-transform on ``src`` → ``dst``. On failure (no CLI, CLI error, timeout)
     copy ``src`` to ``dst`` so delivery still has a valid (heavier) GLB and return
     ``(error, log)``; ``(None, log)`` on success."""
-    npx = shutil.which("npx")
+    runner = gltf_transform_command()
     dst.unlink(missing_ok=True)
     error: str | None = None
     log = ""
-    if npx is None:
-        error = "npx no está instalado (Node.js): se entrega el GLB sin optimizar"
+    if runner is None:
+        error = (
+            "gltf-transform no está instalado (npm ci --prefix tools/gltf): "
+            "se entrega el GLB sin optimizar"
+        )
     else:
-        cmd = build_optimize_args(src, dst, texture_size=texture_size, npx=npx)
+        cmd = build_optimize_args(src, dst, texture_size=texture_size, runner=runner)
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
             log = f"$ {' '.join(cmd)}\n[exit {proc.returncode}]\n{proc.stdout}\n{proc.stderr}"
@@ -263,6 +305,50 @@ def _log_text(run: BlenderRun) -> str:
     return f"$ {' '.join(run.cmd)}\n[exit {run.returncode}]\n{run.stdout}\n{run.stderr}"
 
 
+def _remaining(deadline: float, deadline_s: float, step: str) -> float:
+    """Seconds left before ``deadline`` (monotonic); raises when nothing is left."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise DeliverDeadlineExceeded(
+            f"La entrega superó el plazo total de {deadline_s:g} s (antes de {step})"
+        )
+    return left
+
+
+def _optimize_step(
+    src: Path,
+    dst: Path,
+    *,
+    texture_size: int,
+    label: str,
+    deadline: float,
+    deadline_s: float,
+    strict: bool,
+    warnings: list[str],
+) -> tuple[dict[str, Any], str]:
+    budget = _remaining(deadline, deadline_s, f"optimizar {label}")
+    error, log = optimize_glb(
+        src, dst, texture_size=texture_size, timeout=min(OPTIMIZE_TIMEOUT_S, budget)
+    )
+    if error is not None:
+        if time.monotonic() >= deadline:
+            raise DeliverDeadlineExceeded(
+                f"La entrega superó el plazo total de {deadline_s:g} s optimizando {label}"
+            )
+        if strict:
+            raise OptimizeError(f"{label}: {error}\n{log[-LOG_TAIL_CHARS:]}")
+        warnings.append(f"{label} sin optimizar (GLB sin cuantizar y con JPEG): {error}")
+    info = {
+        "glb_out": str(dst),
+        "glb_bytes": dst.stat().st_size,
+        "optimize_error": error,
+        "compress": None if error else "quantize",
+        "texture_format": None if error else "webp",
+        "extensions_used": glb_extensions(dst),
+    }
+    return info, log
+
+
 def _run_once(
     glb_in: Path,
     out_dir: Path,
@@ -274,6 +360,9 @@ def _run_once(
     preview_max_tex: int,
     timeout: int,
     blender_bin: Path | None,
+    deadline: float,
+    deadline_s: float,
+    strict: bool,
 ) -> tuple[dict[str, Any], str]:
     tmp_dir = out_dir / TMP_DIRNAME
     raw_glb, out_glb = tmp_dir / RAW_GLB_FILENAME, out_dir / WEB_GLB_FILENAME
@@ -295,42 +384,44 @@ def _run_once(
         preview_usdz=preview_usdz if preview else None,
         preview_max_tris=preview_max_tris, preview_max_tex=preview_max_tex,
     )  # fmt: skip
-    run = run_blender_script(BPY_DELIVER_SCRIPT, args, timeout=timeout, blender_bin=blender_bin)
+    budget = _remaining(deadline, deadline_s, "Blender")
+    blender_timeout = min(timeout, budget)
+    try:
+        run = run_blender_script(
+            BPY_DELIVER_SCRIPT, args, timeout=blender_timeout, blender_bin=blender_bin
+        )
+    except subprocess.TimeoutExpired as exc:
+        if budget <= timeout:  # the global deadline, not the per-run timeout, cut it
+            raise DeliverDeadlineExceeded(
+                f"La entrega superó el plazo total de {deadline_s:g} s dentro de Blender"
+            ) from exc
+        raise
     log = _log_text(run)
     if not run.ok:
         raise BlenderDeliverError(f"bpy_deliver.py terminó con código {run.returncode}", log)
     if not raw_glb.is_file():
         raise BlenderDeliverError(f"Blender no escribió {raw_glb}", log)
     meta = parse_deliver_meta(meta_path, log)
+    warnings: list[str] = []
 
     meta["glb_raw_bytes"] = int(meta["glb_bytes"])
-    error, opt_log = optimize_glb(raw_glb, out_glb, texture_size=max_tex)
-    meta.update(
-        {
-            "glb_out": str(out_glb),
-            "glb_bytes": out_glb.stat().st_size,
-            "optimize_error": error,
-            "compress": None if error else "quantize",
-            "texture_format": None if error else "webp",
-            "extensions_used": glb_extensions(out_glb),
-        }
-    )
+    info, opt_log = _optimize_step(
+        raw_glb, out_glb, texture_size=max_tex, label="model_web.glb",
+        deadline=deadline, deadline_s=deadline_s, strict=strict, warnings=warnings,
+    )  # fmt: skip
+    meta.update(info)
     logs = [log, opt_log]
     preview_meta = meta.get("preview")
     if preview and isinstance(preview_meta, dict) and preview_raw.is_file():
-        p_error, p_log = optimize_glb(
-            preview_raw, preview_glb, texture_size=min(preview_max_tex, max_tex)
-        )
+        preview_meta["glb_raw_bytes"] = preview_meta.get("glb_bytes")
+        p_info, p_log = _optimize_step(
+            preview_raw, preview_glb, texture_size=min(preview_max_tex, max_tex),
+            label=f"{PREVIEW_DIRNAME}/{PREVIEW_GLB_FILENAME}",
+            deadline=deadline, deadline_s=deadline_s, strict=strict, warnings=warnings,
+        )  # fmt: skip
+        preview_meta.update(p_info)
         logs.append(p_log)
-        preview_meta.update(
-            {
-                "glb_raw_bytes": preview_meta.get("glb_bytes"),
-                "glb_out": str(preview_glb),
-                "glb_bytes": preview_glb.stat().st_size,
-                "optimize_error": p_error,
-                "extensions_used": glb_extensions(preview_glb),
-            }
-        )
+    meta["warnings"] = warnings
     return meta, "\n\n".join(part for part in logs if part)
 
 
@@ -348,6 +439,8 @@ def deliver(
     preview: bool = True,
     preview_max_tris: int = PREVIEW_MAX_TRIS,
     preview_max_tex: int = PREVIEW_MAX_TEX,
+    strict: bool = False,
+    deadline_s: float = DEFAULT_DEADLINE_S,
 ) -> DeliverResult:
     """Build ``model_web.glb``, ``model.usdz``, ``viewer.html``, ``deliver_meta.json`` and
     (``preview=True``) ``preview/model_preview.glb`` + ``preview/model_preview.usdz``
@@ -357,7 +450,10 @@ def deliver(
     A GLB above ``size_limit_bytes`` triggers one retry with ``max_tris // 2`` and textures
     ≤ 1024 px; if it is still too big the result is returned with ``within_limit = False``
     (no exception). If gltf-transform is unavailable or fails, the plain Blender GLB is
-    shipped and ``optimize_error`` says why. ``provenance`` (``run_id``, ``variant``,
+    shipped, ``optimize_error`` says why and ``warnings`` in the meta carries it for the
+    admin; with ``strict=True`` it raises ``OptimizeError`` instead. ``deadline_s`` bounds
+    the whole delivery (both attempts, Blender and gltf-transform included): when it runs
+    out ``DeliverDeadlineExceeded`` is raised. ``provenance`` (``run_id``, ``variant``,
     ``candidate``…) is recorded in ``deliver_meta.json`` next to ``piece_id``. Raises
     ``FileNotFoundError`` without the input GLB, ``BlenderNotAvailable`` without a binary
     and ``BlenderDeliverError`` on Blender failures.
@@ -369,17 +465,25 @@ def deliver(
     out_dir = Path(out_dir) if out_dir is not None else cand_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if deadline_s <= 0:
+        raise ValueError("deadline_s debe ser > 0")
+    deadline = time.monotonic() + deadline_s
     plans = [(max_tris, max_tex), (max(1, max_tris // 2), min(max_tex, RETRY_MAX_TEX))]
     attempts: list[dict[str, Any]] = []
     logs: list[str] = []
     meta: dict[str, Any] = {}
     for tris_limit, tex_limit in plans:
-        meta, log = _run_once(
-            glb_in, out_dir,
-            max_tris=tris_limit, max_tex=tex_limit, preview=preview,
-            preview_max_tris=preview_max_tris, preview_max_tex=preview_max_tex,
-            timeout=timeout, blender_bin=blender_bin,
-        )  # fmt: skip
+        try:
+            meta, log = _run_once(
+                glb_in, out_dir,
+                max_tris=tris_limit, max_tex=tex_limit, preview=preview,
+                preview_max_tris=preview_max_tris, preview_max_tex=preview_max_tex,
+                timeout=timeout, blender_bin=blender_bin,
+                deadline=deadline, deadline_s=deadline_s, strict=strict,
+            )  # fmt: skip
+        except BaseException:
+            shutil.rmtree(out_dir / TMP_DIRNAME, ignore_errors=True)
+            raise
         logs.append(log)
         glb_bytes = int(meta["glb_bytes"])
         attempts.append(
@@ -434,6 +538,7 @@ def deliver(
         log=log,
         raw=meta,
         optimize_error=meta.get("optimize_error"),
+        warnings=list(meta.get("warnings", [])),
         preview_glb_path=preview_glb if preview_glb_ok else None,
         preview_usdz_path=preview_usdz if preview_usdz_ok else None,
         preview_glb_bytes=preview_glb.stat().st_size if preview_glb_ok else None,
@@ -442,6 +547,8 @@ def deliver(
             int(preview_meta["tris_after"]) if preview_glb_ok and preview_meta else None
         ),
     )
+    for stale in ("draco", "draco_level", "jpeg_quality"):  # the web GLB is quantize + WebP
+        meta.pop(stale, None)
     meta.update({k: v for k, v in (provenance or {}).items() if v is not None})
     meta.update(
         {
@@ -451,6 +558,8 @@ def deliver(
             "attempts": attempts,
             "viewer": VIEWER_FILENAME,
             "model_viewer_version": MODEL_VIEWER_VERSION,
+            "deadline_s": deadline_s,
+            "strict": strict,
             "files": {
                 "glb": WEB_GLB_FILENAME,
                 "usdz": USDZ_FILENAME if usdz_ok else None,
