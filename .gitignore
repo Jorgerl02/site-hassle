@@ -24,3 +24,4 @@ platform/playwright-report/
 platform/public/examples/*.usdz
 platform/.vercel/
 data/materials/
+tools/gltf/node_modules/
