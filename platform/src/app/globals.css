@@ -1,0 +1,21 @@
+/* Chakra's globalCss covers the base styles; keep only what must exist before hydration. */
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Plain CSS: no need to go through Emotion for a single rule. */
+::selection {
+  background-color: #f5e2d6;
+}

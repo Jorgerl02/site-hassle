@@ -19,3 +19,6 @@ platform/.env*
 !platform/.env.example
 platform/node_modules/
 platform/.next/
+platform/test-results/
+platform/playwright-report/
+platform/public/examples/*.usdz
