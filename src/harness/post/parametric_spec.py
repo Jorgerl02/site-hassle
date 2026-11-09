@@ -13,6 +13,7 @@ which cannot import this package, so the format is plain JSON (see :meth:`Spec.t
 from __future__ import annotations
 
 import json
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field, replace
@@ -97,10 +98,12 @@ BOX_PLINTH_WORDS: tuple[str, ...] = ("zocalo",)
 # pedestal: a round / oval top on ONE central column (travertine side tables, "veladores").
 # The top is the ellipse inscribed in width x depth (a circle when they are equal: "round"
 # and "oval" build the same inscribed ellipse so the bbox stays exact; the shape is a label
-# recorded in the params), the column a circular cylinder centred under it, optionally
-# narrower at the floor ("taper") and standing on a thin foot plate.
+# recorded in the params; a "round" top with width != depth adds a ``Spec.warnings``
+# entry), the column a circular cylinder centred under it, optionally narrower at the floor
+# ("taper") and standing on a thin foot plate.
 PEDESTAL_TOP_RATIO = 0.04  # default top thickness = 4 % of the height ...
-PEDESTAL_TOP_MIN = 1.5  # ... never thinner than this (cm)
+PEDESTAL_TOP_MIN = 1.5  # ... never thinner than this (cm); never thicker than h / 2
+PEDESTAL_ROUND_TOLERANCE = 0.02  # "round" with |w - d| / max(w, d) above this → warning
 PEDESTAL_BASE_RATIO = 0.45  # column diameter / min(width, depth)
 PEDESTAL_BASE_RANGE = (0.15, 0.95)
 PEDESTAL_TAPER = 0.9  # "taper": bottom diameter = 90 % of the top diameter of the column
@@ -119,8 +122,11 @@ PEDESTAL_PARAMS: tuple[str, ...] = (
 PEDESTAL_TOP_ROW = 0.2  # photo rows (from the top) of the top surface when not detected
 PEDESTAL_RIM_STRIP = (0.2, 0.8)  # photo columns the rim wraps (its front in a 3/4 view)
 PEDESTAL_COLUMN_STRIP = 0.8  # the column wraps this central fraction of its photo band
-# Checked BEFORE the panel keywords: a "mesa auxiliar de travertino con pie central" is a
-# pedestal, not a panel table. "oval…" in the same text sets top_shape="oval".
+# A pedestal cue only turns a TABLE into a pedestal (it needs a table word too, see
+# :func:`is_pedestal_table_text`): "mesa auxiliar de travertino con pie central" is a
+# pedestal (checked before the panel keywords), but "aparador con pie central" stays a
+# sideboard and "estantería con base central" a shelf. "velador" is both a cue and a table
+# word. "oval…" in the text sets top_shape="oval".
 PEDESTAL_KEYWORDS: tuple[str, ...] = (
     "pedestal",
     "velador",
@@ -132,6 +138,8 @@ PEDESTAL_KEYWORDS: tuple[str, ...] = (
     "pie cilindrico",
 )
 OVAL_WORDS: tuple[str, ...] = ("oval",)
+# Whole words (plurals too): "table" must not match "tablero".
+PEDESTAL_TABLE_RE = re.compile(r"\b(mesas?|mesitas?|velador(es)?|tables?)\b")
 
 # Spanish keywords (accent-free, lowercase). The earliest match in the text wins, so
 # "mesa con tablero de travertino" is a table and "tablero para mesa" is a slab.
@@ -223,9 +231,12 @@ class Spec:
     texture: str | None = None
     dims_cm: tuple[float, float, float] | None = None  # (width, depth, height)
     extra: dict[str, Any] = field(default_factory=dict)
+    # Non-fatal remarks for the reviewer (e.g. a "round" pedestal top with width != depth,
+    # built as the inscribed ellipse); the worker shows them in the admin.
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "version": SPEC_VERSION,
             "units": "cm",
             "kind": self.kind,
@@ -234,6 +245,9 @@ class Spec:
             "boxes": [b.to_dict() for b in self.boxes],
             "extra": self.extra,
         }
+        if self.warnings:
+            out["warnings"] = list(self.warnings)
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Spec:
@@ -244,6 +258,7 @@ class Spec:
             texture=data.get("texture"),
             dims_cm=tuple(float(v) for v in dims) if dims else None,  # type: ignore[arg-type]
             extra=dict(data.get("extra") or {}),
+            warnings=[str(w) for w in data.get("warnings") or []],
         )
 
 
@@ -271,6 +286,12 @@ def is_pedestal_text(text: str) -> bool:
     return any(_has_word(norm, w) for w in PEDESTAL_KEYWORDS)
 
 
+def is_pedestal_table_text(text: str) -> bool:
+    """A pedestal cue AND a table word ("mesa", "mesita", "velador", "table"): only
+    tables become pedestals; other kinds with a central base keep their kind."""
+    return is_pedestal_text(text) and PEDESTAL_TABLE_RE.search(_normalise(text)) is not None
+
+
 def pedestal_params_from_text(text: str) -> dict[str, Any]:
     """``{"top_shape": "oval"}`` when the text says "oval…", else ``{}``."""
     norm = _normalise(text)
@@ -278,10 +299,10 @@ def pedestal_params_from_text(text: str) -> dict[str, Any]:
 
 
 def classify_text(text: str) -> str | None:
-    """``pedestal`` if :func:`is_pedestal_text`, ``panel_table`` if :func:`is_panel_text`,
-    else the kind whose keyword appears earliest in ``text`` (whole-word prefix match), or
-    None."""
-    if is_pedestal_text(text):
+    """``pedestal`` if :func:`is_pedestal_table_text`, ``panel_table`` if
+    :func:`is_panel_text`, else the kind whose keyword appears earliest in ``text``
+    (whole-word prefix match), or None."""
+    if is_pedestal_table_text(text):
         return "pedestal"
     if is_panel_text(text):
         return "panel_table"
@@ -314,14 +335,16 @@ def base_params_from_text(text: str) -> dict[str, Any] | None:
 def classify_with_params(piece: Piece) -> tuple[Kind, dict[str, Any]]:
     """Heuristic ``(kind, params)``: description keywords first, then name, then
     proportions (slab / shelf); a remaining ``box`` becomes ``box_legs`` when the text has
-    a base word ("patas" / "zócalo")."""
+    a base word ("patas" / "zócalo"). A table (or panel table) whose description + name
+    carry a pedestal cue and a table word becomes ``pedestal`` (cue in the description,
+    "Mesa …" in the name is enough); any other kind ignores the cue."""
     texts = (piece.description or "", piece.name or "")
-    for text in texts:
-        kind = classify_text(text)
-        if kind == "pedestal":
-            return "pedestal", pedestal_params_from_text(" ".join(texts))
-        if kind is not None:
-            return kind, {}  # type: ignore[return-value]
+    combined = " ".join(texts)
+    kind = next((k for k in map(classify_text, texts) if k is not None), None)
+    if kind in (None, "table", "panel_table", "pedestal") and is_pedestal_table_text(combined):
+        return "pedestal", pedestal_params_from_text(combined)
+    if kind is not None:
+        return kind, {}  # type: ignore[return-value]
     w, h, d = piece.width_cm, piece.height_cm, piece.depth_cm
     if h <= SLAB_MAX_HEIGHT_RATIO * max(w, d):
         return "slab", {}
@@ -514,10 +537,27 @@ def _box_legs(w: float, d: float, h: float, params: dict[str, Any] | None) -> li
     return boxes
 
 
+def _pedestal_number(name: str, value: Any) -> float:
+    """``value`` as a finite float, or ``ValueError("pedestal: …")`` (also for bools)."""
+    if isinstance(value, bool):
+        raise ValueError(f"pedestal: {name} debe ser un número ({value!r})")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"pedestal: {name} debe ser un número ({value!r})") from None
+    if not math.isfinite(number):
+        raise ValueError(f"pedestal: {name} debe ser un número finito ({value!r})")
+    return number
+
+
 def pedestal_params(h: float, params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Resolved pedestal parameters (defaults filled in, ``h`` = piece height in cm);
-    rejects unknown keys and out-of-range values."""
+    rejects unknown keys, non-numeric / non-finite numbers and out-of-range values.
+
+    ``top_thickness_cm`` must lie in [``PEDESTAL_TOP_MIN``, h / 2]; its default
+    max(4 % of h, 1.5) applies only when it fits, so a piece lower than 3 cm raises."""
     params = dict(params or {})
+    h = _pedestal_number("altura", h)
     unknown = sorted(set(params) - set(PEDESTAL_PARAMS))
     if unknown:
         raise ValueError(f"pedestal: parámetros desconocidos {unknown}")
@@ -531,12 +571,24 @@ def pedestal_params(h: float, params: dict[str, Any] | None = None) -> dict[str,
     if not isinstance(foot, bool):
         raise ValueError(f"pedestal: foot_plate debe ser true/false ({foot!r})")
     if "top_thickness_cm" in params:
-        top_t = float(params["top_thickness_cm"])
+        top_t = _pedestal_number("top_thickness_cm", params["top_thickness_cm"])
         if top_t < PEDESTAL_TOP_MIN:
             raise ValueError(f"pedestal: top_thickness_cm debe ser ≥ {PEDESTAL_TOP_MIN} ({top_t})")
+        if top_t > h / 2:
+            raise ValueError(
+                f"pedestal: top_thickness_cm ({top_t}) no puede superar la mitad de la "
+                f"altura ({h / 2})"
+            )
     else:
         top_t = max(PEDESTAL_TOP_RATIO * h, PEDESTAL_TOP_MIN)
-    ratio = float(params.get("base_diameter_ratio", PEDESTAL_BASE_RATIO))
+        if top_t > h / 2:
+            raise ValueError(
+                f"pedestal: pieza demasiado baja ({h} cm) para un tablero de al menos "
+                f"{PEDESTAL_TOP_MIN} cm sobre un pie (mínimo {2 * PEDESTAL_TOP_MIN} cm)"
+            )
+    ratio = _pedestal_number(
+        "base_diameter_ratio", params.get("base_diameter_ratio", PEDESTAL_BASE_RATIO)
+    )
     lo, hi = PEDESTAL_BASE_RANGE
     if not lo <= ratio <= hi:
         raise ValueError(f"pedestal: base_diameter_ratio debe estar en [{lo}, {hi}] ({ratio})")
@@ -549,9 +601,22 @@ def pedestal_params(h: float, params: dict[str, Any] | None = None) -> dict[str,
     }
 
 
+def pedestal_warnings(w: float, d: float, params: dict[str, Any] | None = None) -> list[str]:
+    """Remarks for a pedestal: a "round" top (the default) with width and depth differing
+    by more than ``PEDESTAL_ROUND_TOLERANCE`` is still built as the inscribed ellipse (the
+    bbox must match the measurements), so the reviewer is told it will look oval."""
+    shape = (params or {}).get("top_shape", "round")
+    if shape == "round" and abs(w - d) > PEDESTAL_ROUND_TOLERANCE * max(w, d):
+        return [
+            f"pedestal: tablero 'round' con ancho {w:g} cm ≠ fondo {d:g} cm; se construye la "
+            "elipse inscrita (se verá ovalado). Revisa las medidas o usa top_shape='oval'."
+        ]
+    return []
+
+
 def _pedestal(w: float, d: float, h: float, params: dict[str, Any] | None) -> list[Box]:
     p = pedestal_params(h, params)
-    top_t = min(p["top_thickness_cm"], h / 2)
+    top_t = p["top_thickness_cm"]  # already within [PEDESTAL_TOP_MIN, h / 2]
     base_d = p["base_diameter_ratio"] * min(w, d)
     column_h = h - top_t
     foot_t = min(PEDESTAL_FOOT_THICKNESS, column_h / 4) if p["foot_plate"] else 0.0
@@ -719,7 +784,9 @@ def make_spec(
         boxes = with_photo_regions(boxes, photo_regions.get("top_row"))
         if photo_regions.get("side_band") is not None:
             extra["side_band"] = [float(v) for v in photo_regions["side_band"]]
+    warnings: list[str] = []
     if kind == "pedestal":
+        warnings = pedestal_warnings(float(piece.width_cm), float(piece.depth_cm), params)
         regions = photo_regions or {}
         boxes = with_pedestal_regions(
             boxes, float(piece.width_cm), regions.get("top_row"), regions.get("side_band")
@@ -740,6 +807,7 @@ def make_spec(
         texture=str(texture) if texture is not None else None,
         dims_cm=(piece.width_cm, piece.depth_cm, piece.height_cm),
         extra=extra,
+        warnings=warnings,
     )
 
 

@@ -150,11 +150,13 @@ def planar_uv(
 
 def wrap_u(theta: float, u0: float, u1: float, phase: float = WRAP_PHASE) -> float:
     """u of a cylinder vertex at angle ``theta`` (0 = +X, CCW seen from above, front = -Y
-    at 3π/2): the half centred on ``theta = phase + 3π/2`` runs ``u0`` → ``u1`` from left
-    to right by arc length (as in the photo), the other half runs back mirrored, so u is
-    continuous and 2π-periodic (no jump, no seam; the two mirror lines sit at ``phase``
-    and ``phase + π``). The default phase puts them on the silhouette of the
-    three-quarter view (camera at +X -Y), which therefore shows the strip unmirrored."""
+    at 3π/2): u is linear in the angle (proportional to arc length only on a circle,
+    i.e. the column; on an oval top's rim it is not). The half centred on
+    ``theta = phase + 3π/2`` runs ``u0`` → ``u1`` from left to right (as in the photo),
+    the other half runs back mirrored, so u is continuous and 2π-periodic (no jump, no
+    seam; the two mirror lines, where u turns, sit at ``phase`` and ``phase + π``). The
+    default phase puts them on the silhouette of the three-quarter view (camera at
+    +X -Y), which therefore shows the strip unmirrored."""
     t = (theta - phase) % (2 * math.pi)
     return u0 + (u1 - u0) * abs(t - math.pi) / math.pi
 

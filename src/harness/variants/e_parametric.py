@@ -297,6 +297,7 @@ class ParametricVariant:
                 "texture": str(texture),
                 "texture_source": texture_source,
                 "photo_regions": regions,
+                "warnings": list(spec.warnings),
                 "blender_seconds": run.seconds,
             },
         )

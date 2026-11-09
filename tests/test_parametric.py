@@ -962,11 +962,45 @@ def test_pedestal_oval_taper_foot(tmp_path: Path) -> None:
         {"base_diameter_ratio": 0.1},
         {"base_diameter_ratio": 0.96},
         {"top_thickness_cm": 1.0},
+        {"top_thickness_cm": float("nan")},
+        {"top_thickness_cm": float("inf")},
+        {"top_thickness_cm": "grueso"},
+        {"top_thickness_cm": None},
+        {"top_thickness_cm": True},
+        {"base_diameter_ratio": float("nan")},
+        {"base_diameter_ratio": "-inf"},
+        {"base_diameter_ratio": [0.5]},
     ],
 )
 def test_pedestal_rejects_bad_params(piece: Piece, params) -> None:
-    with pytest.raises(ValueError, match="pedestal"):
+    with pytest.raises(ValueError, match="^pedestal: "):
         build_spec(piece, "pedestal", params)
+
+
+def test_pedestal_top_thickness_bounds(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 60, 45, 60)
+    # explicit: up to half the height, never silently clamped
+    boxes = build_spec(piece, "pedestal", {"top_thickness_cm": 22.5})
+    assert boxes[0].size_cm[2] == pytest.approx(22.5)
+    with pytest.raises(ValueError, match="^pedestal: top_thickness_cm .* mitad"):
+        build_spec(piece, "pedestal", {"top_thickness_cm": 22.6})
+    # very low pieces: the 1.5 cm default fallback only when it fits (h >= 3)
+    assert build_spec(make_piece(tmp_path, 60, 3, 60), "pedestal")[0].size_cm[2] == 1.5
+    with pytest.raises(ValueError, match="^pedestal: pieza demasiado baja"):
+        build_spec(make_piece(tmp_path, 60, 2.9, 60), "pedestal")
+
+
+def test_pedestal_round_with_unequal_dims_warns(tmp_path: Path) -> None:
+    oval_dims = make_piece(tmp_path, 90, 75, 60)
+    spec = make_spec(oval_dims, "pedestal")  # top_shape defaults to "round"
+    assert len(spec.warnings) == 1 and "round" in spec.warnings[0]
+    assert "90" in spec.warnings[0] and "60" in spec.warnings[0]
+    assert next(b for b in spec.boxes if b.name == "top").size_cm[:2] == (90.0, 60.0)
+    assert read_spec(write_spec(tmp_path / "s.json", spec)).warnings == spec.warnings
+    assert make_spec(oval_dims, "pedestal", params={"top_shape": "oval"}).warnings == []
+    assert make_spec(make_piece(tmp_path, 60, 45, 60), "pedestal").warnings == []
+    assert make_spec(make_piece(tmp_path, 60, 45, 59.5), "pedestal").warnings == []  # ≤ 2 %
+    assert "warnings" not in make_spec(oval_dims, "table").to_dict()  # other kinds: no key
 
 
 @pytest.mark.parametrize("ratio", [0.15, 0.95])
@@ -990,11 +1024,30 @@ def test_pedestal_mesh_counts_and_seamless_wrap(tmp_path: Path) -> None:
             continue
         for i, uv in zip(face, face_uv, strict=True):
             assert seen.setdefault(i, uv) == pytest.approx(uv)
+        # continuity: u changes by at most one segment's step along every ring edge
+        # (bottom edge 0→1 and top edge 3→2), INCLUDING the two mirror lines
+        for a, b in ((0, 1), (3, 2)):
+            assert abs(face_uv[a][0] - face_uv[b][0]) <= 2 / SEGMENTS + 1e-9
     assert bpy_parametric.wrap_u(0.0, 0.2, 0.6) == pytest.approx(
         bpy_parametric.wrap_u(2 * math.pi, 0.2, 0.6)
     )
+    # the mirror lines (where u turns) sit at θ = π/4 and 5π/4 on every cylinder side
+    for box, start in zip(spec.boxes, (0, SEGMENTS + 2), strict=True):
+        side = list(
+            zip(faces[start : start + SEGMENTS], uvs[start : start + SEGMENTS], strict=True)
+        )
+        ring_u = [face_uv[0][0] for _, face_uv in side]  # u of the bottom vertex i
+        cx, cy = box.pos_cm[0] / 100, box.pos_cm[1] / 100
+        turns = []
+        for i in range(SEGMENTS):
+            prev_u, next_u = ring_u[i - 1], ring_u[(i + 1) % SEGMENTS]
+            if (ring_u[i] - prev_u) * (next_u - ring_u[i]) < 0:  # slope changes sign
+                x, y, _ = verts[side[i][0][0]]
+                turns.append(math.atan2(y - cy, x - cx) % (2 * math.pi))
+        assert sorted(turns) == pytest.approx([math.pi / 4, 5 * math.pi / 4])
     # the three-quarter view's visible half shows the strip left → right, unmirrored
     phase = bpy_parametric.WRAP_PHASE
+    assert phase == pytest.approx(math.pi / 4)
     assert bpy_parametric.wrap_u(phase + math.pi, 0.2, 0.6) == pytest.approx(0.2)
     assert bpy_parametric.wrap_u(phase + 1.5 * math.pi, 0.2, 0.6) == pytest.approx(0.4)
 
@@ -1047,11 +1100,24 @@ def test_pedestal_spec_json_round_trip(tmp_path: Path) -> None:
         ("Mesa de centro sobre base cilíndrica", ("pedestal", {})),
         ("Mesa auxiliar de travertino", ("panel_table", {})),  # unchanged without a cue
         ("Mesa de comedor redonda con patas", ("table", {})),
+        ("Round coffee table on a pedestal base", ("pedestal", {})),
+        # only tables become pedestals: other kinds keep their kind
+        ("Estantería con base central", ("shelf", {})),
+        ("Aparador con pie central", ("sideboard", {})),
+        ("Tablero de mármol con pie central", ("slab", {})),  # "table" ≠ "tablero"
+        ("Pedestal de mármol para escultura", ("box", {})),  # no table word
     ],
 )
 def test_classify_pedestal(tmp_path: Path, description: str, expected) -> None:
     assert classify_with_params(make_piece(tmp_path, 60, 45, 60, description)) == expected
     assert "pedestal" in KINDS
+
+
+def test_classify_pedestal_cue_in_description_table_in_name(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 60, 45, 60, "Travertino con pie central", name="Mesa Luna")
+    assert classify_with_params(piece) == ("pedestal", {})
+    shelf = make_piece(tmp_path, 60, 45, 60, "Estantería con pie central", name="Mesa Luna")
+    assert classify(shelf) == "shelf"  # the description's kind wins as before
 
 
 def test_pedestal_real_blender_travertine(tmp_path: Path) -> None:
