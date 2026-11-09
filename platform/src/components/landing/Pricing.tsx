@@ -65,7 +65,7 @@ export function Pricing() {
             <List.Item key={rule}>{rule}</List.Item>
           ))}
         </List.Root>
-        <Text mt="4" fontSize="sm" color="fg.subtle">
+        <Text mt="4" fontSize="sm" color="fg.muted">
           IVA incluido. Compras los créditos cuando quieras descargar; para empezar no hace falta tarjeta.
         </Text>
       </Container>

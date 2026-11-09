@@ -36,7 +36,7 @@ export const metadata: Metadata = {
     title: `${PRODUCT_NAME}: tu mueble en 3D a escala real desde una foto`,
     description,
     url: "/",
-    images: [{ url: "/examples/p15-modelo.jpg", width: 720, height: 720, alt: "Modelo 3D del sillón Matilda" }],
+    images: [{ url: "/examples/p15-modelo.jpg", width: 720, height: 720, alt: "Modelo 3D de un sillón tapizado" }],
   },
   twitter: { card: "summary_large_image" },
 };

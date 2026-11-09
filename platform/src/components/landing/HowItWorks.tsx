@@ -7,7 +7,7 @@ const STEPS = [
   },
   {
     title: "Lo revisamos y lo ves en 3D",
-    body: "Ajustamos el modelo a tus medidas (±3 % por eje) y una persona lo revisa antes de enseñártelo. Lo giras, compruebas las medidas y lo colocas en tu casa con el móvil. Gratis.",
+    body: "Ajustamos el modelo a tus medidas (±3\u00a0% por eje) y lo revisamos antes de enseñártelo. Lo giras, compruebas las medidas y lo colocas en tu casa con el móvil. Gratis.",
   },
   {
     title: "Descárgalo y súbelo a tu tienda",

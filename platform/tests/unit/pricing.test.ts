@@ -3,24 +3,24 @@ import { PACKS, formatEur } from "@/lib/pricing";
 
 describe("formatEur", () => {
   it("drops decimals for whole euros", () => {
-    expect(formatEur(6900)).toBe("69 €");
-    expect(formatEur(900)).toBe("9 €");
-    expect(formatEur(16900)).toBe("169 €");
+    expect(formatEur(6900)).toBe("69\u00a0€");
+    expect(formatEur(900)).toBe("9\u00a0€");
+    expect(formatEur(16900)).toBe("169\u00a0€");
   });
 
   it("uses a decimal comma with two digits", () => {
-    expect(formatEur(690)).toBe("6,90 €");
-    expect(formatEur(563)).toBe("5,63 €");
-    expect(formatEur(5)).toBe("0,05 €");
+    expect(formatEur(690)).toBe("6,90\u00a0€");
+    expect(formatEur(563)).toBe("5,63\u00a0€");
+    expect(formatEur(5)).toBe("0,05\u00a0€");
   });
 
   it("groups thousands with a dot", () => {
-    expect(formatEur(100000)).toBe("1.000 €");
-    expect(formatEur(123456789)).toBe("1.234.567,89 €");
+    expect(formatEur(100000)).toBe("1.000\u00a0€");
+    expect(formatEur(123456789)).toBe("1.234.567,89\u00a0€");
   });
 
   it("formats negative amounts", () => {
-    expect(formatEur(-690)).toBe("-6,90 €");
+    expect(formatEur(-690)).toBe("-6,90\u00a0€");
   });
 });
 
@@ -38,6 +38,6 @@ describe("PACKS", () => {
 
   it("derives the per-piece price from the pack price", () => {
     expect(PACKS.map((p) => p.perPieceCents)).toEqual([900, 690, 563]);
-    expect(formatEur(PACKS[2].perPieceCents)).toBe("5,63 €");
+    expect(formatEur(PACKS[2].perPieceCents)).toBe("5,63\u00a0€");
   });
 });

@@ -30,12 +30,12 @@ test.describe("landing", () => {
   test("pricing block shows the three packs", async ({ page }) => {
     await page.goto("/");
     const pricing = page.locator("#precios");
-    await expect(pricing.getByTestId("pack-pieza_1")).toContainText("9 €");
-    await expect(pricing.getByTestId("pack-pieza_10")).toContainText("69 €");
+    await expect(pricing.getByTestId("pack-pieza_1")).toContainText("9\u00a0€");
+    await expect(pricing.getByTestId("pack-pieza_10")).toContainText("69\u00a0€");
     await expect(pricing.getByTestId("pack-pieza_10")).toContainText("Más elegido");
-    await expect(pricing.getByTestId("pack-pieza_10")).toContainText("6,90 € por pieza");
-    await expect(pricing.getByTestId("pack-pieza_30")).toContainText("169 €");
-    await expect(pricing.getByTestId("pack-pieza_30")).toContainText("5,63 € por pieza");
+    await expect(pricing.getByTestId("pack-pieza_10")).toContainText("6,90\u00a0€ por pieza");
+    await expect(pricing.getByTestId("pack-pieza_30")).toContainText("169\u00a0€");
+    await expect(pricing.getByTestId("pack-pieza_30")).toContainText("5,63\u00a0€ por pieza");
   });
 
   test("model-viewer loads only when the examples scroll into view", async ({ page }) => {
@@ -44,6 +44,9 @@ test.describe("landing", () => {
     await page.locator("#ejemplos").scrollIntoViewIfNeeded();
     await expect(page.locator("model-viewer").first()).toBeAttached({ timeout: 15_000 });
     await expect(page.locator("model-viewer").first()).toHaveAttribute("ar-scale", "fixed");
+    await expect(page.locator("model-viewer").first()).toHaveAttribute("ar-modes", "webxr scene-viewer quick-look");
+    // The USDZ files are not deployed: Quick Look must derive them from the GLB.
+    await expect(page.locator("model-viewer[ios-src]")).toHaveCount(0);
   });
 
   test("stores utm and ref in the attribution cookie", async ({ page, context }) => {

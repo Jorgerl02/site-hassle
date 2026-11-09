@@ -2,7 +2,8 @@ import { Box, Button, Container, Flex, Grid, Heading, HStack, Stack, Text } from
 import Image from "next/image";
 import NextLink from "next/link";
 import { formatEur, PACKS } from "@/lib/pricing";
-import { formatDimensions, modelSrc, photoSrc } from "@/lib/examples";
+import { modelSrc, photoSrc } from "@/lib/examples";
+import { formatDimensions } from "@/lib/format";
 
 const cheapest = Math.min(...PACKS.map((p) => p.perPieceCents));
 
@@ -52,7 +53,7 @@ export function Hero() {
               <Figure src={modelSrc("p15")} alt="Modelo 3D del mismo sillón generado a escala" label="Modelo 3D" />
             </HStack>
             <Text mt="4" textAlign="center" fontSize="sm" color="fg.muted">
-              Sillón tapizado · {formatDimensions({ widthCm: 70, heightCm: 77, depthCm: 85 })}
+              Sillón tapizado · {formatDimensions(70, 77, 85)}
             </Text>
           </Box>
         </Grid>

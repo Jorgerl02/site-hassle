@@ -1,7 +1,9 @@
 import { Container, Heading, Stack, Text } from "@chakra-ui/react";
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { SiteHeader } from "@/components/landing/SiteHeader";
+import { getCurrentUser } from "@/lib/auth";
 import { SignInForm } from "./SignInForm";
 
 export const metadata: Metadata = {
@@ -11,7 +13,10 @@ export const metadata: Metadata = {
   alternates: { canonical: "/entrar" },
 };
 
-export default function SignInPage() {
+export default async function SignInPage() {
+  // Already signed in: nothing to do here.
+  if (await getCurrentUser()) redirect("/panel");
+
   return (
     <>
       <SiteHeader />

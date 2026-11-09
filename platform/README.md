@@ -34,7 +34,7 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clientes de Supabase (navegador, servidor y proxy) |
 | `SUPABASE_SERVICE_ROLE_KEY` | `createAdminClient()`, solo servidor; salta RLS |
-| `NEXT_PUBLIC_SITE_URL` | Origen público: enlaces mágicos, `metadataBase`, sitemap. En Vercel, la URL de producción |
+| `NEXT_PUBLIC_SITE_URL` | **Obligatoria en producción.** Origen público: enlaces mágicos, `metadataBase`, canonical y sitemap. Sin ella, los metadatos apuntan a `http://localhost:3000` |
 | `STRIPE_*`, `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | Pagos (Tarea 5) |
 | `RESEND_API_KEY`, `NEXT_PUBLIC_META_PIXEL_ID`, `NEXT_PUBLIC_GA_ID` | Opcionales |
 
@@ -44,11 +44,12 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 - `src/proxy.ts` — en Next.js 16 `middleware.ts` se llama `proxy.ts`. Refresca la sesión de Supabase en cada petición y guarda `utm_*` y `ref` en la cookie `sh_attr` (90 días, último clic).
 - `src/lib/supabase/` — `createClient()` (navegador), `createServerClient()` (cookies; RSC, server actions y route handlers), `createAdminClient()` (service role, `server-only`).
 - `src/lib/auth.ts` — `requireUser()` redirige a `/entrar` sin sesión y devuelve `{ user, profile }`.
-- `src/lib/pricing.ts` — paquetes de créditos (`PACKS`) y `formatEur()`.
+- `src/lib/pricing.ts` — paquetes de créditos (`PACKS`) y `formatEur()` (espacio de no separación antes de «€»).
+- `src/lib/format.ts` — `formatDimensions(ancho, alto, fondo)` → «50 × 48,5 × 50 cm» y `formatCm()`.
 - `src/lib/attribution.ts` — lectura de UTM y de la cookie de atribución; al registrarse se envía como `data.attribution` y el trigger `handle_new_user` la copia a `profiles.attribution`.
 - `src/lib/database.types.ts` — stub escrito a mano; la Tarea 4 lo sustituye por los tipos generados.
 - `src/theme.ts` — tema de Chakra (paleta arena y arcilla; Fraunces para titulares, Inter para texto).
-- `public/examples/` — fotos y modelos del piloto que enseña la landing.
+- `public/examples/` — fotos y GLB del piloto que enseña la landing. Los USDZ no se versionan: Quick Look en iOS genera el USDZ a partir del GLB.
 
 ## Decisiones y trampas
 

@@ -11,7 +11,7 @@ const QUESTIONS: { q: string; a: string }[] = [
   },
   {
     q: "¿El modelo mide lo que indico?",
-    a: "Sí: lo ajustamos a tus medidas con un margen de ±3 % por eje y lo comprobamos antes de enseñártelo. En el visor ves las medidas antes de descargar nada.",
+    a: "Sí: lo ajustamos a tus medidas con un margen de ±3\u00a0% por eje y lo comprobamos antes de enseñártelo. En el visor ves las medidas antes de descargar nada.",
   },
   {
     q: "¿Qué archivos recibo?",

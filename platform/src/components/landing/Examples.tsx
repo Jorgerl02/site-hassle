@@ -1,6 +1,6 @@
 import { Box, Container, Grid, Heading, HStack, Stack, Text } from "@chakra-ui/react";
 import Image from "next/image";
-import { EXAMPLES, formatDimensions, modelSrc, photoSrc, type Example } from "@/lib/examples";
+import { EXAMPLES, exampleDimensions, modelSrc, photoSrc, type Example } from "@/lib/examples";
 import { LazyModel } from "./LazyModel";
 
 export function Examples() {
@@ -42,7 +42,7 @@ function ExampleCard({ example }: { example: Example }) {
         </Box>
         <Box flex="1">
           {example.model ? (
-            <LazyModel glb={example.model.glb} usdz={example.model.usdz} poster={modelSrc(example.id)} alt={alt3d} />
+            <LazyModel glb={example.model.glb} poster={modelSrc(example.id)} alt={alt3d} />
           ) : (
             <Box position="relative" aspectRatio="1" rounded="lg" overflow="hidden" bg="white">
               <Image src={modelSrc(example.id)} alt={alt3d} fill sizes="(max-width: 768px) 45vw, 240px" style={{ objectFit: "contain" }} />
@@ -53,7 +53,7 @@ function ExampleCard({ example }: { example: Example }) {
       <Stack gap="0.5">
         <Text fontWeight="600">{example.name}</Text>
         <Text fontSize="sm" color="fg.muted">
-          {example.material} · {formatDimensions(example)}
+          {example.material} · {exampleDimensions(example)}
         </Text>
       </Stack>
     </Stack>

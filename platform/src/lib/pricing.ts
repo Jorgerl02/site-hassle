@@ -39,7 +39,8 @@ function groupThousands(digits: string): string {
 }
 
 /**
- * Spanish euro formatting: «69 €», «6,90 €», «1.000 €».
+ * Spanish euro formatting: «69 €», «6,90 €», «1.000 €», with a non-breaking
+ * space (U+00A0) before «€» so the amount never wraps away from the symbol.
  * Whole euros drop the decimals; thousands are always grouped (Intl's es-ES
  * leaves four-digit numbers ungrouped, which we don't want).
  */
@@ -49,5 +50,5 @@ export function formatEur(cents: number): string {
   const euros = groupThousands(String(Math.floor(abs / 100)));
   const rest = abs % 100;
   const amount = rest === 0 ? euros : `${euros},${String(rest).padStart(2, "0")}`;
-  return `${sign}${amount} €`;
+  return `${sign}${amount}\u00a0€`;
 }

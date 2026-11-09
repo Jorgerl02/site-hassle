@@ -6,7 +6,6 @@ import { useEffect, useRef, useState } from "react";
 
 interface LazyModelProps {
   glb: string;
-  usdz: string;
   poster: string;
   alt: string;
 }
@@ -14,9 +13,10 @@ interface LazyModelProps {
 /**
  * Shows the poster until the card nears the viewport, then loads
  * model-viewer (and three.js) on demand. `ar-scale="fixed"` keeps the real
- * size in AR, which is the whole point of the product.
+ * size in AR, which is the whole point of the product. No `ios-src`: Quick Look
+ * gets a USDZ that model-viewer generates from the GLB.
  */
-export function LazyModel({ glb, usdz, poster, alt }: LazyModelProps) {
+export function LazyModel({ glb, poster, alt }: LazyModelProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState(false);
 
@@ -40,7 +40,6 @@ export function LazyModel({ glb, usdz, poster, alt }: LazyModelProps) {
       {active ? (
         <model-viewer
           src={glb}
-          ios-src={usdz}
           poster={poster}
           alt={alt}
           camera-controls
