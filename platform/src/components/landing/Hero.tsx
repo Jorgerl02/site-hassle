@@ -14,7 +14,7 @@ export function Hero() {
         <Grid templateColumns={{ base: "1fr", lg: "1.1fr 1fr" }} gap={{ base: 10, lg: 16 }} alignItems="center">
           <Stack gap="6">
             <Text color="clay.fg" fontSize="sm" fontWeight="600" letterSpacing="wide">
-              Para tiendas de muebles y decoración
+              For furniture and home decor stores
             </Text>
             <Heading
               as="h1"
@@ -24,36 +24,36 @@ export function Hero() {
               letterSpacing="-0.02em"
               textWrap="balance"
             >
-              Sube la foto y las medidas. Descarga el mueble en 3D a escala real.
+              Upload a photo and the dimensions. Download the piece in 3D, true to scale.
             </Heading>
             <Text fontSize={{ base: "lg", md: "xl" }} color="fg.muted" maxW="34em" textWrap="pretty">
-              Un modelo listo para tu web y para verlo en casa con realidad aumentada desde el móvil. Lo ves entero
-              antes de pagar: solo pagas la pieza que descargas.
+              A model ready for your website and for augmented reality on any phone. You see all of it before you
+              pay: you only pay for the pieces you download.
             </Text>
             <Flex gap="3" wrap="wrap">
               <Button asChild size="xl" colorPalette="clay" rounded="full" px="7">
-                <NextLink href="/entrar">Prueba con una pieza gratis</NextLink>
+                <NextLink href="/entrar">Try a piece for free</NextLink>
               </Button>
               <Button asChild size="xl" variant="ghost" colorPalette="ink" rounded="full">
-                <a href="#ejemplos">Ver ejemplos</a>
+                <a href="#examples">See examples</a>
               </Button>
             </Flex>
             <Text fontSize="sm" color="fg.subtle" maxW="34em">
-              Ver el resultado es gratis. Descargar la pieza en GLB y USDZ cuesta 1 crédito (desde{" "}
+              Viewing the result is free. Downloading the piece as GLB and USDZ costs 1 credit (from{" "}
               {formatEur(cheapest)}).
             </Text>
           </Stack>
 
           <Box bg="bg.panel" rounded="2xl" borderWidth="1px" borderColor="border" p={{ base: 4, md: 6 }} shadow="sm">
             <HStack gap={{ base: 2, md: 4 }} align="stretch">
-              <Figure src={photoSrc("p15")} alt="Foto de catálogo de un sillón tapizado en bouclé" label="Foto" preload />
+              <Figure src={photoSrc("p15")} alt="Catalogue photo of a bouclé upholstered armchair" label="Photo" preload />
               <Flex align="center" color="fg.subtle" fontSize="2xl" aria-hidden>
                 →
               </Flex>
-              <Figure src={modelSrc("p15")} alt="Modelo 3D del mismo sillón generado a escala" label="Modelo 3D" />
+              <Figure src={modelSrc("p15")} alt="3D model of the same armchair, generated to scale" label="3D model" />
             </HStack>
             <Text mt="4" textAlign="center" fontSize="sm" color="fg.muted">
-              Sillón tapizado · {formatDimensions(70, 77, 85)}
+              Upholstered armchair · {formatDimensions(70, 77, 85)}
             </Text>
           </Box>
         </Grid>

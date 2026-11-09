@@ -96,16 +96,16 @@ export function PhotoDropzone({ photos, onChange, invalid, disabled }: PhotoDrop
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
       >
-        <Text fontWeight="600">{full ? "Ya tienes 4 fotos" : "Arrastra aquí tus fotos o pulsa para elegirlas"}</Text>
+        <Text fontWeight="600">{full ? "You have 4 photos" : "Drop your photos here or tap to choose them"}</Text>
         <Text fontSize="sm" color="fg.muted">
-          De 1 a 4 fotos · JPG, PNG o WebP · hasta 20 MB cada una
+          1 to 4 photos · JPG, PNG or WebP · up to 20 MB each
         </Text>
         <chakra.input
           ref={inputRef}
           type="file"
           multiple
           accept={PHOTO_TYPES.join(",")}
-          aria-label="Añadir fotos"
+          aria-label="Add photos"
           disabled={disabled || full}
           srOnly
           onChange={(e) => {
@@ -116,13 +116,13 @@ export function PhotoDropzone({ photos, onChange, invalid, disabled }: PhotoDrop
       </Flex>
 
       {photos.length > 0 ? (
-        <SimpleGrid as="ul" listStyleType="none" columns={{ base: 2, sm: 4 }} gap="3" aria-label="Fotos elegidas">
+        <SimpleGrid as="ul" listStyleType="none" columns={{ base: 2, sm: 4 }} gap="3" aria-label="Chosen photos">
           {photos.map((photo, i) => (
             <Box as="li" key={photo.key} position="relative" rounded="lg" overflow="hidden" borderWidth="1px" bg="white">
               {/* eslint-disable-next-line @next/next/no-img-element -- local object URL preview */}
               <img
                 src={photo.url}
-                alt={`Foto ${i + 1}: ${photo.file.name}`}
+                alt={`Photo ${i + 1}: ${photo.file.name}`}
                 style={{ width: "100%", aspectRatio: "1", objectFit: "contain", display: "block" }}
               />
               <CloseButton
@@ -132,13 +132,13 @@ export function PhotoDropzone({ photos, onChange, invalid, disabled }: PhotoDrop
                 right="1"
                 bg="white"
                 rounded="full"
-                aria-label={`Quitar ${photo.file.name}`}
+                aria-label={`Remove ${photo.file.name}`}
                 disabled={disabled}
                 onClick={() => remove(photo.key)}
               />
               {i === 0 ? (
                 <Text position="absolute" bottom="1" left="1" fontSize="xs" bg="white" px="1.5" rounded="sm">
-                  Principal
+                  Main
                 </Text>
               ) : null}
             </Box>

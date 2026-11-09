@@ -26,14 +26,14 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
   const userId = current.user.id;
 
   const id = formData.get("id");
-  if (!isUuid(id)) return { ok: false, message: "No hemos podido crear la pieza. Recarga la página y vuelve a intentarlo." };
+  if (!isUuid(id)) return { ok: false, message: "We couldn't create the piece. Reload the page and try again." };
 
   const supabase = await createServerClient();
   const folder = `${userId}/${id}`;
   const { data: objects, error: listError } = await supabase.storage
     .from("photos")
     .list(folder, { limit: 20, sortBy: { column: "name", order: "asc" } });
-  if (listError) return { ok: false, message: "No hemos podido comprobar las fotos. Vuelve a intentarlo." };
+  if (listError) return { ok: false, message: "We couldn't check your photos. Please try again." };
 
   const photos = (objects ?? [])
     .map((o) => ({ object: o, match: PHOTO_NAME_RE.exec(o.name) }))
@@ -57,7 +57,7 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
     photos,
   });
   if (!result.ok) {
-    return { ok: false, message: "Revisa los campos marcados.", errors: result.errors };
+    return { ok: false, message: "Please check the highlighted fields.", errors: result.errors };
   }
   const piece = result.value;
 
@@ -78,7 +78,7 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
   if (pieceError) {
     if (sqlErrorCode(pieceError) === "daily_limit") return { ok: false, message: DAILY_LIMIT_MESSAGE };
     console.error("createPiece: insert piece failed", pieceError.message);
-    return { ok: false, message: "No hemos podido crear la pieza. Vuelve a intentarlo en unos minutos." };
+    return { ok: false, message: "We couldn't create the piece. Please try again in a few minutes." };
   }
 
   const { error: photosError } = await supabase.from("piece_photos").insert(
@@ -91,7 +91,7 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
     console.error("createPiece: insert piece_photos failed", photosError.message);
     const { error: undoError } = await createAdminClient().from("pieces").delete().eq("id", id).eq("user_id", userId);
     if (undoError) console.error("createPiece: undo piece failed", undoError.message);
-    return { ok: false, message: "No hemos podido guardar las fotos. Vuelve a intentarlo." };
+    return { ok: false, message: "We couldn't save your photos. Please try again." };
   }
 
   revalidatePath("/panel");

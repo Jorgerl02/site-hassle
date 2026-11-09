@@ -25,7 +25,7 @@ export function CookieConsent() {
   return (
     <Box
       role="region"
-      aria-label="Aviso de cookies"
+      aria-label="Cookie notice"
       data-testid="cookie-consent"
       position="fixed"
       insetX="0"
@@ -40,17 +40,17 @@ export function CookieConsent() {
       <Container maxW="6xl" px={{ base: 4, md: 8 }}>
         <Flex direction={{ base: "column", md: "row" }} gap={{ base: 3, md: 6 }} align={{ md: "center" }} justify="space-between">
           <Text fontSize="sm" textWrap="pretty">
-            Usamos cookies de medición para saber si los anuncios funcionan. Puedes aceptarlas o rechazarlas.{" "}
+            We use measurement cookies to see whether our ads work. You can accept or reject them.{" "}
             <Link asChild color="clay.fg" fontWeight="600">
-              <NextLink href="/privacidad">Privacidad y cookies</NextLink>
+              <NextLink href="/privacy">Privacy and cookies</NextLink>
             </Link>
           </Text>
           <Flex gap="3" flexShrink={0}>
             <Button size="sm" variant="outline" colorPalette="ink" rounded="full" onClick={() => writeConsent("denied")}>
-              Rechazar
+              Reject
             </Button>
             <Button size="sm" colorPalette="clay" rounded="full" onClick={() => writeConsent("granted")}>
-              Aceptar
+              Accept
             </Button>
           </Flex>
         </Flex>
@@ -59,13 +59,13 @@ export function CookieConsent() {
   );
 }
 
-/** «Cambiar mi elección» on /privacidad: forgets the choice so the banner asks again. */
+/** "Change my cookie choice" on /privacy: forgets the choice so the banner asks again. */
 export function ResetConsentButton() {
   // Build-time constant: same answer on the server and in the browser.
   if (!analyticsEnabled()) return null;
   return (
     <Button size="sm" variant="outline" colorPalette="ink" rounded="full" onClick={() => clearConsent()}>
-      Cambiar mi elección de cookies
+      Change my cookie choice
     </Button>
   );
 }

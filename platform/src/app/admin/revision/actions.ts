@@ -4,7 +4,9 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { after } from "next/server";
 import { notifyPieceReady } from "@/lib/notify";
-import { MAX_ATTEMPT, NOT_DELIVERABLE_MESSAGE, adminDb, isDeliverable, isUuid, requireAdmin } from "@/lib/admin";
+import { MAX_ATTEMPT, NOT_DELIVERABLE_MESSAGE, adminDb, isDeliverable, isUuid, parseShapeFields, requireAdmin } from "@/lib/admin";
+
+type ShapeFields = ReturnType<typeof parseShapeFields>;
 const MAX_TEXT = 2000;
 
 export interface ReviewActionResult {
@@ -16,6 +18,15 @@ class ReviewError extends Error {}
 
 function cleanText(value: unknown): string {
   return typeof value === "string" ? value.trim().slice(0, MAX_TEXT) : "";
+}
+
+/** The admin's shape selects (tipo, ¿recta?, apoyo) as piece columns; `{}` when absent. */
+function shapeFrom(formData: FormData): ShapeFields {
+  try {
+    return parseShapeFields(formData);
+  } catch (error) {
+    throw new ReviewError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 /** Reads the piece and makes sure it is still waiting for review. */
@@ -105,8 +116,12 @@ export async function showToClient(pieceId: string, modelId?: string): Promise<v
   after(() => notifyPieceReady(piece.id));
 }
 
-/** «Regenerar»: back to the queue with the next attempt and an internal note. */
-export async function regenerate(pieceId: string, note: string): Promise<void> {
+/**
+ * «Regenerar»: back to the queue with the next attempt and an internal note.
+ * The shape answers the admin corrected are saved in the same update, so the
+ * worker builds the next attempt with them.
+ */
+export async function regenerate(pieceId: string, note: string, shape: ShapeFields = {}): Promise<void> {
   await requireAdmin();
   const piece = await loadReviewPiece(pieceId);
   if (piece.attempt >= MAX_ATTEMPT) {
@@ -118,6 +133,7 @@ export async function regenerate(pieceId: string, note: string): Promise<void> {
     review_note: cleanText(note) || null,
     claimed_at: null,
     error: null,
+    ...shape,
   });
 }
 
@@ -145,10 +161,10 @@ async function updateFailedPiece(pieceId: string, fields: Record<string, unknown
   if (!data || data.length === 0) throw new ReviewError("Esta pieza ya no está fallida.");
 }
 
-/** «Reintentar» a failed piece: back to the queue on the same attempt (no version is used). */
-export async function retryFailed(pieceId: string): Promise<void> {
+/** «Reintentar» a failed piece: back to the queue on the same attempt (no version is used), with the corrected shape. */
+export async function retryFailed(pieceId: string, shape: ShapeFields = {}): Promise<void> {
   await requireAdmin();
-  await updateFailedPiece(pieceId, { status: "queued", claimed_at: null, error: null, not_before: null });
+  await updateFailedPiece(pieceId, { status: "queued", claimed_at: null, error: null, not_before: null, ...shape });
 }
 
 /** «Rechazar» a failed piece: closed at no cost with a reason the customer will read. */
@@ -165,7 +181,7 @@ export async function submitFailed(_prev: ReviewActionResult, formData: FormData
   const intent = formData.get("intent");
   const pieceId = cleanText(formData.get("pieceId"));
   try {
-    if (intent === "retry") await retryFailed(pieceId);
+    if (intent === "retry") await retryFailed(pieceId, shapeFrom(formData));
     else if (intent === "reject") await rejectFailed(pieceId, cleanText(formData.get("note")));
     else return { ok: false, message: "Acción desconocida." };
   } catch (error) {
@@ -186,7 +202,7 @@ export async function submitReview(_prev: ReviewActionResult, formData: FormData
   const text = cleanText(formData.get("note"));
   try {
     if (intent === "show") await showToClient(pieceId, modelId || undefined);
-    else if (intent === "regenerate") await regenerate(pieceId, text);
+    else if (intent === "regenerate") await regenerate(pieceId, text, shapeFrom(formData));
     else if (intent === "reject") await rejectInternally(pieceId, text);
     else return { ok: false, message: "Acción desconocida." };
   } catch (error) {

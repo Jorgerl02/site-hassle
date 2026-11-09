@@ -145,7 +145,7 @@ export default async function ReviewQueuePage() {
                     >
                       {item.error ?? "Sin detalle del error."}
                     </Box>
-                    <FailedActions pieceId={item.id} />
+                    <FailedActions pieceId={item.id} shape={item.shape} />
                   </Stack>
                 </Box>
               ))}

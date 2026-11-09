@@ -24,7 +24,7 @@ async function origin(): Promise<string> {
 export async function sendMagicLink(_prev: SignInState, formData: FormData): Promise<SignInState> {
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   if (!EMAIL_RE.test(email)) {
-    return { status: "error", message: "Escribe un correo válido.", email };
+    return { status: "error", message: "Enter a valid email address.", email };
   }
 
   const attribution = readAttributionCookie((await cookies()).get(ATTRIBUTION_COOKIE)?.value);
@@ -42,8 +42,8 @@ export async function sendMagicLink(_prev: SignInState, formData: FormData): Pro
   if (error) {
     const message =
       error.status === 429
-        ? "Has pedido varios enlaces seguidos. Espera un minuto y vuelve a intentarlo."
-        : "No hemos podido enviar el enlace. Inténtalo de nuevo en unos minutos.";
+        ? "You've requested several links in a row. Wait a minute and try again."
+        : "We couldn't send the link. Please try again in a few minutes.";
     return { status: "error", message, email };
   }
   return { status: "sent", email };

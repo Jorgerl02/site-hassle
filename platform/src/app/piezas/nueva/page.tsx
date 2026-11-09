@@ -11,11 +11,11 @@ import { createServerClient } from "@/lib/supabase/server";
 import { rectilinearAnswer, supportAnswer } from "@/lib/validation";
 
 export const metadata: Metadata = {
-  title: "Nueva pieza",
+  title: "New piece",
   robots: { index: false },
 };
 
-/** «Corregir fotos»: `?desde=<id>` starts the form with that piece's data. */
+/** "Fix photos": `?desde=<id>` starts the form with that piece's data. */
 async function defaultsFrom(id: string | undefined): Promise<PieceFormDefaults | null> {
   if (!id) return null;
   const piece = await findPieceForUser(id);
@@ -49,15 +49,15 @@ export default async function NewPiecePage({ searchParams }: { searchParams: Pro
       <Container as="main" maxW="3xl" px={{ base: 4, md: 8 }} py={{ base: 8, md: 12 }}>
         <Stack gap="2" mb="8">
           <Link asChild fontSize="sm" color="fg.muted">
-            <NextLink href="/panel">← Tus piezas</NextLink>
+            <NextLink href="/panel">← Your pieces</NextLink>
           </Link>
           <Heading as="h1" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500">
-            {source ? "Corregir fotos" : "Nueva pieza"}
+            {source ? "Fix photos" : "New piece"}
           </Heading>
           <Text color="fg.muted">
             {source
-              ? "Hemos copiado los datos de tu pieza. Sube otras fotos y la generamos de nuevo."
-              : "Una foto de catálogo y las medidas reales. Te avisamos aquí cuando esté lista."}
+              ? "We've copied your piece's details. Upload new photos and we'll generate it again."
+              : "A catalogue photo and the real dimensions. We'll let you know here when it's ready."}
           </Text>
         </Stack>
 
@@ -68,7 +68,7 @@ export default async function NewPiecePage({ searchParams }: { searchParams: Pro
               <Alert.Title>{DAILY_LIMIT_MESSAGE}</Alert.Title>
               <Alert.Description>
                 <Button asChild variant="plain" colorPalette="clay" px="0">
-                  <NextLink href="/panel">Volver a tus piezas</NextLink>
+                  <NextLink href="/panel">Back to your pieces</NextLink>
                 </Button>
               </Alert.Description>
             </Alert.Content>

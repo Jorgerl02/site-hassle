@@ -17,7 +17,7 @@ import {
 /**
  * The whole MVP once, with the real worker: sign-up → rectilinear piece from
  * the form with `p12.png` → `platform-worker run --once --provider fake`
- * (route E, real Blender) → the admin shows it → free viewer → «Descargar»
+ * (route E, real Blender) → the admin shows it → free viewer → «Download»
  * blocked without credits → a credit (Stripe webhook when configured, else
  * `grant_credits` by service role) → download, GLB and USDZ answer 200.
  */
@@ -107,20 +107,22 @@ async function signedInAdmin(browser: Browser): Promise<Page> {
 test("the customer creates a straight piece from the form", async ({ page }) => {
   await signInAs(page, db, customer!.email);
   await page.goto("/piezas/nueva");
-  await page.getByLabel("Nombre de la pieza").fill("test_ Cabecero recorrido completo");
-  await page.getByLabel("Tipo").selectOption("cabecero");
-  await page.getByLabel("Ancho").fill("165");
-  await page.getByLabel("Alto").fill("60");
-  await page.getByLabel("Fondo").fill("6");
-  await page.getByText("Sí", { exact: true }).click();
-  await page.getByLabel("Añadir fotos").setInputFiles(P12_PNG);
+  await page.getByLabel("Add photos").setInputFiles(P12_PNG);
+  await page.getByLabel("Name", { exact: true }).fill("test_ Cabecero recorrido completo");
+  await page.getByLabel("Width").fill("165");
+  await page.getByLabel("Height").fill("60");
+  await page.getByLabel("Depth").fill("6");
+  // Route E needs the shape: open the optional details.
+  await page.getByText("Optional details (helps us get the shape right)").click();
+  await page.getByLabel("Type").selectOption("cabecero");
+  await page.getByText("Yes", { exact: true }).click();
   // The photo is read asynchronously (size, preview): submit only once it is listed.
-  await expect(page.getByRole("img", { name: /Foto 1: p12\.png/ })).toBeVisible();
-  await page.getByRole("button", { name: "Crear pieza" }).click();
+  await expect(page.getByRole("img", { name: /Photo 1: p12\.png/ })).toBeVisible();
+  await page.getByRole("button", { name: "Create piece" }).click();
 
   await expect(page).toHaveURL(/\/piezas\/[0-9a-f-]{36}$/, { timeout: 30_000 });
   pieceId = page.url().split("/").pop()!;
-  await expect(page.getByTestId("piece-status")).toHaveText("En cola");
+  await expect(page.getByTestId("piece-status")).toHaveText("Queued");
 });
 
 test("the real worker turns it into a model waiting for review", async () => {
@@ -170,7 +172,7 @@ test("the real worker turns it into a model waiting for review", async () => {
 test("the customer waits while the admin shows it", async ({ page, browser }) => {
   await signInAs(page, db, customer!.email);
   await page.goto(`/piezas/${pieceId}`);
-  await expect(page.getByTestId("piece-status")).toHaveText("En revisión");
+  await expect(page.getByTestId("piece-status")).toHaveText("In review");
   await expect(page.locator("model-viewer")).toHaveCount(0);
 
   const adminTab = await signedInAdmin(browser);
@@ -185,7 +187,7 @@ test("the customer waits while the admin shows it", async ({ page, browser }) =>
 test("the customer sees the free viewer and cannot download without credits", async ({ page }) => {
   await signInAs(page, db, customer!.email);
   await page.goto(`/piezas/${pieceId}`);
-  await expect(page.getByTestId("piece-status")).toHaveText("Lista");
+  await expect(page.getByTestId("piece-status")).toHaveText("Ready");
   const viewer = page.locator("model-viewer");
   await expect(viewer).toHaveAttribute("src", new RegExp(`/storage/v1/object/public/previews/${pieceId}/1/model_preview\\.glb$`));
   await expect(viewer).toHaveAttribute("ar-scale", "fixed");
@@ -195,8 +197,8 @@ test("the customer sees the free viewer and cannot download without credits", as
   await expect(measures).toContainText("165 cm");
   await expect(measures).toContainText("60 cm");
 
-  await page.getByRole("button", { name: "Descargar (1 crédito)" }).click();
-  await expect(page.getByText("Necesitas 1 crédito")).toBeVisible();
+  await page.getByRole("button", { name: "Download (1 credit)" }).click();
+  await expect(page.getByText("You need 1 credit")).toBeVisible();
   const { data: piece } = await db.from("pieces").select("status").eq("id", pieceId!).single();
   expect(piece?.status).toBe("ready");
 });
@@ -235,11 +237,11 @@ test("with a credit the customer downloads the GLB and the USDZ", async ({ page,
 
   await signInAs(page, db, customer!.email);
   await page.goto(`/piezas/${pieceId}`);
-  await page.getByRole("button", { name: "Descargar (1 crédito)" }).click();
-  await page.getByRole("button", { name: "Usar 1 crédito y descargar" }).click();
-  await expect(page.getByTestId("piece-status")).toHaveText("Descargada", { timeout: 15_000 });
+  await page.getByRole("button", { name: "Download (1 credit)" }).click();
+  await page.getByRole("button", { name: "Use 1 credit and download" }).click();
+  await expect(page.getByTestId("piece-status")).toHaveText("Downloaded", { timeout: 15_000 });
 
-  for (const name of ["Descargar GLB", "Descargar USDZ"]) {
+  for (const name of ["Download GLB", "Download USDZ"]) {
     const href = await page.getByRole("link", { name }).getAttribute("href");
     expect(href).toMatch(new RegExp(`/storage/v1/object/sign/models/${pieceId}/1/`));
     const file = await page.request.get(href!);

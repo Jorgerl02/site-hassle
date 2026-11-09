@@ -3,24 +3,24 @@ import NextLink from "next/link";
 import { DAILY_PIECE_LIMIT, formatEur, HIGHLIGHT_LABEL, MAX_EXTRA_VERSIONS, PACKS } from "@/lib/pricing";
 
 const RULES = [
-  "Solo pagas la pieza que descargas, después de verla.",
-  `Pedir otra versión de la misma pieza no cuesta nada (hasta ${MAX_EXTRA_VERSIONS}).`,
-  "Si la pieza falla o no te sirve, no gastas ningún crédito.",
-  "Los créditos comprados no caducan.",
-  "Sin reembolsos: por eso ves cada pieza entera antes de gastar un crédito.",
+  "You only pay for the pieces you download, after seeing them.",
+  `Requesting another version of the same piece is free (up to ${MAX_EXTRA_VERSIONS}).`,
+  "If a piece fails or isn't useful to you, you don't spend a credit.",
+  "Credits you buy never expire.",
+  "No refunds: that's why you see every piece in full before you spend a credit.",
 ];
 
 export function Pricing() {
   return (
-    <Box as="section" id="precios" py={{ base: 14, md: 24 }} bg="bg.subtle" scrollMarginTop="4">
+    <Box as="section" id="pricing" py={{ base: 14, md: 24 }} bg="bg.subtle" scrollMarginTop="4">
       <Container maxW="6xl" px={{ base: 4, md: 8 }}>
         <Stack gap="3" maxW="40em" mb={{ base: 8, md: 12 }}>
           <Heading as="h2" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500" letterSpacing="-0.01em">
-            Precios
+            Pricing
           </Heading>
           <Text color="fg.muted" fontSize="lg" textWrap="pretty">
-            Ver el resultado es gratis: hasta {DAILY_PIECE_LIMIT} piezas al día, con sus medidas y en realidad
-            aumentada. Para descargar una pieza (GLB con texturas 2K y USDZ) usas 1 crédito.
+            Viewing the result is free: up to {DAILY_PIECE_LIMIT} pieces a day, with their dimensions and in augmented
+            reality. Downloading a piece (GLB with 2K textures and USDZ) takes 1 credit.
           </Text>
         </Stack>
 
@@ -50,11 +50,11 @@ export function Pricing() {
                 {formatEur(pack.priceCents)}
               </Text>
               <Text color="fg.muted" fontSize="sm">
-                {pack.credits === 1 ? "Una pieza descargada" : `${formatEur(pack.perPieceCents)} por pieza`}
+                {pack.credits === 1 ? "One downloaded piece" : `${formatEur(pack.perPieceCents)} per piece`}
               </Text>
               <Box flex="1" />
               <Button asChild colorPalette={pack.highlighted ? "clay" : "ink"} variant={pack.highlighted ? "solid" : "outline"} rounded="full">
-                <NextLink href="/entrar">Empezar gratis</NextLink>
+                <NextLink href="/entrar">Start for free</NextLink>
               </Button>
             </Stack>
           ))}
@@ -66,7 +66,7 @@ export function Pricing() {
           ))}
         </List.Root>
         <Text mt="4" fontSize="sm" color="fg.muted">
-          IVA incluido. Compras los créditos cuando quieras descargar; para empezar no hace falta tarjeta.
+          VAT included. Buy credits when you want to download; no card needed to get started.
         </Text>
       </Container>
     </Box>

@@ -12,13 +12,13 @@ export function SiteHeader() {
           </Link>
           <HStack gap={{ base: 3, md: 6 }}>
             <Link asChild display={{ base: "none", sm: "inline-flex" }} color="fg.muted" fontSize="sm">
-              <NextLink href="/#como-funciona">Cómo funciona</NextLink>
+              <NextLink href="/#how-it-works">How it works</NextLink>
             </Link>
             <Link asChild color="fg.muted" fontSize="sm">
-              <NextLink href="/#precios">Precios</NextLink>
+              <NextLink href="/#pricing">Pricing</NextLink>
             </Link>
             <Button asChild size="sm" variant="outline" colorPalette="ink" rounded="full">
-              <NextLink href="/entrar">Entrar</NextLink>
+              <NextLink href="/entrar">Sign in</NextLink>
             </Button>
           </HStack>
         </Flex>
@@ -32,11 +32,11 @@ export function SiteFooter() {
     <Box as="footer" borderTopWidth="1px" borderColor="border" py="10">
       <Container maxW="6xl" px={{ base: 4, md: 8 }}>
         <Flex direction={{ base: "column", sm: "row" }} gap="3" justify="space-between" color="fg.subtle" fontSize="sm">
-          <Text>{PRODUCT_NAME}. Modelos 3D de muebles a escala real.</Text>
+          <Text>{PRODUCT_NAME}. True-to-scale 3D furniture models.</Text>
           <Flex gap="4" wrap="wrap">
-            <Text>Precios con IVA incluido.</Text>
+            <Text>Prices include VAT.</Text>
             <Link asChild color="fg.subtle">
-              <NextLink href="/privacidad">Privacidad y cookies</NextLink>
+              <NextLink href="/privacy">Privacy and cookies</NextLink>
             </Link>
           </Flex>
         </Flex>

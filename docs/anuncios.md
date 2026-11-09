@@ -55,7 +55,7 @@ Con `NEXT_PUBLIC_META_PIXEL_ID` y/o `NEXT_PUBLIC_GA_ID` definidos (ver `platform
 
 En Meta, crea las conversiones personalizadas `PieceCreated` y `PieceApproved` a partir de los eventos personalizados del píxel. Los píxeles pierden parte de las conversiones (bloqueadores, iOS, consentimiento): compara siempre con las consultas de abajo.
 
-**Consentimiento:** en la UE, Meta Pixel y GA necesitan consentimiento previo. La web muestra un aviso de cookies cuando hay algún id configurado y no carga nada hasta «Aceptar»; quien rechaza no aparece en los píxeles. Por eso los píxeles cuentan menos que las tablas: el porcentaje de aceptación (compara `PageView` de Meta con las visitas del servidor o de Vercel) dice cuánto se pierde.
+**Consentimiento:** en la UE, Meta Pixel y GA necesitan consentimiento previo. La web muestra un aviso de cookies cuando hay algún id configurado y no carga nada hasta «Accept» (botón de la barra, en inglés); quien pulsa «Reject» no aparece en los píxeles. Por eso los píxeles cuentan menos que las tablas: el porcentaje de aceptación (compara `PageView` de Meta con las visitas del servidor o de Vercel) dice cuánto se pierde.
 
 ## Consultas (Supabase → SQL editor)
 

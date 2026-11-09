@@ -6,9 +6,9 @@ import { SiteFooter, SiteHeader } from "@/components/landing/SiteHeader";
 import { PRODUCT_NAME } from "@/lib/site";
 
 export const metadata: Metadata = {
-  title: "Privacidad y cookies",
-  description: `Qué datos trata ${PRODUCT_NAME}, para qué, con quién y qué cookies usa.`,
-  alternates: { canonical: "/privacidad" },
+  title: "Privacy and cookies",
+  description: `What data ${PRODUCT_NAME} processes, why, who it shares it with and which cookies it uses.`,
+  alternates: { canonical: "/privacy" },
 };
 
 // TODO(Jorge): legal name and tax id of the owner once the company is set.
@@ -31,7 +31,7 @@ function Contact() {
       {CONTACT_EMAIL}
     </Link>
   ) : (
-    <>el correo de contacto de la web</>
+    <>the contact email on this website</>
   );
 }
 
@@ -43,104 +43,100 @@ export default function PrivacyPage() {
         <Stack gap="10" lineHeight="1.7">
           <Stack gap="3">
             <Heading as="h1" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500">
-              Privacidad y cookies
+              Privacy and cookies
             </Heading>
             <Text color="fg.muted">
-              Lo esencial, sin letra pequeña. Si tienes cualquier duda, escríbenos a <Contact />.
+              The essentials, with no small print. If you have any questions, write to us at <Contact />.
             </Text>
           </Stack>
 
-          <Section title="Qué datos tratamos y para qué">
+          <Section title="What data we process and why">
             <List.Root gap="2" ps="5">
               <List.Item>
-                <strong>Tu correo electrónico</strong>, para crear tu cuenta y enviarte el enlace de acceso y los avisos
-                de tus piezas (por ejemplo, cuando una pieza está lista).
+                <strong>Your email address</strong>, to create your account and send you the sign-in link and updates
+                about your pieces (for example, when a piece is ready).
               </List.Item>
               <List.Item>
-                <strong>Las fotos, medidas y notas de tus muebles</strong>, para generar el modelo 3D, revisarlo antes
-                de enseñártelo y entregártelo.
+                <strong>The photos, dimensions and notes of your furniture</strong>, to generate the 3D model, check it
+                before showing it to you and deliver it.
               </List.Item>
               <List.Item>
-                <strong>Tus compras y créditos</strong>: paquete, importe y movimientos de saldo. No vemos ni guardamos
-                los datos de tu tarjeta; el pago lo gestiona Stripe.
+                <strong>Your purchases and credits</strong>: pack, amount and balance history. We never see or store
+                your card details; payments are handled by Stripe.
               </List.Item>
               <List.Item>
-                <strong>Cómo llegaste</strong> (parámetros de la campaña o el enlace, como <code>utm_source</code>), para
-                saber qué anuncios funcionan. Se guarda con tu cuenta al registrarte.
+                <strong>How you found us</strong> (campaign or link parameters, such as <code>utm_source</code>), to
+                learn which ads work. It is saved with your account when you sign up.
               </List.Item>
             </List.Root>
             <Text>
-              La base legal es el contrato (darte el servicio que pides), nuestro interés legítimo en saber de dónde
-              vienen nuestros clientes y, para las cookies de medición, tu consentimiento. No vendemos tus datos.
+              The legal bases are the contract (providing the service you ask for), our legitimate interest in knowing
+              where our customers come from and, for measurement cookies, your consent. We do not sell your data.
             </Text>
           </Section>
 
-          <Section title="Con quién los compartimos">
-            <Text>Solo con los proveedores que necesitamos para dar el servicio, que tratan los datos por encargo nuestro:</Text>
+          <Section title="Who we share it with">
+            <Text>Only with the providers we need to run the service, who process the data on our behalf:</Text>
             <List.Root gap="2" ps="5">
               <List.Item>
-                <strong>Supabase</strong>: cuentas, base de datos y archivos, en servidores de la Unión Europea
-                (Irlanda).
+                <strong>Supabase</strong>: accounts, database and files, on servers in the European Union (Ireland).
               </List.Item>
               <List.Item>
-                <strong>Stripe</strong>: cobro de los paquetes de créditos.
+                <strong>Stripe</strong>: payment for credit packs.
               </List.Item>
               <List.Item>
-                <strong>Resend</strong>: envío de los correos de aviso.
+                <strong>Resend</strong>: sending notification emails.
               </List.Item>
               <List.Item>
-                <strong>Generación 3D de piezas que no son rectas</strong> (sofás, sillones, jarrones…): enviamos
-                solo la foto principal de la pieza, sin tu correo ni tu nombre, a <strong>fal.ai</strong> (Estados
-                Unidos) o a <strong>Tripo</strong> (China), según el proveedor que tengamos activo. La transferencia se
-                ampara en las cláusulas contractuales tipo de la Comisión Europea (art. 46 del RGPD); en el caso de
-                Estados Unidos, también en el Marco de Privacidad de Datos UE-EE. UU. si el proveedor está adherido.
-              </List.Item>
-
-              <List.Item>
-                <strong>Vercel</strong>: alojamiento de la web.
+                <strong>3D generation of pieces that aren&apos;t straight</strong> (sofas, armchairs, vases…): we send
+                only the piece&apos;s main photo, without your email or name, to <strong>fal.ai</strong> (United States)
+                or <strong>Tripo</strong> (China), depending on the provider we have active. The transfer relies on the
+                European Commission&apos;s standard contractual clauses (Article 46 GDPR) and, for the United States,
+                also on the EU-US Data Privacy Framework where the provider is certified.
               </List.Item>
               <List.Item>
-                <strong>Meta y Google</strong>, solo si aceptas las cookies de medición (ver abajo).
+                <strong>Vercel</strong>: website hosting.
+              </List.Item>
+              <List.Item>
+                <strong>Meta and Google</strong>, only if you accept measurement cookies (see below).
               </List.Item>
             </List.Root>
             <Text>
-              Algunos de estos proveedores pueden tratar datos fuera de la Unión Europea con las garantías que exige el
-              RGPD (cláusulas contractuales tipo o marcos de adecuación).
+              Some of these providers may process data outside the European Union with the safeguards the GDPR requires
+              (standard contractual clauses or adequacy frameworks).
             </Text>
           </Section>
 
-          <Section title="Cuánto tiempo los guardamos">
+          <Section title="How long we keep it">
             <Text>
-              Mientras tengas cuenta. Si nos pides borrarla, eliminamos tu cuenta, tus fotos y tus modelos; los datos de
-              las compras se conservan el tiempo que exige la ley fiscal.
+              For as long as you have an account. If you ask us to delete it, we delete your account, photos and
+              models; purchase records are kept for as long as tax law requires.
             </Text>
           </Section>
 
           <Section title="Cookies">
             <List.Root gap="2" ps="5">
               <List.Item>
-                <strong>Necesarias</strong> (siempre activas): la sesión para que sigas dentro de tu cuenta y
-                <code> sh_attr</code>, que recuerda durante 90 días de qué campaña o enlace llegaste. Son nuestras y no
-                se comparten.
+                <strong>Necessary</strong> (always on): the session that keeps you signed in, and
+                <code> sh_attr</code>, which remembers for 90 days which campaign or link brought you here. They are
+                our own and are not shared.
               </List.Item>
               <List.Item>
-                <strong>De medición</strong> (solo si las aceptas): Meta Pixel y Google Analytics, para saber si los
-                anuncios atraen a gente que crea y compra piezas. Si las rechazas, no se carga ninguno de los dos.
+                <strong>Measurement</strong> (only if you accept them): Meta Pixel and Google Analytics, to learn
+                whether our ads bring in people who create and buy pieces. If you reject them, neither is loaded.
               </List.Item>
             </List.Root>
-            <Text>
-              Tu elección se guarda en este navegador durante 180 días. Puedes cambiarla cuando quieras.
-            </Text>
+            <Text>Your choice is saved in this browser for 180 days. You can change it at any time.</Text>
             <Box>
               <ResetConsentButton />
             </Box>
           </Section>
 
-          <Section title="Tus derechos">
+          <Section title="Your rights">
             <Text>
-              Puedes pedir acceso, corrección, borrado, limitación, portabilidad u oponerte al tratamiento escribiendo a{" "}
-              <Contact />. Si crees que no hemos atendido bien tu petición, puedes reclamar ante la Agencia Española de
-              Protección de Datos (aepd.es).
+              You can ask for access, correction, deletion, restriction or portability of your data, or object to its
+              processing, by writing to <Contact />. If you think we haven&apos;t handled your request properly, you
+              can complain to the Spanish Data Protection Agency (AEPD, aepd.es) or to the authority in your country.
             </Text>
           </Section>
         </Stack>

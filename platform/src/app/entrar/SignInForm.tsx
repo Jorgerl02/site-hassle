@@ -6,7 +6,7 @@ import { useActionState } from "react";
 import { sendMagicLink, type SignInState } from "./actions";
 
 const CALLBACK_ERRORS: Record<string, string> = {
-  enlace: "El enlace ha caducado o ya se ha usado. Pide otro y ábrelo en este mismo dispositivo.",
+  enlace: "This link has expired or has already been used. Request a new one and open it on this device.",
 };
 
 export function SignInForm() {
@@ -16,9 +16,9 @@ export function SignInForm() {
   if (state.status === "sent") {
     return (
       <Stack gap="2" role="status" bg="bg.panel" borderWidth="1px" borderColor="border" rounded="xl" p="6">
-        <Text fontWeight="600">Revisa tu correo</Text>
+        <Text fontWeight="600">Check your email</Text>
         <Text color="fg.muted">
-          Te hemos enviado un enlace a <strong>{state.email}</strong>. Ábrelo en este mismo navegador para entrar.
+          We&apos;ve sent a link to <strong>{state.email}</strong>. Open it in this browser to sign in.
         </Text>
       </Stack>
     );
@@ -30,13 +30,13 @@ export function SignInForm() {
     <form action={formAction} noValidate>
       <Stack gap="4">
         <Field.Root invalid={Boolean(error)}>
-          <Field.Label>Correo electrónico</Field.Label>
+          <Field.Label>Email</Field.Label>
           <Input
             name="email"
             type="email"
             autoComplete="email"
             inputMode="email"
-            placeholder="tu@tienda.es"
+            placeholder="you@yourstore.com"
             required
             size="lg"
             bg="bg.panel"
@@ -44,11 +44,11 @@ export function SignInForm() {
           />
           {error ? <Field.ErrorText>{error}</Field.ErrorText> : null}
         </Field.Root>
-        <Button type="submit" size="lg" colorPalette="clay" rounded="full" loading={pending} loadingText="Enviando…">
-          Enviarme el enlace
+        <Button type="submit" size="lg" colorPalette="clay" rounded="full" loading={pending} loadingText="Sending…">
+          Email me a sign-in link
         </Button>
         <Text fontSize="sm" color="fg.subtle">
-          Sin contraseña: te mandamos un enlace para entrar. Si es tu primera vez, se crea tu cuenta.
+          No password needed: we email you a link to sign in. If it&apos;s your first time, we&apos;ll create your account.
         </Text>
       </Stack>
     </form>

@@ -9,10 +9,10 @@ export type LedgerClient = SupabaseClient;
 export type CreditReason = "purchase" | "consume" | "grant" | "refund" | "plan";
 
 export const LEDGER_REASON_LABEL: Record<CreditReason, string> = {
-  purchase: "Compra",
-  consume: "Descarga",
-  grant: "Regalo",
-  refund: "Devolución",
+  purchase: "Purchase",
+  consume: "Download",
+  grant: "Gift",
+  refund: "Refund",
   plan: "Plan",
 };
 
@@ -69,24 +69,24 @@ export async function getLedger(userId: string, client: LedgerClient): Promise<L
   };
 }
 
-/** Absolute value with Spanish thousands: «1.000» (es-ES Intl leaves 4 digits ungrouped). */
+/** Absolute value with English thousands: «1,000». */
 function groupDigits(n: number): string {
-  return String(Math.abs(Math.trunc(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return String(Math.abs(Math.trunc(n))).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-/** «9», «1.000», «−2» (true minus sign). */
+/** «9», «1,000», «−2» (true minus sign). */
 export function formatCount(n: number): string {
   return `${n < 0 ? "−" : ""}${groupDigits(n)}`;
 }
 
-/** «+10», «−1» (true minus sign), «+1.000». */
+/** «+10», «−1» (true minus sign), «+1,000». */
 export function formatCreditDelta(delta: number): string {
   return `${delta < 0 ? "−" : "+"}${groupDigits(delta)}`;
 }
 
-/** «1 crédito», «10 créditos», «1.000 créditos». */
+/** «1 credit», «10 credits», «1,000 credits». */
 export function formatCredits(n: number): string {
-  return `${formatCount(n)} ${Math.abs(n) === 1 ? "crédito" : "créditos"}`;
+  return `${formatCount(n)} ${Math.abs(n) === 1 ? "credit" : "credits"}`;
 }
 
 /**

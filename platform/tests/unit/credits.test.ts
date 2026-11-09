@@ -39,7 +39,7 @@ function fakeClient(rows: unknown[], balance: number | null, rpcError: unknown =
 }
 
 describe("getLedger", () => {
-  it("returns the balance and the entries, newest first, with Spanish labels", async () => {
+  it("returns the balance and the entries, newest first, with English labels", async () => {
     const { client, calls } = fakeClient(
       [
         { id: "b", delta: -1, reason: "consume", created_at: "2026-11-09T10:00:00Z", pieces: { name: "Aparador" } },
@@ -53,8 +53,8 @@ describe("getLedger", () => {
     expect(calls.order).toBe("created_at");
     expect(ledger.balance).toBe(9);
     expect(ledger.entries).toEqual([
-      { id: "b", delta: -1, reason: "consume", label: "Descarga", pieceName: "Aparador", createdAt: "2026-11-09T10:00:00Z" },
-      { id: "a", delta: 10, reason: "purchase", label: "Compra", pieceName: null, createdAt: "2026-11-08T09:00:00Z" },
+      { id: "b", delta: -1, reason: "consume", label: "Download", pieceName: "Aparador", createdAt: "2026-11-09T10:00:00Z" },
+      { id: "a", delta: 10, reason: "purchase", label: "Purchase", pieceName: null, createdAt: "2026-11-08T09:00:00Z" },
     ]);
   });
 
@@ -70,12 +70,12 @@ describe("getLedger", () => {
 });
 
 describe("labels and formatting", () => {
-  it("has a Spanish label for every ledger reason", () => {
+  it("has an English label for every ledger reason", () => {
     expect(LEDGER_REASON_LABEL).toEqual({
-      purchase: "Compra",
-      consume: "Descarga",
-      grant: "Regalo",
-      refund: "Devolución",
+      purchase: "Purchase",
+      consume: "Download",
+      grant: "Gift",
+      refund: "Refund",
       plan: "Plan",
     });
   });
@@ -83,17 +83,17 @@ describe("labels and formatting", () => {
   it("signs the deltas with a true minus sign", () => {
     expect(formatCreditDelta(10)).toBe("+10");
     expect(formatCreditDelta(-1)).toBe("−1");
-    expect(formatCreditDelta(1000)).toBe("+1.000");
+    expect(formatCreditDelta(1000)).toBe("+1,000");
   });
 });
 
 describe("counts", () => {
   it("groups thousands and pluralises", async () => {
     const { formatCount, formatCredits } = await import("@/lib/credits");
-    expect(formatCount(1000)).toBe("1.000");
+    expect(formatCount(1000)).toBe("1,000");
     expect(formatCount(0)).toBe("0");
-    expect(formatCredits(1)).toBe("1 crédito");
-    expect(formatCredits(10)).toBe("10 créditos");
-    expect(formatCredits(-1)).toBe("−1 crédito");
+    expect(formatCredits(1)).toBe("1 credit");
+    expect(formatCredits(10)).toBe("10 credits");
+    expect(formatCredits(-1)).toBe("−1 credit");
   });
 });

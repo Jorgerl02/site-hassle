@@ -22,11 +22,11 @@ function NoCredits() {
     <Alert.Root status="warning" rounded="xl" role="alert">
       <Alert.Indicator />
       <Alert.Content>
-        <Alert.Title>Necesitas 1 crédito para descargar esta pieza.</Alert.Title>
+        <Alert.Title>You need 1 credit to download this piece.</Alert.Title>
         <Alert.Description>
-          Verla en 3D y en tu casa sigue siendo gratis.{" "}
+          Viewing it in 3D and in your room is still free.{" "}
           <Link asChild color="clay.fg" fontWeight="600">
-            <NextLink href="/creditos">Comprar créditos</NextLink>
+            <NextLink href="/creditos">Buy credits</NextLink>
           </Link>
         </Alert.Description>
       </Alert.Content>
@@ -70,14 +70,14 @@ export function ResultActions({ pieceId, balance, versionsLeft }: ResultActionsP
     switch (open) {
       case "download":
         return {
-          title: "Descargar la pieza",
+          title: "Download the piece",
           body: (
             <Text>
-              Usarás 1 crédito y te llevas el modelo en GLB (texturas 2K) y USDZ, a escala real.
-              {balance !== null ? ` Te quedarán ${balance - 1}.` : ""}
+              This uses 1 credit and gets you the model as GLB (2K textures) and USDZ, at real scale.
+              {balance !== null ? ` You'll have ${balance - 1} left.` : ""}
             </Text>
           ),
-          confirm: "Usar 1 crédito y descargar",
+          confirm: "Use 1 credit and download",
           onConfirm: () =>
             run(
               () => downloadPiece(pieceId),
@@ -86,29 +86,29 @@ export function ResultActions({ pieceId, balance, versionsLeft }: ResultActionsP
         };
       case "version":
         return {
-          title: "Pedir otra versión",
+          title: "Request another version",
           body: (
             <Text>
-              La volvemos a generar desde cero, sin coste. Te {versionsLeft === 1 ? "queda" : "quedan"} {versionsLeft}{" "}
-              {versionsLeft === 1 ? "versión" : "versiones"} extra para esta pieza.
+              We&apos;ll generate it again from scratch, free of charge. You have {versionsLeft} extra{" "}
+              {versionsLeft === 1 ? "version" : "versions"} left for this piece.
             </Text>
           ),
-          confirm: "Pedir otra versión",
+          confirm: "Request another version",
           onConfirm: () => run(() => requestNewVersion(pieceId)),
         };
       case "reject":
         return {
-          title: "No me sirve",
+          title: "Not useful to me",
           body: (
             <Stack gap="3">
-              <Text>Cerramos la pieza sin coste. Cuéntanos qué falla y lo usamos para mejorar.</Text>
+              <Text>We&apos;ll close the piece at no cost. Tell us what&apos;s wrong and we&apos;ll use it to improve.</Text>
               <Field.Root>
-                <Field.Label>Motivo</Field.Label>
+                <Field.Label>Reason</Field.Label>
                 <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} rows={3} />
               </Field.Root>
             </Stack>
           ),
-          confirm: "Cerrar la pieza",
+          confirm: "Close the piece",
           onConfirm: () => run(() => rejectPiece(pieceId, reason)),
         };
       default:
@@ -120,7 +120,7 @@ export function ResultActions({ pieceId, balance, versionsLeft }: ResultActionsP
     <Stack gap="4">
       <Flex direction={{ base: "column", sm: "row" }} wrap="wrap" gap="3">
         <Button colorPalette="clay" rounded="full" size="lg" onClick={onDownload} disabled={pending}>
-          Descargar (1 crédito)
+          Download (1 credit)
         </Button>
         <Button
           variant="outline"
@@ -130,16 +130,15 @@ export function ResultActions({ pieceId, balance, versionsLeft }: ResultActionsP
           onClick={() => setOpen("version")}
           disabled={pending || versionsLeft < 1}
         >
-          Pedir otra versión
+          Request another version
         </Button>
         <Button variant="ghost" colorPalette="ink" rounded="full" size="lg" onClick={() => setOpen("reject")} disabled={pending}>
-          No me sirve
+          Not useful to me
         </Button>
       </Flex>
       <Text fontSize="sm" color="fg.subtle">
-        {versionsLeft < 1 ? "No quedan más versiones de esta pieza. " : ""}Pedir otra versión o cerrar la pieza no
-        cuesta nada.
-
+        {versionsLeft < 1 ? "There are no more versions left for this piece. " : ""}Requesting another version or
+        closing the piece costs nothing.
       </Text>
 
       {noCredits ? <NoCredits /> : null}
@@ -167,7 +166,7 @@ export function ResultActions({ pieceId, balance, versionsLeft }: ResultActionsP
               <Dialog.Body>{dialog?.body}</Dialog.Body>
               <Dialog.Footer>
                 <Button variant="ghost" colorPalette="ink" onClick={() => setOpen(null)} disabled={pending}>
-                  Cancelar
+                  Cancel
                 </Button>
                 <Button colorPalette="clay" rounded="full" loading={pending} onClick={dialog?.onConfirm}>
                   {dialog?.confirm}

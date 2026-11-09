@@ -60,12 +60,12 @@ export function ModelViewer({ src, alt, poster, placement = "floor" }: ModelView
           rounded="full"
           boxShadow="md"
         >
-          Verla en tu casa
+          View in your room
         </chakra.button>
       </model-viewer>
       {!loaded ? (
         <Text position="absolute" inset="0" display="flex" alignItems="center" justifyContent="center" color="fg.muted">
-          Cargando el modelo…
+          Loading the model…
         </Text>
       ) : null}
     </Box>

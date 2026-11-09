@@ -24,7 +24,7 @@ import { MAX_EXTRA_VERSIONS } from "@/lib/pricing";
 import { KIND_LABEL } from "@/lib/validation";
 
 export const metadata: Metadata = {
-  title: "Tu pieza",
+  title: "Your piece",
   robots: { index: false },
 };
 
@@ -32,9 +32,9 @@ const NBSP = " ";
 
 function Measures({ piece }: { piece: CustomerPiece }) {
   const items = [
-    ["Ancho", piece.width_cm],
-    ["Alto", piece.height_cm],
-    ["Fondo", piece.depth_cm],
+    ["Width", piece.width_cm],
+    ["Height", piece.height_cm],
+    ["Depth", piece.depth_cm],
   ] as const;
   return (
     <SimpleGrid as="dl" columns={3} gap="3" data-testid="measures">
@@ -93,7 +93,7 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
       <Container as="main" maxW="5xl" px={{ base: 4, md: 8 }} py={{ base: 8, md: 12 }}>
         <Stack gap="2" mb="8">
           <Link asChild fontSize="sm" color="fg.muted">
-            <NextLink href="/panel">← Tus piezas</NextLink>
+            <NextLink href="/panel">← Your pieces</NextLink>
           </Link>
           <Flex align="center" gap="3" wrap="wrap">
             <Heading as="h1" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500">
@@ -112,12 +112,12 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
               <ModelViewer
                 src={preview}
                 poster={renders.three_quarter ?? renders.front}
-                alt={`Modelo 3D de ${piece.name}`}
+                alt={`3D model of ${piece.name}`}
                 placement={piece.kind === "cabecero" || piece.kind === "panel" ? "wall" : "floor"}
               />
               <Text fontSize="sm" color="fg.subtle" mt="2">
-                Previsualización gratuita. Gírala con el dedo o el ratón; en el móvil, «Verla en tu casa» la coloca a
-                tamaño real.
+                Free preview. Turn it with your finger or mouse; on your phone, “View in your room” places it at
+                real size.
               </Text>
             </Box>
           ) : null}
@@ -129,7 +129,7 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
               <Stack gap="3">
                 <StatusSteps steps={steps} poll={!SETTLED_STATUSES.includes(piece.status)} />
                 <Text fontSize="sm" color="fg.subtle">
-                  Puedes cerrar esta página: seguimos trabajando y la pieza aparecerá en tu panel.
+                  You can close this page: we keep working and the piece will show up in your dashboard.
                 </Text>
               </Stack>
             ) : null}
@@ -142,57 +142,57 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
                   versionsLeft={Math.max(0, MAX_EXTRA_VERSIONS - (piece.attempt - 1))}
                 />
               ) : (
-                <Notice status="warning" title="La previsualización no está disponible ahora mismo." />
+                <Notice status="warning" title="The preview isn't available right now." />
               )
             ) : null}
 
             {piece.status === "approved" ? (
               downloads ? (
                 <Stack gap="3">
-                  <Text fontWeight="600">Tus archivos</Text>
+                  <Text fontWeight="600">Your files</Text>
                   <Stack direction={{ base: "column", sm: "row" }} gap="3">
                     <Button asChild colorPalette="clay" rounded="full">
                       <a href={downloads.glb} download>
-                        Descargar GLB
+                        Download GLB
                       </a>
                     </Button>
                     <Button asChild variant="outline" colorPalette="ink" rounded="full">
                       <a href={downloads.usdz} download>
-                        Descargar USDZ
+                        Download USDZ
                       </a>
                     </Button>
                   </Stack>
                   <Text fontSize="sm" color="fg.subtle">
-                    GLB para tu web y Android; USDZ para iPhone y iPad. Los enlaces caducan en 1 hora: vuelve a esta
-                    página para generar otros, sin coste.
+                    GLB for your website and Android; USDZ for iPhone and iPad. The links expire after 1 hour: come
+                    back to this page for new ones, at no cost.
                   </Text>
                 </Stack>
               ) : (
-                <Notice status="warning" title="No hemos podido preparar las descargas. Recarga la página en un momento." />
+                <Notice status="warning" title="We couldn't prepare your downloads. Reload the page in a moment." />
               )
             ) : null}
 
             {piece.status === "needs_photos" ? (
-              <Notice status="warning" title="Necesitamos otras fotos">
+              <Notice status="warning" title="We need different photos">
                 <Stack gap="3" align="flex-start">
                   {piece.error ? <Text whiteSpace="pre-line">{piece.error}</Text> : null}
                   <Button asChild colorPalette="clay" rounded="full" size="sm">
-                    <NextLink href={`/piezas/nueva?desde=${piece.id}`}>Corregir fotos</NextLink>
+                    <NextLink href={`/piezas/nueva?desde=${piece.id}`}>Fix photos</NextLink>
                   </Button>
                 </Stack>
               </Notice>
             ) : null}
 
             {piece.status === "rejected" ? (
-              <Notice status="info" title="Esta pieza está cerrada y no te ha costado nada.">
-                {piece.reject_reason ? <Text>Motivo: {piece.reject_reason}</Text> : null}
+              <Notice status="info" title="This piece is closed and hasn't cost you anything.">
+                {piece.reject_reason ? <Text>Reason: {piece.reject_reason}</Text> : null}
               </Notice>
             ) : null}
 
             {piece.status === "failed" ? (
               // Fixed copy: `piece.error` holds technical detail meant for the admin only.
               <Notice status="error" title={FAILED_MESSAGE}>
-                <Text>No te cuesta nada.</Text>
+                <Text>It doesn&apos;t cost you anything.</Text>
               </Notice>
             ) : null}
 

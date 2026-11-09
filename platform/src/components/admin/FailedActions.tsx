@@ -3,11 +3,13 @@
 import { Button, Flex, Stack, Text, Textarea } from "@chakra-ui/react";
 import { useActionState } from "react";
 import { submitFailed, type ReviewActionResult } from "@/app/admin/revision/actions";
+import type { ShapeValues } from "@/lib/admin-labels";
+import { ShapeFields } from "./ShapeFields";
 
 const initialState: ReviewActionResult = { ok: true };
 
-/** «Reintentar» (same attempt, back to the queue) and «Rechazar» (reason for the customer). */
-export function FailedActions({ pieceId }: { pieceId: string }) {
+/** «Reintentar» (same attempt, back to the queue, with the corrected shape) and «Rechazar» (reason for the customer). */
+export function FailedActions({ pieceId, shape }: { pieceId: string; shape: ShapeValues }) {
   const [state, formAction, pending] = useActionState(submitFailed, initialState);
   const noteId = `failed-note-${pieceId}`;
 
@@ -15,6 +17,7 @@ export function FailedActions({ pieceId }: { pieceId: string }) {
     <form action={formAction}>
       <input type="hidden" name="pieceId" value={pieceId} />
       <Stack gap="2">
+        <ShapeFields idPrefix={`failed-${pieceId}`} defaults={shape} disabled={pending} />
         <Text asChild fontSize="sm" color="fg.muted">
           <label htmlFor={noteId}>Motivo del rechazo (lo leerá el cliente)</label>
         </Text>

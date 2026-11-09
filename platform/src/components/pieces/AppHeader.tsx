@@ -14,11 +14,11 @@ export function AppHeader() {
           </Link>
           <Flex gap="1" align="center">
             <Button asChild size="sm" variant="ghost" colorPalette="ink">
-              <NextLink href="/creditos">Créditos</NextLink>
+              <NextLink href="/creditos">Credits</NextLink>
             </Button>
             <form action={signOut}>
               <Button type="submit" size="sm" variant="ghost" colorPalette="ink">
-                Salir
+                Sign out
               </Button>
             </form>
           </Flex>

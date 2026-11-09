@@ -9,7 +9,7 @@ import { getBalance, signedThumbUrls } from "@/lib/pieces";
 import { createServerClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
-  title: "Tus piezas",
+  title: "Your pieces",
   robots: { index: false },
 };
 
@@ -42,10 +42,10 @@ export default async function PanelPage({
       <Container as="main" maxW="5xl" px={{ base: 4, md: 8 }} py={{ base: 8, md: 12 }}>
         <Flex justify="space-between" align="center" gap="4" wrap="wrap" mb="6">
           <Heading as="h1" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500">
-            Tus piezas
+            Your pieces
           </Heading>
           <Button asChild colorPalette="clay" rounded="full">
-            <NextLink href="/piezas/nueva">Nueva pieza</NextLink>
+            <NextLink href="/piezas/nueva">New piece</NextLink>
           </Button>
         </Flex>
 
@@ -62,22 +62,22 @@ export default async function PanelPage({
           data-testid="balance"
         >
           <Text>
-            Créditos: <strong>{balance ?? "—"}</strong>
+            Credits: <strong>{balance ?? "—"}</strong>
             <Text as="span" color="fg.muted">
               {" "}
-              · 1 crédito = 1 pieza descargada
+              · 1 credit = 1 downloaded piece
             </Text>
           </Text>
           <Link asChild color="clay.fg" fontWeight="600">
-            <NextLink href="/creditos">Comprar créditos</NextLink>
+            <NextLink href="/creditos">Buy credits</NextLink>
           </Link>
         </Flex>
 
         {!pieces || pieces.length === 0 ? (
           <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="xl" p="8" textAlign="center">
-            <Text fontWeight="600">Todavía no tienes piezas</Text>
+            <Text fontWeight="600">You don&apos;t have any pieces yet</Text>
             <Text color="fg.muted" mt="1">
-              Sube la foto y las medidas de un mueble para ver su modelo 3D gratis.
+              Upload a photo and the dimensions of a piece of furniture to see its 3D model for free.
             </Text>
           </Box>
         ) : (

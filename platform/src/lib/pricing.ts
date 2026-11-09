@@ -16,13 +16,13 @@ function pack(id: PackId, credits: number, priceCents: number, label: string, hi
 }
 
 export const PACKS: readonly Pack[] = Object.freeze([
-  pack("pieza_1", 1, 900, "1 pieza"),
-  pack("pieza_10", 10, 6900, "10 piezas", true),
-  pack("pieza_30", 30, 16900, "30 piezas"),
+  pack("pieza_1", 1, 900, "1 piece"),
+  pack("pieza_10", 10, 6900, "10 pieces", true),
+  pack("pieza_30", 30, 16900, "30 pieces"),
 ]);
 
 /** Badge shown on the highlighted pack. */
-export const HIGHLIGHT_LABEL = "Más elegido";
+export const HIGHLIGHT_LABEL = "Most popular";
 
 /** Pieces a free account can create per day (mirrors `daily_piece_limit` in SQL). */
 export const DAILY_PIECE_LIMIT = 3;
@@ -35,24 +35,22 @@ export function getPack(id: string): Pack | undefined {
 }
 
 function groupThousands(digits: string): string {
-  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 /**
- * Spanish euro formatting: «69 €», «6,90 €», «1.000 €», with a non-breaking
- * space (U+00A0) before «€» so the amount never wraps away from the symbol.
- * Whole euros drop the decimals; thousands are always grouped (Intl's es-ES
- * leaves four-digit numbers ungrouped, which we don't want).
+ * English euro formatting: «€69», «€6.90», «€1,000», «-€6.90». Symbol first,
+ * no space; whole euros drop the decimals; thousands are always grouped.
  */
 export function formatEur(cents: number): string {
   const sign = cents < 0 ? "-" : "";
   const abs = Math.abs(Math.round(cents));
   const euros = groupThousands(String(Math.floor(abs / 100)));
   const rest = abs % 100;
-  const amount = rest === 0 ? euros : `${euros},${String(rest).padStart(2, "0")}`;
-  return `${sign}${amount}\u00a0€`;
+  const amount = rest === 0 ? euros : `${euros}.${String(rest).padStart(2, "0")}`;
+  return `${sign}€${amount}`;
 }
 
 /** Required checkbox before paying (digital content delivered at once: no 14-day withdrawal). */
 export const WAIVER_TEXT =
-  "Acepto que el contenido digital se entrega de inmediato y renuncio al derecho de desistimiento.";
+  "I agree that the digital content is delivered immediately and I waive my right of withdrawal.";

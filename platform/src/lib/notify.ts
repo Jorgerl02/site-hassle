@@ -143,7 +143,7 @@ async function notifyAbout(
   return sendEmail(message, deps);
 }
 
-/** Customer notice: the reviewed piece is `ready` to see (free) and to download (1 credit). */
+/** Customer notice (English): the reviewed piece is `ready` to see (free) and to download (1 credit). */
 export async function notifyPieceReady(pieceId: string, deps: NotifyDeps = envDeps()): Promise<NotifyResult> {
   return notifyAbout(pieceId, deps, (piece) => {
     if (!piece.email) return null;
@@ -151,24 +151,24 @@ export async function notifyPieceReady(pieceId: string, deps: NotifyDeps = envDe
     const name = escapeHtml(piece.name);
     return {
       to: piece.email,
-      subject: `Tu pieza «${piece.name}» está lista`,
+      subject: `Your piece “${piece.name}” is ready`,
       idempotencyKey: `piece-ready/${piece.id}`,
       text:
-        `Tu pieza «${piece.name}» ya tiene su modelo 3D a escala real.\n\n` +
-        `Míralo gratis, con sus medidas y en realidad aumentada, y descárgalo si te convence: ${href}\n\n` +
+        `Your piece “${piece.name}” now has its true-to-scale 3D model.\n\n` +
+        `See it for free, with its dimensions and in augmented reality, and download it if you like it: ${href}\n\n` +
         PRODUCT_NAME,
       html: layout(
         [
-          `Tu pieza «${name}» ya tiene su modelo 3D a escala real.`,
-          "Míralo gratis, con sus medidas y en realidad aumentada, y descárgalo si te convence.",
+          `Your piece “${name}” now has its true-to-scale 3D model.`,
+          "See it for free, with its dimensions and in augmented reality, and download it if you like it.",
         ],
-        { href, label: "Ver mi pieza" },
+        { href, label: "View my piece" },
       ),
     };
   });
 }
 
-/** Internal heads-up: the worker left a piece in `review`. Needs `ADMIN_NOTIFY_EMAIL`. */
+/** Internal heads-up (Spanish, for the owner): the worker left a piece in `review`. Needs `ADMIN_NOTIFY_EMAIL`. */
 export async function notifyPieceInReview(pieceId: string, deps: NotifyDeps = envDeps()): Promise<NotifyResult> {
   if (deps.apiKey && !deps.adminEmail) {
     deps.log(`[notify] ADMIN_NOTIFY_EMAIL sin configurar: sin aviso de revisión para ${pieceId}`);

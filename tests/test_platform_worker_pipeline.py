@@ -366,7 +366,7 @@ def test_organic_piece_two_candidates_lowest_error_selected(tmp_path: Path) -> N
     assert cand.read_bytes() == SAMPLE_GLB.read_bytes()
 
 
-def test_invalid_photo_needs_photos_with_spanish_error(tmp_path: Path) -> None:
+def test_invalid_photo_needs_photos_with_english_error(tmp_path: Path) -> None:
     pdf = tmp_path / "src" / "doc.pdf"
     pdf.parent.mkdir(parents=True)
     pdf.write_bytes(b"%PDF-1.7")
@@ -374,16 +374,17 @@ def test_invalid_photo_needs_photos_with_spanish_error(tmp_path: Path) -> None:
     assert run(db, storage, row, tmp_path) == "needs_photos"
     piece = db.pieces[PIECE_ID]
     assert piece["status"] == "needs_photos"
-    assert "no es una imagen" in piece["error"] and "Requisitos de la foto" in piece["error"]
+    assert "isn't an image" in piece["error"] and "What a good photo looks like" in piece["error"]
     assert db.models == [] and storage.uploads == {}
 
 
 @pytest.mark.parametrize(
     ("overrides", "word"),
     [
-        ({"kind": "lampara", "name": "Lámpara de pie"}, "lámparas"),
+        ({"kind": "lampara", "name": "Lámpara de pie"}, "lamps"),
         ({"kind": "mesa", "notes": "Mesa de acero cromado"}, "metal"),
-        ({"kind": "mesita", "notes": "Sobre de vidrio templado"}, "vidrio"),
+        ({"kind": "mesita", "notes": "Sobre de vidrio templado"}, "glass"),
+        ({"kind": "mesita", "notes": "Tempered glass top"}, "glass"),
     ],
 )
 def test_excluded_piece_is_rejected_with_reason(tmp_path: Path, overrides, word) -> None:

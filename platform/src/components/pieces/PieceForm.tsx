@@ -19,11 +19,15 @@ import { useState, useTransition, type FormEvent } from "react";
 import { createPiece } from "@/app/piezas/nueva/actions";
 import { createClient } from "@/lib/supabase/client";
 import {
+  DEFAULT_KIND,
+  DEFAULT_RECTILINEAR,
+  DEFAULT_SUPPORT,
   KIND_LABEL,
   PIECE_KINDS,
   RECTILINEAR_OPTIONS,
   SUPPORT_OPTIONS,
   looksExcluded,
+  nameFromFileName,
   validatePieceInput,
   type PieceField,
   type RectilinearAnswer,
@@ -44,12 +48,12 @@ export interface PieceFormDefaults {
 
 const EMPTY_PIECE: PieceFormDefaults = {
   name: "",
-  kind: "",
+  kind: DEFAULT_KIND,
   widthCm: "",
   heightCm: "",
   depthCm: "",
-  rectilinear: "no_se",
-  support: "no_se",
+  rectilinear: DEFAULT_RECTILINEAR,
+  support: DEFAULT_SUPPORT,
   notes: "",
 };
 
@@ -81,11 +85,18 @@ function isNavigation(error: unknown): boolean {
 }
 
 const DIMENSIONS = [
-  { name: "widthCm", label: "Ancho" },
-  { name: "heightCm", label: "Alto" },
-  { name: "depthCm", label: "Fondo" },
+  { name: "widthCm", label: "Width" },
+  { name: "heightCm", label: "Height" },
+  { name: "depthCm", label: "Depth" },
 ] as const;
 
+/**
+ * New-piece form. The customer only has to give photos, the real dimensions
+ * and a name (suggested from the first photo's file name). Type, the
+ * straight-piece question, the support and the notes sit in a closed
+ * `<details>`: its fields stay in the DOM, so the defaults (`otro`, "Not
+ * sure", "Not sure") are submitted when nobody opens it.
+ */
 export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; defaults?: PieceFormDefaults }) {
   const [photos, setPhotos] = useState<SelectedPhoto[]>([]);
   const [errors, setErrors] = useState<Partial<Record<PieceField, string>>>({});
@@ -93,13 +104,17 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
   const [progress, setProgress] = useState<string | null>(null);
   const [kind, setKind] = useState(defaults.kind);
   const [rectilinear, setRectilinear] = useState<string>(defaults.rectilinear);
-  const [text, setText] = useState({ name: defaults.name, notes: defaults.notes });
+  // Until the customer types a name (or one is copied from an earlier piece),
+  // it follows the first photo's file name.
+  const [typedName, setTypedName] = useState<string | null>(defaults.name || null);
+  const name = typedName ?? (photos[0] ? nameFromFileName(photos[0].file.name) : "");
+  const [notes, setNotes] = useState(defaults.notes);
   const [pending, startTransition] = useTransition();
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
-    const field = (name: string) => String(formData.get(name) ?? "");
+    const field = (key: string) => String(formData.get(key) ?? "");
     const result = validatePieceInput({
       name: field("name"),
       kind: field("kind"),
@@ -114,7 +129,12 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
     setMessage(null);
     if (!result.ok) {
       setErrors(result.errors);
-      setMessage("Revisa los campos marcados.");
+      setMessage("Please check the highlighted fields.");
+      // Errors inside the optional details must not stay hidden.
+      if (result.errors.kind || result.errors.rectilinear || result.errors.support || result.errors.notes) {
+        const details = event.currentTarget.querySelector("details");
+        if (details) details.open = true;
+      }
       return;
     }
     setErrors({});
@@ -127,7 +147,7 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
       const cleanup = () => (uploaded.length ? supabase.storage.from("photos").remove(uploaded) : null);
 
       for (const [i, photo] of photos.entries()) {
-        setProgress(`Subiendo fotos (${i + 1} de ${photos.length})…`);
+        setProgress(`Uploading photos (${i + 1} of ${photos.length})…`);
         const path = `${folder}/${i + 1}.${EXTENSION[photo.file.type] ?? "jpg"}`;
         const { error } = await supabase.storage
           .from("photos")
@@ -135,7 +155,7 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
         if (error) {
           await cleanup();
           setProgress(null);
-          setMessage("No hemos podido subir las fotos. Comprueba tu conexión y vuelve a intentarlo.");
+          setMessage("We couldn't upload your photos. Check your connection and try again.");
           return;
         }
         uploaded.push(path);
@@ -147,7 +167,7 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
         if (!error) uploaded.push(path);
       }
 
-      setProgress("Creando la pieza…");
+      setProgress("Creating your piece…");
       formData.set("id", pieceId);
       // Redirects to /piezas/[id] on success; returns only on failure.
       let failure: Awaited<ReturnType<typeof createPiece>> | undefined;
@@ -155,7 +175,7 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
         failure = await createPiece(formData);
       } catch (error) {
         if (isNavigation(error)) throw error;
-        failure = { ok: false, message: "No hemos podido crear la pieza. Vuelve a intentarlo en unos minutos." };
+        failure = { ok: false, message: "We couldn't create the piece. Please try again in a few minutes." };
       }
       if (!failure) return;
       await cleanup();
@@ -165,89 +185,96 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
     });
   }
 
-  const warnExcluded = looksExcluded(kind, text.notes, text.name);
+  const warnExcluded = looksExcluded(kind, notes, name);
 
   return (
     <form onSubmit={onSubmit} noValidate>
       <Stack gap="8">
-        <Stack gap="5">
-          <Field.Root invalid={Boolean(errors.name)} required>
-            <Field.Label>Nombre de la pieza</Field.Label>
-            <Input
-              name="name"
-              defaultValue={defaults.name}
-              placeholder="Cabecero tapizado Rigole"
-              maxLength={80}
-              bg="bg.panel"
-              autoComplete="off"
-              onChange={(e) => setText((t) => ({ ...t, name: e.target.value }))}
-            />
-            <Field.ErrorText>{errors.name}</Field.ErrorText>
-          </Field.Root>
+        <Field.Root invalid={Boolean(errors.photos)}>
+          <Field.Label>Photos</Field.Label>
+          <Field.HelperText mb="2">
+            A front or three-quarter view on a light background with no other furniture, the whole piece in the
+            frame and at least 1,000 px on the long side. The first photo is the main one.
+          </Field.HelperText>
+          <Box w="full">
+            <PhotoDropzone photos={photos} onChange={setPhotos} invalid={Boolean(errors.photos)} disabled={pending} />
+          </Box>
+          <Field.ErrorText>{errors.photos}</Field.ErrorText>
+        </Field.Root>
 
-          <Field.Root invalid={Boolean(errors.kind)} required>
-            <Field.Label>Tipo</Field.Label>
-            <NativeSelect.Root bg="bg.panel">
-              <NativeSelect.Field name="kind" defaultValue={defaults.kind} onChange={(e) => setKind(e.target.value)}>
-                <option value="" disabled>
-                  Elige el tipo
-                </option>
-                {PIECE_KINDS.map((k) => (
-                  <option key={k} value={k}>
-                    {KIND_LABEL[k]}
-                  </option>
-                ))}
-              </NativeSelect.Field>
-              <NativeSelect.Indicator />
-            </NativeSelect.Root>
-            <Field.ErrorText>{errors.kind}</Field.ErrorText>
-          </Field.Root>
+        <Fieldset.Root>
+          <Fieldset.Legend fontWeight="500">Real dimensions</Fieldset.Legend>
+          <Fieldset.HelperText>From the catalogue, in centimetres. The model will be built at exactly this scale.</Fieldset.HelperText>
+          <SimpleGrid columns={{ base: 1, sm: 3 }} gap="4" mt="2">
+            {DIMENSIONS.map(({ name: dimension, label }) => (
+              <Field.Root key={dimension} invalid={Boolean(errors[dimension])} required>
+                <Field.Label>{label}</Field.Label>
+                <InputGroup endElement={<Text color="fg.muted">cm</Text>}>
+                  <Input name={dimension} defaultValue={defaults[dimension]} inputMode="decimal" placeholder="0" bg="bg.panel" />
+                </InputGroup>
+                <Field.ErrorText>{errors[dimension]}</Field.ErrorText>
+              </Field.Root>
+            ))}
+          </SimpleGrid>
+        </Fieldset.Root>
 
-          <Fieldset.Root>
-            <Fieldset.Legend fontWeight="500">Medidas reales</Fieldset.Legend>
-            <Fieldset.HelperText>Las del catálogo, en centímetros. El modelo saldrá exactamente a esta escala.</Fieldset.HelperText>
-            <SimpleGrid columns={{ base: 1, sm: 3 }} gap="4" mt="2">
-              {DIMENSIONS.map(({ name, label }) => (
-                <Field.Root key={name} invalid={Boolean(errors[name])} required>
-                  <Field.Label>{label}</Field.Label>
-                  <InputGroup endElement={<Text color="fg.muted">cm</Text>}>
-                    <Input name={name} defaultValue={defaults[name]} inputMode="decimal" placeholder="0" bg="bg.panel" />
-                  </InputGroup>
-                  <Field.ErrorText>{errors[name]}</Field.ErrorText>
-                </Field.Root>
-              ))}
-            </SimpleGrid>
-          </Fieldset.Root>
+        <Field.Root invalid={Boolean(errors.name)} required>
+          <Field.Label>Name</Field.Label>
+          <Input
+            name="name"
+            value={name}
+            placeholder="Upholstered headboard Rigole"
+            maxLength={80}
+            bg="bg.panel"
+            autoComplete="off"
+            onChange={(e) => setTypedName(e.target.value)}
+          />
+          <Field.HelperText>We fill it in from the first photo&apos;s file name; change it if you like.</Field.HelperText>
+          <Field.ErrorText>{errors.name}</Field.ErrorText>
+        </Field.Root>
 
-          <Fieldset.Root invalid={Boolean(errors.rectilinear)}>
-            <Fieldset.Legend fontWeight="500">¿Es una pieza recta, como una caja, un panel o un cabecero?</Fieldset.Legend>
-            <RadioGroup.Root
-              name="rectilinear"
-              defaultValue={defaults.rectilinear}
-              onValueChange={(e) => setRectilinear(e.value ?? "no_se")}
-              colorPalette="clay"
-              mt="2"
-            >
-              <Stack direction="row" gap="6">
-                {RECTILINEAR_OPTIONS.map((option) => (
-                  <RadioGroup.Item key={option.value} value={option.value}>
-                    <RadioGroup.ItemHiddenInput />
-                    <RadioGroup.ItemIndicator />
-                    <RadioGroup.ItemText>{option.label}</RadioGroup.ItemText>
-                  </RadioGroup.Item>
-                ))}
-              </Stack>
-            </RadioGroup.Root>
-            <Fieldset.ErrorText>{errors.rectilinear}</Fieldset.ErrorText>
-          </Fieldset.Root>
+        <Box
+          as="details"
+          data-testid="optional-details"
+          bg="bg.subtle"
+          rounded="xl"
+          px="4"
+          py="3"
+          css={{ "& > summary::-webkit-details-marker": { display: "none" } }}
+        >
+          <Box as="summary" cursor="pointer" fontWeight="600" listStyleType="none" display="flex" justifyContent="space-between" gap="4">
+            Optional details (helps us get the shape right)
+            <Text as="span" color="fg.subtle" aria-hidden>
+              +
+            </Text>
+          </Box>
+          <Stack gap="5" mt="4">
+            <Field.Root invalid={Boolean(errors.kind)}>
+              <Field.Label>Type</Field.Label>
+              <NativeSelect.Root bg="bg.panel">
+                <NativeSelect.Field name="kind" defaultValue={defaults.kind} onChange={(e) => setKind(e.target.value)}>
+                  {PIECE_KINDS.map((k) => (
+                    <option key={k} value={k}>
+                      {KIND_LABEL[k]}
+                    </option>
+                  ))}
+                </NativeSelect.Field>
+                <NativeSelect.Indicator />
+              </NativeSelect.Root>
+              <Field.ErrorText>{errors.kind}</Field.ErrorText>
+            </Field.Root>
 
-          {rectilinear !== "no" ? (
-            <Fieldset.Root invalid={Boolean(errors.support)}>
-              <Fieldset.Legend fontWeight="500">¿Cómo se apoya la pieza?</Fieldset.Legend>
-              <Fieldset.HelperText>Nos ayuda a reconstruir la base tal y como es.</Fieldset.HelperText>
-              <RadioGroup.Root name="support" defaultValue={defaults.support} colorPalette="clay" mt="2">
-                <Stack direction={{ base: "column", sm: "row" }} gap={{ base: 3, sm: 6 }} wrap="wrap">
-                  {SUPPORT_OPTIONS.map((option) => (
+            <Fieldset.Root invalid={Boolean(errors.rectilinear)}>
+              <Fieldset.Legend fontWeight="500">Is it a straight piece, like a box, a panel or a headboard?</Fieldset.Legend>
+              <RadioGroup.Root
+                name="rectilinear"
+                defaultValue={defaults.rectilinear}
+                onValueChange={(e) => setRectilinear(e.value ?? DEFAULT_RECTILINEAR)}
+                colorPalette="clay"
+                mt="2"
+              >
+                <Stack direction="row" gap="6">
+                  {RECTILINEAR_OPTIONS.map((option) => (
                     <RadioGroup.Item key={option.value} value={option.value}>
                       <RadioGroup.ItemHiddenInput />
                       <RadioGroup.ItemIndicator />
@@ -256,48 +283,49 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
                   ))}
                 </Stack>
               </RadioGroup.Root>
-              <Fieldset.ErrorText>{errors.support}</Fieldset.ErrorText>
+              <Fieldset.ErrorText>{errors.rectilinear}</Fieldset.ErrorText>
             </Fieldset.Root>
-          ) : null}
-        </Stack>
 
+            {rectilinear !== "no" ? (
+              <Fieldset.Root invalid={Boolean(errors.support)}>
+                <Fieldset.Legend fontWeight="500">How does it stand?</Fieldset.Legend>
+                <Fieldset.HelperText>Helps us rebuild the base exactly as it is.</Fieldset.HelperText>
+                <RadioGroup.Root name="support" defaultValue={defaults.support} colorPalette="clay" mt="2">
+                  <Stack direction={{ base: "column", sm: "row" }} gap={{ base: 3, sm: 6 }} wrap="wrap">
+                    {SUPPORT_OPTIONS.map((option) => (
+                      <RadioGroup.Item key={option.value} value={option.value}>
+                        <RadioGroup.ItemHiddenInput />
+                        <RadioGroup.ItemIndicator />
+                        <RadioGroup.ItemText>{option.label}</RadioGroup.ItemText>
+                      </RadioGroup.Item>
+                    ))}
+                  </Stack>
+                </RadioGroup.Root>
+                <Fieldset.ErrorText>{errors.support}</Fieldset.ErrorText>
+              </Fieldset.Root>
+            ) : null}
 
-        <Field.Root invalid={Boolean(errors.photos)}>
-          <Field.Label>Fotos</Field.Label>
-          <Field.HelperText mb="2">
-            Vista frontal o de tres cuartos, fondo claro sin otros muebles, la pieza entera en el encuadre y al menos
-            1.000 px en el lado mayor. La primera es la principal.
-          </Field.HelperText>
-          <Box w="full">
-            <PhotoDropzone photos={photos} onChange={setPhotos} invalid={Boolean(errors.photos)} disabled={pending} />
-          </Box>
-          <Field.ErrorText>{errors.photos}</Field.ErrorText>
-        </Field.Root>
-
-        <Field.Root invalid={Boolean(errors.notes)}>
-          <Field.Label>
-            Notas{" "}
-            <Text as="span" color="fg.muted" fontWeight="400">
-              (opcional)
-            </Text>
-          </Field.Label>
-          <Textarea
-            name="notes"
-            defaultValue={defaults.notes}
-            maxLength={500}
-            rows={3}
-            bg="bg.panel"
-            placeholder="Materiales, acabados o cualquier detalle que no se vea en la foto."
-            onChange={(e) => setText((t) => ({ ...t, notes: e.target.value }))}
-          />
-          <Field.ErrorText>{errors.notes}</Field.ErrorText>
-        </Field.Root>
+            <Field.Root invalid={Boolean(errors.notes)}>
+              <Field.Label>Notes</Field.Label>
+              <Textarea
+                name="notes"
+                defaultValue={defaults.notes}
+                maxLength={500}
+                rows={3}
+                bg="bg.panel"
+                placeholder="Materials, finishes or any detail the photo doesn't show."
+                onChange={(e) => setNotes(e.target.value)}
+              />
+              <Field.ErrorText>{errors.notes}</Field.ErrorText>
+            </Field.Root>
+          </Stack>
+        </Box>
 
         <Box bg="bg.subtle" rounded="xl" p="4" fontSize="sm">
-          <Text fontWeight="600">Qué no hacemos todavía</Text>
+          <Text fontWeight="600">What we don&apos;t do yet</Text>
           <Text color="fg.muted" mt="1">
-            Piezas de metal, cromo o vidrio, ni con tubos o patas finas: los generadores pierden el reflejo y las
-            proporciones, y no llegan a la escala que prometemos (±3 % por eje).
+            Metal, chrome or glass pieces, or pieces with thin tubes or legs: the 3D generators lose the reflections and
+            proportions and can&apos;t reach the scale we promise (±3% per axis).
           </Text>
         </Box>
 
@@ -305,7 +333,8 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
           <Alert.Root status="warning" rounded="xl">
             <Alert.Indicator />
             <Alert.Title>
-              Parece una pieza de metal o vidrio. Si lo es, la rechazaremos sin coste, pero contará en tu límite diario.
+              This looks like a metal or glass piece. If it is, we&apos;ll decline it at no cost, but it will count
+              towards your daily limit.
             </Alert.Title>
           </Alert.Root>
         ) : null}
@@ -318,11 +347,11 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
         ) : null}
 
         <Stack gap="2" align={{ base: "stretch", sm: "flex-start" }}>
-          <Button type="submit" size="lg" colorPalette="clay" rounded="full" loading={pending} loadingText={progress ?? "Enviando…"}>
-            Crear pieza
+          <Button type="submit" size="lg" colorPalette="clay" rounded="full" loading={pending} loadingText={progress ?? "Sending…"}>
+            Create piece
           </Button>
           <Text fontSize="sm" color="fg.subtle">
-            Ver el resultado en 3D y con realidad aumentada es gratis. Solo pagas si lo descargas.
+            Viewing the result in 3D and in augmented reality is free. You only pay if you download it.
           </Text>
         </Stack>
       </Stack>

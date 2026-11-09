@@ -22,7 +22,7 @@ function useAutoRefresh(active: boolean) {
 export function StatusSteps({ steps, poll }: { steps: StatusStep[]; poll: boolean }) {
   useAutoRefresh(poll);
   return (
-    <Stack as="ol" listStyleType="none" gap="0" aria-label="Progreso de la pieza">
+    <Stack as="ol" listStyleType="none" gap="0" aria-label="Piece progress">
       {steps.map((step, i) => (
         <Flex as="li" key={step.key} gap="3" aria-current={step.state === "current" ? "step" : undefined}>
           <Flex direction="column" align="center">

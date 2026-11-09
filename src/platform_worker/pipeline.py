@@ -78,7 +78,7 @@ THUMB_STEM = "thumb"
 
 # Daily provider budget (USD) over every organic piece; ``WORKER_DAILY_BUDGET_USD``.
 DEFAULT_DAILY_BUDGET_USD = 20.0
-BUDGET_MESSAGE = "Presupuesto diario agotado; se reintenta mañana"
+BUDGET_MESSAGE = "Daily generation budget reached; we'll retry tomorrow."
 MADRID = ZoneInfo("Europe/Madrid")
 
 # A piece can be claimed the instant it is inserted, before its ``piece_photos`` rows exist:
@@ -86,9 +86,9 @@ MADRID = ZoneInfo("Europe/Madrid")
 # after that it becomes ``needs_photos``. Time-based on purpose: ``claim_next_piece()``
 # clears ``error`` on every claim, so a counter kept in the row would never advance.
 PHOTOS_GRACE = timedelta(minutes=10)
-WAITING_PHOTOS_MESSAGE = "Esperando las fotos de la pieza."
+WAITING_PHOTOS_MESSAGE = "Waiting for the piece's photos."
 NO_PHOTOS_ERROR = (
-    "No se recibieron fotos de la pieza. Vuelve a subir al menos una foto para continuar."
+    "We didn't receive any photos for this piece. Upload at least one photo to continue."
 )
 PROVIDER_MAX_PX = 2048  # raw-photo fallback for providers (fal base64 limit ≈ 6 MB)
 NOTIFY_TIMEOUT_SECONDS = 10.0

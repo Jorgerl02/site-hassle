@@ -1,4 +1,4 @@
-// Creates (or reuses) the Stripe product «Piezas 3D» and one one-off EUR price
+// Creates (or reuses, renaming it if needed) the Stripe product "3D pieces" and one one-off EUR price
 // per credit pack, with `lookup_key` = pack id (pieza_1 | pieza_10 | pieza_30).
 // Idempotent: run it as often as you like.
 //
@@ -8,7 +8,9 @@
 import Stripe from "stripe";
 import type { Pack } from "../src/lib/pricing";
 
-const PRODUCT_NAME = "Piezas 3D";
+// Customer-facing (Checkout, receipts and invoices): English.
+const PRODUCT_NAME = "3D pieces";
+const PRODUCT_DESCRIPTION = "Credits to download true-to-scale 3D pieces (2K GLB and USDZ). 1 credit = 1 piece.";
 const PRODUCT_KEY = "piezas_3d"; // metadata.app, to find the product again
 
 // Runtime import with the .ts extension Node needs; the type comes from the import above.
@@ -26,11 +28,14 @@ console.log(`Modo: ${key.startsWith("sk_live_") || key.startsWith("rk_live_") ? 
 
 async function findOrCreateProduct(): Promise<Stripe.Product> {
   for await (const product of stripe.products.list({ active: true, limit: 100 })) {
-    if (product.metadata?.app === PRODUCT_KEY) return product;
+    if (product.metadata?.app !== PRODUCT_KEY) continue;
+    if (product.name === PRODUCT_NAME && product.description === PRODUCT_DESCRIPTION) return product;
+    console.log(`~ producto renombrado: «${product.name}» → «${PRODUCT_NAME}»`);
+    return stripe.products.update(product.id, { name: PRODUCT_NAME, description: PRODUCT_DESCRIPTION });
   }
   return stripe.products.create({
     name: PRODUCT_NAME,
-    description: "Créditos para descargar piezas 3D a escala real (GLB 2K y USDZ). 1 crédito = 1 pieza.",
+    description: PRODUCT_DESCRIPTION,
     metadata: { app: PRODUCT_KEY },
   });
 }
@@ -54,7 +59,7 @@ async function ensurePrice(product: Stripe.Product, pack: Pack): Promise<void> {
     product: product.id,
     currency: "eur",
     unit_amount: pack.priceCents,
-    tax_behavior: "inclusive", // IVA incluido
+    tax_behavior: "inclusive", // VAT included
     nickname: pack.label,
     lookup_key: pack.id,
     transfer_lookup_key: true,

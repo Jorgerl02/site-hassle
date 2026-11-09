@@ -44,7 +44,7 @@ export async function createCheckoutSession(packId: string): Promise<string> {
     customer_email: user.email ?? undefined,
     // The customer ticked the withdrawal waiver (checked by `startCheckout`); kept on the session as evidence.
     metadata: { pack: pack.id, credits: String(pack.credits), withdrawal_waiver: "accepted" },
-    locale: "es",
+    locale: "en",
     // Invoice with the customer's tax id (companies need it to deduct the VAT).
     invoice_creation: { enabled: true },
     tax_id_collection: { enabled: true },

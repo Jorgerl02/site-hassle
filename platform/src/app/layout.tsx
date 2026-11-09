@@ -22,24 +22,26 @@ const sans = Inter({
 });
 
 const description =
-  "Sube la foto de catálogo y las medidas de tu mueble y recibe un modelo 3D a escala real, listo para tu web y para verlo en casa con realidad aumentada. Lo ves gratis; solo pagas la pieza que descargas.";
+  "Upload a catalogue photo and the dimensions of your furniture and get a true-to-scale 3D model, ready for your website and for augmented reality at home. Viewing is free; you only pay for the pieces you download.";
+
+const title = `${PRODUCT_NAME}: true-to-scale 3D furniture from a single photo`;
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl()),
   title: {
-    default: `${PRODUCT_NAME}: tu mueble en 3D a escala real desde una foto`,
+    default: title,
     template: `%s · ${PRODUCT_NAME}`,
   },
   description,
   alternates: { canonical: "/" },
   openGraph: {
     type: "website",
-    locale: "es_ES",
+    locale: "en_GB",
     siteName: PRODUCT_NAME,
-    title: `${PRODUCT_NAME}: tu mueble en 3D a escala real desde una foto`,
+    title,
     description,
     url: "/",
-    images: [{ url: "/examples/p15-modelo.jpg", width: 720, height: 720, alt: "Modelo 3D de un sillón tapizado" }],
+    images: [{ url: "/examples/p15-modelo.jpg", width: 720, height: 720, alt: "3D model of an upholstered armchair" }],
   },
   twitter: { card: "summary_large_image" },
 };
@@ -50,7 +52,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="es" className={`${serif.variable} ${sans.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${serif.variable} ${sans.variable}`} suppressHydrationWarning>
       <body>
         <EmotionRegistry>
           <Provider>

@@ -17,7 +17,7 @@ export interface Example {
 export const EXAMPLES: readonly Example[] = [
   {
     id: "p15",
-    name: "Sillón tapizado",
+    name: "Upholstered armchair",
     material: "Bouclé",
     widthCm: 70,
     heightCm: 77,
@@ -26,18 +26,18 @@ export const EXAMPLES: readonly Example[] = [
   },
   {
     id: "p05",
-    name: "Jarrón de gres",
-    material: "Gres mate",
+    name: "Stoneware vase",
+    material: "Matte stoneware",
     widthCm: 12.5,
     heightCm: 20,
     depthCm: 12,
     model: { glb: "/examples/p05.glb" },
   },
-  { id: "p01", name: "Mesa de centro redonda", material: "Madera maciza", widthCm: 50, heightCm: 48.5, depthCm: 50 },
-  { id: "p07", name: "Mesa auxiliar", material: "Travertino", widthCm: 35, heightCm: 50, depthCm: 35 },
-  { id: "p14", name: "Butaca giratoria", material: "Tapizado", widthCm: 76, heightCm: 81, depthCm: 81 },
-  { id: "p02", name: "Jarrón de arcilla", material: "Arcilla envejecida", widthCm: 35, heightCm: 40, depthCm: 35 },
-  { id: "p08", name: "Mesita de noche", material: "Madera maciza", widthCm: 52, heightCm: 50, depthCm: 36 },
+  { id: "p01", name: "Round coffee table", material: "Solid wood", widthCm: 50, heightCm: 48.5, depthCm: 50 },
+  { id: "p07", name: "Side table", material: "Travertine", widthCm: 35, heightCm: 50, depthCm: 35 },
+  { id: "p14", name: "Swivel armchair", material: "Upholstered", widthCm: 76, heightCm: 81, depthCm: 81 },
+  { id: "p02", name: "Clay vase", material: "Aged clay", widthCm: 35, heightCm: 40, depthCm: 35 },
+  { id: "p08", name: "Bedside table", material: "Solid wood", widthCm: 52, heightCm: 50, depthCm: 36 },
 ];
 
 export function photoSrc(id: string): string {

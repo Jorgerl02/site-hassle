@@ -14,12 +14,21 @@ export const NOTES_MAX = 500;
 
 export const PIECE_KINDS: readonly PieceKind[] = Constants.public.Enums.piece_kind;
 
-/** Answer to «¿Es una pieza recta…?». */
+/** Answer to "Is it a straight piece…?" (values stay Spanish: they are stored and shared with the worker). */
 export type RectilinearAnswer = "si" | "no" | "no_se";
 
-/** Answer to «¿Cómo se apoya la pieza?» (`pieces.support`). */
+/** Answer to "How does it stand?" (`pieces.support`). */
 export type SupportAnswer = "patas" | "paneles" | "caja" | "no_se";
 export const SUPPORT_ANSWERS: readonly SupportAnswer[] = ["patas", "paneles", "caja", "no_se"];
+
+/**
+ * Defaults of the optional details (collapsed in the form): an unknown kind,
+ * "Not sure" for the straight-piece question and for the support. The admin
+ * can correct them in the review screen before regenerating.
+ */
+export const DEFAULT_KIND: PieceKind = "otro";
+export const DEFAULT_RECTILINEAR: RectilinearAnswer = "no_se";
+export const DEFAULT_SUPPORT: SupportAnswer = "no_se";
 
 export interface PhotoMeta {
   name: string;
@@ -32,12 +41,14 @@ export interface PhotoMeta {
 
 export interface PieceInput {
   name: string;
-  kind: string;
+  /** Missing or empty = `otro`. */
+  kind?: string | null;
   widthCm: string | number;
   heightCm: string | number;
   depthCm: string | number;
-  rectilinear: string;
-  /** Missing or empty = «No lo sé». */
+  /** Missing or empty = "Not sure". */
+  rectilinear?: string | null;
+  /** Missing or empty = "Not sure". */
   support?: string | null;
   notes?: string | null;
   photos: PhotoMeta[];
@@ -50,7 +61,7 @@ export interface PieceValue {
   heightCm: number;
   depthCm: number;
   rectilinear: boolean | null;
-  /** Only for pieces that may be rectilinear; null when the piece is not («No»). */
+  /** Only for pieces that may be rectilinear; null when the piece is not ("No"). */
   support: SupportAnswer | null;
   notes: string | null;
   photos: PhotoMeta[];
@@ -73,7 +84,7 @@ export type ValidationResult =
 
 const CM_RE = /^\d{1,4}(?:[.,]\d{1,2})?$/;
 
-/** «45,5» or «45.5» → 45.5. Thousands separators are not accepted (null). */
+/** «45.5» or «45,5» → 45.5. Thousands separators are not accepted (null). */
 export function parseCm(raw: string | number): number | null {
   if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
   const text = raw.trim();
@@ -85,24 +96,24 @@ const RECTILINEAR: Record<RectilinearAnswer, boolean | null> = { si: true, no: f
 
 function formatMb(bytes: number): string {
   const mb = bytes / (1024 * 1024);
-  return (Number.isInteger(mb) ? String(mb) : mb.toFixed(1)).replace(".", ",");
+  return Number.isInteger(mb) ? String(mb) : mb.toFixed(1);
 }
 
 function formatInt(n: number): string {
-  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 function photoError(photo: PhotoMeta): string | null {
   if (!(PHOTO_TYPES as readonly string[]).includes(photo.type)) {
-    return `«${photo.name}» no es una foto válida: usa JPG, PNG o WebP.`;
+    return `“${photo.name}” isn’t a supported photo: use JPG, PNG or WebP.`;
   }
   if (photo.size > MAX_PHOTO_BYTES) {
-    return `«${photo.name}» pesa ${formatMb(photo.size)} MB; el máximo es ${formatMb(MAX_PHOTO_BYTES)} MB.`;
+    return `“${photo.name}” is ${formatMb(photo.size)} MB; the limit is ${formatMb(MAX_PHOTO_BYTES)} MB.`;
   }
   if (photo.width && photo.height) {
     const longSide = Math.max(photo.width, photo.height);
     if (longSide < MIN_LONG_SIDE_PX) {
-      return `«${photo.name}» es pequeña (${formatInt(longSide)} px de lado mayor); necesitamos al menos ${formatInt(MIN_LONG_SIDE_PX)} px.`;
+      return `“${photo.name}” is too small (${formatInt(longSide)} px on the long side); we need at least ${formatInt(MIN_LONG_SIDE_PX)} px.`;
     }
   }
   return null;
@@ -114,36 +125,35 @@ export function validatePieceInput(input: PieceInput): ValidationResult {
 
   const name = input.name.trim().replace(/\s+/g, " ");
   if (name.length < NAME_MIN || name.length > NAME_MAX) {
-    errors.name = `Escribe un nombre de ${NAME_MIN} a ${NAME_MAX} caracteres.`;
+    errors.name = `Enter a name between ${NAME_MIN} and ${NAME_MAX} characters.`;
   }
 
-  const kind = input.kind as PieceKind;
-  if (!PIECE_KINDS.includes(kind)) errors.kind = "Elige el tipo de pieza.";
+  const kind = ((input.kind ?? "").trim() || DEFAULT_KIND) as PieceKind;
+  if (!PIECE_KINDS.includes(kind)) errors.kind = "Choose the type of piece.";
 
   const dims = {} as Record<"widthCm" | "heightCm" | "depthCm", number>;
   for (const field of ["widthCm", "heightCm", "depthCm"] as const) {
     const value = parseCm(input[field]);
     if (value === null || value < MIN_CM || value > MAX_CM) {
-      errors[field] = `Escribe una medida entre ${MIN_CM} y ${MAX_CM} cm.`;
+      errors[field] = `Enter a measurement between ${MIN_CM} and ${MAX_CM} cm.`;
     } else {
       dims[field] = value;
     }
   }
 
-  const answer = input.rectilinear as RectilinearAnswer;
-  if (!(answer in RECTILINEAR)) errors.rectilinear = "Elige una respuesta.";
+  const answer = ((input.rectilinear ?? "").trim() || DEFAULT_RECTILINEAR) as RectilinearAnswer;
+  if (!Object.hasOwn(RECTILINEAR, answer)) errors.rectilinear = "Choose an answer.";
 
-  const supportRaw = (input.support ?? "").trim() || "no_se";
-  const support = supportRaw as SupportAnswer;
-  if (!SUPPORT_ANSWERS.includes(support)) errors.support = "Elige una respuesta.";
+  const support = ((input.support ?? "").trim() || DEFAULT_SUPPORT) as SupportAnswer;
+  if (!SUPPORT_ANSWERS.includes(support)) errors.support = "Choose an answer.";
 
   const notes = (input.notes ?? "").trim();
-  if (notes.length > NOTES_MAX) errors.notes = `Las notas admiten ${NOTES_MAX} caracteres como máximo.`;
+  if (notes.length > NOTES_MAX) errors.notes = `Notes can be up to ${NOTES_MAX} characters.`;
 
   if (input.photos.length === 0) {
-    errors.photos = "Añade al menos una foto.";
+    errors.photos = "Add at least one photo.";
   } else if (input.photos.length > MAX_PHOTOS) {
-    errors.photos = `Puedes subir ${MAX_PHOTOS} fotos como máximo.`;
+    errors.photos = `You can upload up to ${MAX_PHOTOS} photos.`;
   } else {
     const first = input.photos.map(photoError).find(Boolean);
     if (first) errors.photos = first;
@@ -157,7 +167,7 @@ export function validatePieceInput(input: PieceInput): ValidationResult {
       kind,
       ...dims,
       rectilinear: RECTILINEAR[answer],
-      // An organic piece («No») has no support to describe.
+      // An organic piece ("No") has no support to describe.
       support: answer === "no" ? null : support,
       notes: notes || null,
       photos: input.photos,
@@ -165,52 +175,63 @@ export function validatePieceInput(input: PieceInput): ValidationResult {
   };
 }
 
-/** Words that put a piece in an excluded category (metal, glass); the worker uses the same stems. */
-const EXCLUDED_RE = /(^|[^a-záéíóúñ])(metal|acero|inox|crom|vidri|cristal|acristal)/i;
+/**
+ * Words (Spanish and English) that put a piece in an excluded category (metal,
+ * chrome, glass); the worker uses the same stems (`EXCLUDED_STEMS` in intake.py).
+ */
+const EXCLUDED_RE = /(^|[^a-záéíóúñ])(metal|acero|inox|steel|stainless|crom|chrom|vidri|cristal|acristal|glass)/i;
 
-/** True when the form shows the «no hacemos metal ni vidrio» warning. Non-blocking: the worker decides. */
+/** True when the form shows the "we don't do metal or glass" warning. Non-blocking: the worker decides. */
 export function looksExcluded(kind: string, notes: string, name = ""): boolean {
   if (kind === "lampara") return true;
   return EXCLUDED_RE.test(`${name} ${notes}`.normalize("NFD").replace(/[̀-ͯ]/g, ""));
 }
 
-/** Labels of the «Tipo» selector, in the order shown. */
+/** Customer labels of the "Type" selector, in the order shown (the admin has its own, in Spanish). */
 export const KIND_LABEL: Record<PieceKind, string> = {
-  mesa: "Mesa",
-  mesita: "Mesita o mesa auxiliar",
-  aparador: "Aparador o cómoda",
-  estanteria: "Estantería",
-  cabecero: "Cabecero",
+  mesa: "Table",
+  mesita: "Side or bedside table",
+  aparador: "Sideboard or chest of drawers",
+  estanteria: "Shelving unit",
+  cabecero: "Headboard",
   panel: "Panel",
-  sofa: "Sofá",
-  sillon: "Sillón o butaca",
-  silla: "Silla o taburete",
-  jarron: "Jarrón o cerámica",
-  lampara: "Lámpara",
-  otro: "Otro",
+  sofa: "Sofa",
+  sillon: "Armchair",
+  silla: "Chair or stool",
+  jarron: "Vase or ceramics",
+  lampara: "Lamp",
+  otro: "Other",
 };
 
 export const RECTILINEAR_OPTIONS: readonly { value: RectilinearAnswer; label: string }[] = [
-  { value: "si", label: "Sí" },
+  { value: "si", label: "Yes" },
   { value: "no", label: "No" },
-  { value: "no_se", label: "No sé" },
+  { value: "no_se", label: "Not sure" },
 ];
 
 export const SUPPORT_OPTIONS: readonly { value: SupportAnswer; label: string }[] = [
-  { value: "patas", label: "Sobre patas" },
-  { value: "paneles", label: "Sobre paneles laterales" },
-  { value: "caja", label: "Es una caja o lleva zócalo" },
-  { value: "no_se", label: "No lo sé" },
+  { value: "patas", label: "On legs" },
+  { value: "paneles", label: "On side panels" },
+  { value: "caja", label: "It's a box or has a plinth" },
+  { value: "no_se", label: "Not sure" },
 ];
 
-export const SUPPORT_LABEL: Record<SupportAnswer, string> = {
-  patas: "Sobre patas",
-  paneles: "Sobre paneles laterales",
-  caja: "Es una caja o lleva zócalo",
-  no_se: "No lo sé",
-};
+/**
+ * Name suggested from a photo's file name: «cabecero_rigole-02.JPG» →
+ * «Cabecero rigole 02». Empty when nothing readable is left.
+ */
+export function nameFromFileName(fileName: string): string {
+  const stem = fileName
+    .replace(/\.[a-z0-9]{2,5}$/i, "")
+    .replace(/[_\-.+]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, NAME_MAX)
+    .trim();
+  return stem ? stem.charAt(0).toUpperCase() + stem.slice(1) : "";
+}
 
-/** Stored value → form answer (unknown or null → «No lo sé»). */
+/** Stored value → form answer (unknown or null → "Not sure"). */
 export function supportAnswer(value: string | null | undefined): SupportAnswer {
   return SUPPORT_ANSWERS.includes(value as SupportAnswer) ? (value as SupportAnswer) : "no_se";
 }

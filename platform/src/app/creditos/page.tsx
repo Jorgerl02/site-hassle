@@ -14,11 +14,11 @@ import { startCheckout } from "./actions";
 
 
 export const metadata: Metadata = {
-  title: "Créditos",
+  title: "Credits",
   robots: { index: false },
 };
 
-const DATE_FORMAT = new Intl.DateTimeFormat("es-ES", {
+const DATE_FORMAT = new Intl.DateTimeFormat("en-GB", {
   day: "numeric",
   month: "short",
   year: "numeric",
@@ -90,7 +90,7 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
               </Text>
             </NextLink>
             <Button asChild size="sm" variant="ghost" colorPalette="ink">
-              <NextLink href="/panel">Tus piezas</NextLink>
+              <NextLink href="/panel">Your pieces</NextLink>
             </Button>
           </Flex>
         </Container>
@@ -100,11 +100,11 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
         <Stack gap={{ base: 10, md: 14 }}>
           <Stack gap="4">
             <Heading as="h1" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500">
-              Créditos
+              Credits
             </Heading>
             {returnState === "paid" ? (
               <>
-                <Notice tone="success">Pago recibido. Tus créditos ya están en tu saldo.</Notice>
+                <Notice tone="success">Payment received. Your credits are now in your balance.</Notice>
                 <TrackEvent
                   event="purchase"
                   onceKey={`purchase:${sessionId}`}
@@ -114,36 +114,36 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
             ) : null}
             {returnState === "pending" ? (
               <Notice tone="success">
-                Pago pendiente de confirmación. Sumaremos tus créditos en cuanto el banco lo confirme.
+                Payment pending confirmation. We&apos;ll add your credits as soon as your bank confirms it.
               </Notice>
             ) : null}
             {paymentError ? (
-              <Notice tone="error">No hemos podido abrir el pago. Inténtalo de nuevo en unos minutos.</Notice>
+              <Notice tone="error">We couldn&apos;t open the payment page. Please try again in a few minutes.</Notice>
             ) : null}
             {waiverError ? (
-              <Notice tone="error">Para comprar, marca la casilla de entrega inmediata del contenido digital.</Notice>
+              <Notice tone="error">To buy, tick the box about immediate delivery of the digital content.</Notice>
             ) : null}
             <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="xl" p={{ base: 6, md: 8 }}>
-              <Text color="fg.muted">Tu saldo</Text>
+              <Text color="fg.muted">Your balance</Text>
               <Flex align="baseline" gap="3" mt="1">
                 <Text data-testid="credit-balance" fontFamily="heading" fontSize={{ base: "6xl", md: "7xl" }} lineHeight="1">
                   {formatCount(ledger.balance)}
                 </Text>
                 <Text fontSize="lg" color="fg.muted">
-                  {ledger.balance === 1 ? "crédito" : "créditos"}
+                  {ledger.balance === 1 ? "credit" : "credits"}
                 </Text>
               </Flex>
               <Text mt="3" color="fg.muted" fontSize="sm">
-                1 crédito = 1 pieza descargada (GLB con texturas 2K y USDZ).
+                1 credit = 1 downloaded piece (GLB with 2K textures and USDZ).
               </Text>
             </Box>
           </Stack>
 
-          <Stack as="section" gap="6" aria-labelledby="comprar">
-            <Heading as="h2" id="comprar" fontSize={{ base: "2xl", md: "3xl" }} fontWeight="500">
-              Comprar créditos
+          <Stack as="section" gap="6" aria-labelledby="buy">
+            <Heading as="h2" id="buy" fontSize={{ base: "2xl", md: "3xl" }} fontWeight="500">
+              Buy credits
             </Heading>
-            {/* One form: each «Comprar» submits its pack; the waiver checkbox is required (native validation, checked again on the server). */}
+            {/* One form: each "Buy" submits its pack; the waiver checkbox is required (native validation, checked again on the server). */}
             <Stack asChild gap="6">
               <form action={startCheckout}>
                 <Grid templateColumns={{ base: "1fr", md: "repeat(3, 1fr)" }} gap={{ base: 4, md: 6 }} alignItems="stretch">
@@ -168,17 +168,17 @@ export default async function CreditsPage({ searchParams }: { searchParams: Sear
               </form>
             </Stack>
             <Text fontSize="sm" color="fg.muted" textWrap="pretty">
-              IVA incluido. Los créditos comprados no caducan. Sin reembolsos: por eso ves cada pieza entera, con sus
-              medidas y en realidad aumentada, antes de gastar un crédito.
+              VAT included. Credits you buy never expire. No refunds: that&apos;s why you see every piece in full, with
+              its dimensions and in augmented reality, before you spend a credit.
             </Text>
           </Stack>
 
-          <Stack as="section" gap="4" aria-labelledby="movimientos">
-            <Heading as="h2" id="movimientos" fontSize={{ base: "2xl", md: "3xl" }} fontWeight="500">
-              Movimientos
+          <Stack as="section" gap="4" aria-labelledby="history">
+            <Heading as="h2" id="history" fontSize={{ base: "2xl", md: "3xl" }} fontWeight="500">
+              History
             </Heading>
             {ledger.entries.length === 0 ? (
-              <Text color="fg.muted">Todavía no hay movimientos.</Text>
+              <Text color="fg.muted">No activity yet.</Text>
             ) : (
               <Stack as="ul" listStyleType="none" gap="0" borderTopWidth="1px" borderColor="border" data-testid="ledger">
                 {ledger.entries.map((entry) => (
@@ -250,7 +250,7 @@ function PackCard({ pack, paymentsEnabled }: { pack: Pack; paymentsEnabled: bool
         {formatEur(pack.priceCents)}
       </Text>
       <Text color="fg.muted" fontSize="sm">
-        {pack.credits === 1 ? "Una pieza descargada" : `${formatEur(pack.perPieceCents)} por pieza`}
+        {pack.credits === 1 ? "One downloaded piece" : `${formatEur(pack.perPieceCents)} per piece`}
       </Text>
       <Box flex="1" />
       {paymentsEnabled ? (
@@ -263,11 +263,11 @@ function PackCard({ pack, paymentsEnabled }: { pack: Pack; paymentsEnabled: bool
           variant={pack.highlighted ? "solid" : "outline"}
           rounded="full"
         >
-          Comprar
+          Buy
         </Button>
       ) : (
         <Button disabled width="full" variant="outline" colorPalette="ink" rounded="full">
-          Pagos no configurados
+          Payments not configured
         </Button>
       )}
     </Stack>

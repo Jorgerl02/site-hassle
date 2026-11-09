@@ -17,8 +17,7 @@ from typing import Any
 from PIL import Image, UnidentifiedImageError
 
 from harness.core.models import Piece
-from harness.prep.clean import validate_input
-from harness.prep.requirements import PHOTO_REQUIREMENTS
+from harness.prep.clean import MIN_BBOX_FRACTION, MIN_LONG_SIDE_PX, validate_input
 
 MAX_PHOTO_BYTES = 20 * 1024 * 1024  # same 20 MB limit as the upload form
 
@@ -27,24 +26,33 @@ RECTILINEAR_KINDS: frozenset[str] = frozenset(
     {"cabecero", "panel", "mesita", "aparador", "estanteria", "mesa"}
 )
 ORGANIC_KINDS: frozenset[str] = frozenset({"sofa", "sillon", "silla", "jarron", "otro"})
+# Customer-facing (English): stored in ``pieces.reject_reason`` and shown on the piece page.
 EXCLUDED_KINDS: dict[str, str] = {
     "lampara": (
-        "No trabajamos lámparas: suelen ser de metal, cromo o vidrio y tener tubos finos, "
-        "y los generadores pierden el reflejo y deforman los arcos."
+        "We don't do lamps yet: they are usually metal, chrome or glass with thin tubes, "
+        "and the 3D generators lose the reflections and warp the curves."
     ),
 }
 # Accent-free, lowercase keyword → reason (text of docs/promesa.md, «Categorías excluidas»).
-_REFLECTION = "los generadores pierden el reflejo y deforman los arcos."
-_TRANSPARENCY = "el reflejo y la transparencia no se reproducen bien."
-# Word-start stems (accent-free), so «cromadas», «metálica» or «inoxidable» are caught.
+_REFLECTION = "the 3D generators lose the reflections and warp the curves."
+_TRANSPARENCY = "reflections and transparency don't come out right."
+_METAL = f"We don't do metal pieces yet: {_REFLECTION}"
+_CHROME = f"We don't do chrome pieces yet: {_REFLECTION}"
+_GLASS = f"We don't do glass pieces yet: {_TRANSPARENCY}"
+# Word-start stems (accent-free), Spanish and English, so «cromadas», «metálica»,
+# «inoxidable», "chromed" or "glassware" are caught. Mirrors ``EXCLUDED_RE`` on the web.
 EXCLUDED_STEMS: dict[str, str] = {
-    "metal": f"No trabajamos piezas de metal: {_REFLECTION}",
-    "acero": f"No trabajamos piezas de metal: {_REFLECTION}",
-    "inox": f"No trabajamos piezas de metal: {_REFLECTION}",
-    "crom": f"No trabajamos piezas cromadas: {_REFLECTION}",
-    "vidri": f"No trabajamos piezas de vidrio: {_TRANSPARENCY}",
-    "cristal": f"No trabajamos piezas de cristal: {_TRANSPARENCY}",
-    "acristal": f"No trabajamos piezas de cristal: {_TRANSPARENCY}",
+    "metal": _METAL,
+    "acero": _METAL,
+    "inox": _METAL,
+    "steel": _METAL,
+    "stainless": _METAL,
+    "crom": _CHROME,
+    "chrom": _CHROME,
+    "vidri": _GLASS,
+    "cristal": _GLASS,
+    "acristal": _GLASS,
+    "glass": _GLASS,
 }
 
 # Harness category (only used for bookkeeping in the harness: rubric reports, file names).
@@ -71,6 +79,42 @@ _BASE_WORDS = re.compile(r"\b(patas?|zocalo)\b")
 
 Validator = Callable[[Path], list[str]]
 
+# Customer-facing photo requirements (English); the harness keeps its Spanish list for the CLI.
+PHOTO_REQUIREMENTS: list[str] = [
+    "A front or three-quarter view of the piece.",
+    "A light or plain background, with no other furniture or objects around it.",
+    "The whole piece in the frame, not cropped at any edge.",
+    f"At least {MIN_LONG_SIDE_PX:,} px on the long side.",
+    f"The piece should fill at least {MIN_BBOX_FRACTION:.0%} of the photo's long side.",
+]
+
+_LOW_RES = re.compile(r"^Resolución insuficiente: lado mayor ([\d.]+) px")
+_NO_OBJECT = re.compile(r"^Objeto no detectado")
+_TOO_SMALL = re.compile(r"^Objeto demasiado pequeño")
+
+
+def _english_issue(issue: str) -> str:
+    """English customer copy for a Spanish ``validate_input`` issue (unknown ones pass through)."""
+    if match := _LOW_RES.match(issue):
+        long_side = int(match.group(1).replace(".", ""))
+        return (
+            f"The resolution is too low: {long_side:,} px on the long side "
+            f"(we need at least {MIN_LONG_SIDE_PX:,} px)"
+        )
+    if _NO_OBJECT.match(issue):
+        return "We couldn't find the piece in the photo (background removal found nothing)"
+    if _TOO_SMALL.match(issue):
+        return (
+            "The piece is too small in the photo: its longest side should fill at least "
+            f"{MIN_BBOX_FRACTION:.0%} of the photo's long side"
+        )
+    return issue
+
+
+def validate_photo(path: Path) -> list[str]:
+    """``harness.prep.clean.validate_input`` with its issues in English for the customer."""
+    return [_english_issue(issue) for issue in validate_input(path)]
+
 
 def _normalise(text: str) -> str:
     decomposed = unicodedata.normalize("NFKD", (text or "").lower())
@@ -93,16 +137,16 @@ def excluded_reasons(piece_row: dict[str, Any]) -> list[str]:
 def _photo_problems(path: Path, validator: Validator) -> list[str]:
     path = Path(path)
     if not path.is_file():
-        return ["No se pudo descargar la foto"]
+        return ["We couldn't download the photo"]
     size = path.stat().st_size
     if size > MAX_PHOTO_BYTES:
-        mb = f"{size / 1024 / 1024:.1f}".replace(".", ",")
-        return [f"La foto pesa {mb} MB (máximo 20 MB)"]
+        mb = f"{size / 1024 / 1024:.1f}"
+        return [f"The photo is {mb} MB (20 MB max)"]
     try:
         with Image.open(path) as img:
             img.verify()
     except (UnidentifiedImageError, OSError, SyntaxError):
-        return ["El archivo no es una imagen que podamos leer (usa JPG, PNG o WEBP)"]
+        return ["The file isn't an image we can read (use JPG, PNG or WebP)"]
     return list(validator(path))
 
 
@@ -110,32 +154,32 @@ def check(
     piece_row: dict[str, Any],
     photo_paths: Sequence[Path],
     *,
-    validator: Validator = validate_input,
+    validator: Validator = validate_photo,
 ) -> list[str]:
-    """Problems that send the piece to ``needs_photos`` (Spanish, empty when it can run).
+    """Problems that send the piece to ``needs_photos`` (English, empty when it can run).
 
     Excluded categories first (no photo check is worth it then), then each photo: present,
     ≤ 20 MB, a readable image and ``validate_input``. Problems of photo ``n`` are prefixed
-    «Foto n:»."""
+    "Photo n:"."""
     reasons = excluded_reasons(piece_row)
     if reasons:
         return reasons
     if not photo_paths:
-        return ["La pieza no tiene ninguna foto"]
+        return ["The piece has no photos"]
     problems: list[str] = []
     for n, path in enumerate(photo_paths, start=1):
-        problems += [f"Foto {n}: {p}" for p in _photo_problems(path, validator)]
+        problems += [f"Photo {n}: {p}" for p in _photo_problems(path, validator)]
     return problems
 
 
 def explain(problems: Sequence[str]) -> str:
-    """Spanish message stored in ``pieces.error`` for ``needs_photos``."""
+    """English message stored in ``pieces.error`` for ``needs_photos`` (shown to the customer)."""
     if not problems:
         return ""
-    if any(p.startswith("Foto ") or p.startswith("La pieza no tiene") for p in problems):
-        lines = ["Las fotos no se pueden usar todavía:"]
+    if any(p.startswith("Photo ") or p.startswith("The piece has no photos") for p in problems):
+        lines = ["We can't use these photos yet:"]
         lines += [f"· {p}" for p in problems]
-        lines += ["", "Requisitos de la foto:"]
+        lines += ["", "What a good photo looks like:"]
         lines += [f"· {req}" for req in PHOTO_REQUIREMENTS]
         return "\n".join(lines)
     return "\n".join(problems)

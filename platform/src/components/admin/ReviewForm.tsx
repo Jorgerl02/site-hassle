@@ -4,18 +4,21 @@ import { Box, Button, Flex, Stack, Text, Textarea } from "@chakra-ui/react";
 import { useActionState, useState } from "react";
 import { submitReview, type ReviewActionResult } from "@/app/admin/revision/actions";
 import type { CandidateView } from "@/lib/admin";
+import type { ShapeValues } from "@/lib/admin-labels";
+import { ShapeFields } from "./ShapeFields";
 import { ReviewCard } from "./ReviewCard";
 
 interface ReviewFormProps {
   pieceId: string;
   candidates: CandidateView[];
   canRegenerate: boolean;
+  shape: ShapeValues;
 }
 
 const initialState: ReviewActionResult = { ok: true };
 
 /** Candidate picker plus the three review decisions. */
-export function ReviewForm({ pieceId, candidates, canRegenerate }: ReviewFormProps) {
+export function ReviewForm({ pieceId, candidates, canRegenerate, shape }: ReviewFormProps) {
   const [state, formAction, pending] = useActionState(submitReview, initialState);
   const initial = candidates.find((c) => c.selected && c.deliverable) ?? candidates.find((c) => c.deliverable);
   const [modelId, setModelId] = useState(initial?.id ?? "");
@@ -40,6 +43,16 @@ export function ReviewForm({ pieceId, candidates, canRegenerate }: ReviewFormPro
             ))
           )}
         </Stack>
+
+        <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="xl" p={{ base: 4, md: 5 }}>
+          <Text fontWeight="600" mb="1">
+            Forma de la pieza
+          </Text>
+          <Text fontSize="sm" color="fg.muted" mb="3">
+            Corrige lo que el cliente dejó por defecto; se guarda al pulsar «Regenerar».
+          </Text>
+          <ShapeFields idPrefix={`review-${pieceId}`} defaults={shape} disabled={pending} />
+        </Box>
 
         <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="xl" p={{ base: 4, md: 5 }}>
           <Text asChild fontWeight="600" display="block" mb="1">

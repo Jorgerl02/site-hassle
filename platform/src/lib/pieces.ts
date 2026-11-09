@@ -12,13 +12,13 @@ export const SIGNED_URL_SECONDS = 60 * 60;
 
 /** Customer-facing label for each status. */
 export const PIECE_STATUS_LABEL: Record<PieceStatus, string> = {
-  queued: "En cola",
-  generating: "Generando",
-  review: "En revisión",
-  ready: "Lista",
-  approved: "Descargada",
-  needs_photos: "Faltan fotos",
-  rejected: "Rechazada",
+  queued: "Queued",
+  generating: "Generating",
+  review: "In review",
+  ready: "Ready",
+  approved: "Downloaded",
+  needs_photos: "Needs photos",
+  rejected: "Closed",
   failed: "Error",
 };
 
@@ -28,7 +28,7 @@ export const SETTLED_STATUSES: readonly PieceStatus[] = ["ready", "approved", "r
 /** Statuses where the client may read the current attempt's models (RLS mirrors this). */
 export const MODEL_STATUSES: readonly PieceStatus[] = ["ready", "approved", "rejected"];
 
-export const DAILY_LIMIT_MESSAGE = `Has llegado a las ${DAILY_PIECE_LIMIT} piezas de hoy. Mañana podrás crear más.`;
+export const DAILY_LIMIT_MESSAGE = `You've reached today's limit of ${DAILY_PIECE_LIMIT} pieces. You can create more tomorrow.`;
 
 /**
  * Columns the customer may read: exactly the column-level SELECT grant of
@@ -41,7 +41,7 @@ const PIECE_COLUMNS =
   "id, user_id, name, kind, width_cm, height_cm, depth_cm, rectilinear, support, notes, status, attempt, error, reject_reason, created_at, updated_at";
 
 /** Customer copy for `failed`: the technical detail stays in `pieces.error` for the admin. */
-export const FAILED_MESSAGE = "No hemos podido generar esta pieza. Lo revisamos y te escribimos.";
+export const FAILED_MESSAGE = "We couldn't generate this piece. We're looking into it and will email you.";
 
 export type CustomerPiece = Pick<
   Piece,
@@ -169,7 +169,7 @@ function fileStem(name: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
-  return stem || "pieza";
+  return stem || "piece";
 }
 
 /**
@@ -225,10 +225,10 @@ export interface StatusStep {
 }
 
 const STEPS: readonly Omit<StatusStep, "state">[] = [
-  { key: "queued", label: "En cola", hint: "Tu pieza espera turno." },
-  { key: "generating", label: "Generando", hint: "Creamos el modelo y lo ajustamos a tus medidas." },
-  { key: "review", label: "En revisión", hint: "Lo revisamos antes de enseñártelo." },
-  { key: "ready", label: "Lista", hint: "Ya puedes verla en 3D y en tu casa." },
+  { key: "queued", label: "Queued", hint: "Your piece is waiting its turn." },
+  { key: "generating", label: "Generating", hint: "We're building the model and fitting it to your dimensions." },
+  { key: "review", label: "In review", hint: "We check it before showing it to you." },
+  { key: "ready", label: "Ready", hint: "You can now see it in 3D and in your room." },
 ];
 
 /** Progress steps for the pieces on the happy path; null for needs_photos, rejected and failed. */

@@ -9,7 +9,7 @@ import {
   type TestUser,
 } from "./helpers/credits-helpers";
 
-test.describe("créditos", () => {
+test.describe("credits", () => {
   const admin = adminClient();
   let user: TestUser | undefined;
 
@@ -26,36 +26,37 @@ test.describe("créditos", () => {
   test("shows a zero balance and the three packs", async ({ page }) => {
     const response = await page.goto("/creditos");
     expect(response?.status()).toBe(200);
-    await expect(page.getByRole("heading", { level: 1, name: "Créditos" })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Credits" })).toBeVisible();
     await expect(page.getByTestId("credit-balance")).toHaveText("0");
-    await expect(page.getByText("Todavía no hay movimientos.")).toBeVisible();
+    await expect(page.getByText("No activity yet.")).toBeVisible();
 
-    await expect(page.getByTestId("pack-pieza_1")).toContainText("9 €");
-    await expect(page.getByTestId("pack-pieza_10")).toContainText("69 €");
-    await expect(page.getByTestId("pack-pieza_10")).toContainText("Más elegido");
-    await expect(page.getByTestId("pack-pieza_10")).toContainText("6,90 € por pieza");
-    await expect(page.getByTestId("pack-pieza_30")).toContainText("169 €");
-    await expect(page.getByTestId("pack-pieza_30")).toContainText("5,63 € por pieza");
-    await expect(page.getByText(/Sin reembolsos/)).toBeVisible();
+    await expect(page.getByTestId("pack-pieza_1")).toContainText("€9");
+    await expect(page.getByTestId("pack-pieza_10")).toContainText("€69");
+    await expect(page.getByTestId("pack-pieza_10")).toContainText("Most popular");
+    await expect(page.getByTestId("pack-pieza_10")).toContainText("€6.90 per piece");
+    await expect(page.getByTestId("pack-pieza_30")).toContainText("€169");
+    await expect(page.getByTestId("pack-pieza_30")).toContainText("€5.63 per piece");
+    await expect(page.getByText(/No refunds/)).toBeVisible();
 
     if (stripeConfigured()) {
-      await expect(page.getByRole("button", { name: "Comprar" })).toHaveCount(3);
+      await expect(page.getByRole("button", { name: "Buy", exact: true })).toHaveCount(3);
+      await expect(page.getByText("I agree that the digital content is delivered immediately")).toBeVisible();
     } else {
       // Without Stripe keys the page must not break: buttons say so and stay disabled.
-      const buttons = page.getByRole("button", { name: "Pagos no configurados" });
+      const buttons = page.getByRole("button", { name: "Payments not configured" });
       await expect(buttons).toHaveCount(3);
       for (const button of await buttons.all()) await expect(button).toBeDisabled();
-      await expect(page.getByRole("button", { name: "Comprar" })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Buy", exact: true })).toHaveCount(0);
     }
   });
 
-  test("shows credits granted by the webhook path as a «Compra»", async ({ page }) => {
+  test("shows credits granted by the webhook path as a «Purchase»", async ({ page }) => {
     expect(await grantPurchaseCredits(admin, user!.id, 10)).toBe(10);
     await page.goto("/creditos");
     await expect(page.getByTestId("credit-balance")).toHaveText("10");
     const entry = page.getByTestId("ledger-entry");
     await expect(entry).toHaveCount(1);
-    await expect(entry).toContainText("Compra");
+    await expect(entry).toContainText("Purchase");
     await expect(entry).toContainText("+10");
   });
 });

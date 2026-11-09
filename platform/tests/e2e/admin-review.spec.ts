@@ -140,19 +140,35 @@ test("reject needs a reason the customer will read", async ({ browser }) => {
   expect(row).toEqual({ status: "rejected", reject_reason: "Las fotos no muestran el respaldo." });
 });
 
-test("regenerate sends the piece back to the queue with the next attempt", async ({ browser }) => {
+test("regenerate saves the corrected shape and sends the piece back with the next attempt", async ({ browser }) => {
   const piece = await seedReviewPiece(db, customer, `test_ Sillón regenerar ${Date.now()}`);
   pieces.push(piece);
+  // What a customer who never opened the optional details leaves.
+  await db.from("pieces").update({ kind: "otro", rectilinear: null, support: "no_se" }).eq("id", piece.id);
   const page = await adminPage(browser);
   await page.goto(`/admin/revision/${piece.id}`);
 
+  await page.getByLabel("Tipo").selectOption("aparador");
+  await page.getByLabel("¿Pieza recta?").selectOption("si");
+  await page.getByLabel("¿Cómo se apoya?").selectOption("patas");
   await page.getByLabel("Nota o motivo").fill("Patas demasiado gruesas.");
   await page.getByRole("button", { name: "Regenerar" }).click();
   await expect(page).toHaveURL(/\/admin\/revision$/);
-  const { data: row } = await db.from("pieces").select("status, attempt, review_note").eq("id", piece.id).single();
+  const { data: row } = await db
+    .from("pieces")
+    .select("status, attempt, review_note, kind, rectilinear, support")
+    .eq("id", piece.id)
+    .single();
   // Delete straight away so a running worker never picks the test piece up.
   await cleanupPiece(db, piece);
-  expect(row).toEqual({ status: "queued", attempt: 2, review_note: "Patas demasiado gruesas." });
+  expect(row).toEqual({
+    status: "queued",
+    attempt: 2,
+    review_note: "Patas demasiado gruesas.",
+    kind: "aparador",
+    rectilinear: true,
+    support: "patas",
+  });
 });
 
 test("failed pieces: technical error, «Reintentar» on the same attempt and «Rechazar»", async ({ browser }) => {
@@ -171,13 +187,20 @@ test("failed pieces: technical error, «Reintentar» on the same attempt and «R
 
   const retryItem = page.getByTestId("failed-item").filter({ hasText: retry.name });
   await expect(retryItem.getByTestId("failed-error")).toContainText("proveedor caído");
+  await retryItem.getByLabel("¿Pieza recta?").selectOption("no");
+  await retryItem.getByLabel("Tipo").selectOption("silla");
   await retryItem.getByRole("button", { name: "Reintentar" }).click();
   // The action revalidates the page: the piece leaves the «Fallidas» list.
   await expect(retryItem).toHaveCount(0);
 
-  const { data: retried } = await db.from("pieces").select("status, attempt, error").eq("id", retry.id).single();
+  const { data: retried } = await db
+    .from("pieces")
+    .select("status, attempt, error, kind, rectilinear, support")
+    .eq("id", retry.id)
+    .single();
   await cleanupPiece(db, retry); // a running worker must never pick the test piece up
-  expect(retried).toEqual({ status: "queued", attempt: 1, error: null });
+  // Not straight: no support, as in the customer form.
+  expect(retried).toEqual({ status: "queued", attempt: 1, error: null, kind: "silla", rectilinear: false, support: null });
 
   const rejectItem = page.getByTestId("failed-item").filter({ hasText: reject.name });
   await rejectItem.getByRole("button", { name: "Rechazar" }).click();

@@ -2,25 +2,25 @@ import { Box, Container, Grid, Heading, Stack, Text } from "@chakra-ui/react";
 
 const STEPS = [
   {
-    title: "Sube la foto y las medidas",
-    body: "Una foto limpia de catálogo, de frente o de tres cuartos, y el ancho, el alto y el fondo en centímetros. Nada más: ningún ajuste técnico.",
+    title: "Upload the photo and dimensions",
+    body: "A clean catalogue photo, front or three-quarter view, plus the width, height and depth in centimetres. That's it: no technical settings.",
   },
   {
-    title: "Lo revisamos y lo ves en 3D",
-    body: "Ajustamos el modelo a tus medidas (±3\u00a0% por eje) y lo revisamos antes de enseñártelo. Lo giras, compruebas las medidas y lo colocas en tu casa con el móvil. Gratis.",
+    title: "We check it, you see it in 3D",
+    body: "We fit the model to your dimensions (±3% per axis) and check it before showing it to you. Spin it, check the measurements and place it in your room with your phone. For free.",
   },
   {
-    title: "Descárgalo y súbelo a tu tienda",
-    body: "GLB para la web y USDZ para iPhone. Shopify muestra el botón «Ver en tu espacio» con el GLB; en WooCommerce o PrestaShop se inserta con un visor estándar.",
+    title: "Download it and add it to your store",
+    body: "GLB for the web and USDZ for iPhone. Shopify shows its “View in your space” button with the GLB; on WooCommerce or PrestaShop you embed it with a standard viewer.",
   },
 ] as const;
 
 export function HowItWorks() {
   return (
-    <Box as="section" id="como-funciona" py={{ base: 14, md: 24 }} scrollMarginTop="4">
+    <Box as="section" id="how-it-works" py={{ base: 14, md: 24 }} scrollMarginTop="4">
       <Container maxW="6xl" px={{ base: 4, md: 8 }}>
         <Heading as="h2" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500" letterSpacing="-0.01em" mb={{ base: 8, md: 12 }}>
-          Cómo funciona
+          How it works
         </Heading>
         <Grid as="ol" listStyleType="none" templateColumns={{ base: "1fr", md: "repeat(3, 1fr)" }} gap={{ base: 8, md: 10 }}>
           {STEPS.map((step, index) => (

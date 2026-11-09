@@ -69,7 +69,7 @@ def row(**overrides) -> dict:
 
 def test_lamp_is_excluded(tmp_path: Path) -> None:
     problems = intake.check(row(kind="lampara", name="Lámpara"), [photo(tmp_path / "1.jpg")])
-    assert problems and "lámparas" in problems[0]
+    assert problems and "lamps" in problems[0]
 
 
 def test_chrome_note_is_excluded(tmp_path: Path) -> None:
@@ -88,6 +88,9 @@ def test_chrome_note_is_excluded(tmp_path: Path) -> None:
         "Tapa de vidrio",
         "Puertas acristaladas",
         "Sobre de cristal",
+        "Brushed steel frame",
+        "Chrome legs",
+        "Glass top",
     ],
 )
 def test_other_excluded_materials(tmp_path: Path, notes: str) -> None:
@@ -111,7 +114,7 @@ def test_headboard_3cm_is_ok_and_rectilinear(tmp_path: Path) -> None:
 
 
 def test_no_photos(tmp_path: Path) -> None:
-    assert intake.check(row(), []) == ["La pieza no tiene ninguna foto"]
+    assert intake.check(row(), []) == ["The piece has no photos"]
 
 
 def test_pdf_is_not_an_image(tmp_path: Path) -> None:
@@ -119,23 +122,35 @@ def test_pdf_is_not_an_image(tmp_path: Path) -> None:
     pdf.write_bytes(b"%PDF-1.7\n...")
     problems = intake.check(row(), [pdf])
     assert problems == [
-        "Foto 1: El archivo no es una imagen que podamos leer (usa JPG, PNG o WEBP)"
+        "Photo 1: The file isn't an image we can read (use JPG, PNG or WebP)"
     ]
 
 
 def test_photo_over_20mb(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(intake, "MAX_PHOTO_BYTES", 10)
     problems = intake.check(row(), [photo(tmp_path / "1.jpg")])
-    assert problems[0].startswith("Foto 1: La foto pesa") and "máximo 20 MB" in problems[0]
+    assert problems[0].startswith("Photo 1: The photo is") and "20 MB max" in problems[0]
 
 
 def test_low_resolution_photo_uses_harness_validator(tmp_path: Path) -> None:
     small = photo(tmp_path / "1.jpg", size=(800, 600), box=(100, 100, 700, 500))
     problems = intake.check(row(), [small])
-    assert problems[0].startswith("Foto 1: Resolución insuficiente")
+    assert problems[0] == (
+        "Photo 1: The resolution is too low: 800 px on the long side (we need at least 1,000 px)"
+    )
     message = intake.explain(problems)
-    assert message.startswith("Las fotos no se pueden usar todavía:")
-    assert "Requisitos de la foto:" in message
+    assert message.startswith("We can't use these photos yet:")
+    assert "What a good photo looks like:" in message
+    assert "At least 1,000 px on the long side." in message
+
+
+def test_small_object_issue_is_in_english(tmp_path: Path) -> None:
+    tiny = photo(tmp_path / "1.jpg", box=(700, 500, 900, 700))
+    problems = intake.check(row(), [tiny])
+    assert problems == [
+        "Photo 1: The piece is too small in the photo: its longest side should fill at least "
+        "25% of the photo's long side"
+    ]
 
 
 @pytest.mark.parametrize(

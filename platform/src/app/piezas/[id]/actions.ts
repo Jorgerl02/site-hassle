@@ -16,14 +16,14 @@ export type ActionCode =
 export type ActionResult<T = object> = ({ ok: true } & T) | { ok: false; code: ActionCode; message: string };
 
 const MESSAGES: Record<ActionCode, string> = {
-  insufficient_credits: "Necesitas 1 crédito para descargar esta pieza.",
-  invalid_state: "Esta pieza ha cambiado de estado. Recarga la página.",
+  insufficient_credits: "You need 1 credit to download this piece.",
+  invalid_state: "This piece has changed status. Please reload the page.",
   // An admin «Regenerar» also uses an attempt: never claim the customer asked for them.
-  max_versions: "No quedan más versiones de esta pieza.",
+  max_versions: "There are no more versions left for this piece.",
 
-  not_found: "No encontramos esta pieza.",
-  not_authenticated: "Tu sesión ha caducado. Vuelve a entrar.",
-  unknown: "Algo ha fallado. Vuelve a intentarlo en unos minutos.",
+  not_found: "We can't find this piece.",
+  not_authenticated: "Your session has expired. Please sign in again.",
+  unknown: "Something went wrong. Please try again in a few minutes.",
 };
 
 function fail(code: ActionCode): { ok: false; code: ActionCode; message: string } {
@@ -66,7 +66,7 @@ export async function requestNewVersion(id: string): Promise<ActionResult> {
   return { ok: true };
 }
 
-/** «No me sirve»: closes the piece with the customer's reason, free. */
+/** "Not useful to me": closes the piece with the customer's reason, free. */
 export async function rejectPiece(id: string, reason: string): Promise<ActionResult> {
   if (!isUuid(id)) return fail("not_found");
   const supabase = await createServerClient();

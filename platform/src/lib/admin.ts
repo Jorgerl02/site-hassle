@@ -4,7 +4,10 @@ import { notFound } from "next/navigation";
 import { getCurrentUser, type CurrentUser } from "@/lib/auth";
 import type { Json, PieceKind, PieceStatus } from "@/lib/database.types";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { SUPPORT_LABEL, type SupportAnswer } from "@/lib/validation";
+import { KIND_LABEL, SUPPORT_LABEL, shapeValues, type ShapeValues } from "@/lib/admin-labels";
+import type { SupportAnswer } from "@/lib/validation";
+
+export * from "@/lib/admin-labels";
 
 
 /** Signed URLs for the review screens live one hour. */
@@ -44,22 +47,9 @@ export const RENDER_VIEW_LABEL: Record<RenderView, string> = {
   three_quarter: "Tres cuartos",
 };
 
-export const KIND_LABEL: Record<PieceKind, string> = {
-  mesa: "Mesa",
-  mesita: "Mesita",
-  aparador: "Aparador",
-  estanteria: "Estantería",
-  cabecero: "Cabecero",
-  panel: "Panel",
-  sofa: "Sofá",
-  sillon: "Sillón",
-  silla: "Silla",
-  jarron: "Jarrón",
-  lampara: "Lámpara",
-  otro: "Otro",
-};
 
 export const AXIS_LABEL: Record<string, string> = { width: "Ancho", height: "Alto", depth: "Fondo" };
+
 
 /**
  * Admin gate for pages and server actions: anyone who is not an admin
@@ -266,6 +256,7 @@ export interface FailedItem {
   error: string | null;
   email: string | null;
   waiting: string;
+  shape: ShapeValues;
 }
 
 interface FailedRow {
@@ -278,6 +269,8 @@ interface FailedRow {
   attempt: number;
   route: string | null;
   error: string | null;
+  rectilinear: boolean | null;
+  support: string | null;
   updated_at: string;
   profiles: { email: string | null } | null;
 }
@@ -286,7 +279,7 @@ interface FailedRow {
 export async function listFailedPieces(): Promise<FailedItem[]> {
   const { data, error } = await adminDb()
     .from("pieces")
-    .select("id, name, kind, width_cm, height_cm, depth_cm, attempt, route, error, updated_at, profiles(email)")
+    .select("id, name, kind, width_cm, height_cm, depth_cm, attempt, route, error, rectilinear, support, updated_at, profiles(email)")
     .eq("status", "failed")
     .order("updated_at", { ascending: true });
   if (error) throw new Error(`No se pudieron leer las piezas fallidas: ${error.message}`);
@@ -301,6 +294,7 @@ export async function listFailedPieces(): Promise<FailedItem[]> {
     error: r.error,
     email: r.profiles?.email ?? null,
     waiting: formatWaiting(r.updated_at, now),
+    shape: shapeValues(r),
   }));
 }
 
@@ -344,6 +338,8 @@ export interface ReviewDetail {
   rectilinear: boolean | null;
   /** Customer's «¿Cómo se apoya la pieza?» answer, as a label (null when not asked). */
   supportLabel: string | null;
+  /** Current shape answers, for the editable selects. */
+  shape: ShapeValues;
   reviewNote: string | null;
   email: string | null;
   waiting: string;
@@ -455,6 +451,7 @@ export async function getReviewDetail(pieceId: string): Promise<ReviewDetail | n
     notes: piece.notes,
     rectilinear: piece.rectilinear,
     supportLabel: piece.support ? (SUPPORT_LABEL[piece.support as SupportAnswer] ?? piece.support) : null,
+    shape: shapeValues(piece),
     reviewNote: piece.review_note,
     email: (profile as { email: string | null } | null)?.email ?? null,
     waiting: formatWaiting(piece.updated_at),

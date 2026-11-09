@@ -67,7 +67,7 @@ export function LazyModel({ glb, poster, alt }: LazyModelProps) {
         rounded="full"
         pointerEvents="none"
       >
-        Gíralo
+        Spin it
       </Text>
     </Box>
   );

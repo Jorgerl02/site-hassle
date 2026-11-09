@@ -8,6 +8,11 @@ const nextConfig: NextConfig = {
   // Pages that read cookies are rendered dynamically instead.
   cacheComponents: false,
 
+  // The privacy page moved to English (/privacy); old links keep working.
+  async redirects() {
+    return [{ source: "/privacidad", destination: "/privacy", permanent: true }];
+  },
+
   // No page may be framed (clickjacking): the legacy header plus its CSP equivalent.
   async headers() {
     return [

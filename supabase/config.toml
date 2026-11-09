@@ -10,10 +10,10 @@ additional_redirect_urls = ["https://pieza-3d.vercel.app/auth/callback", "https:
 # (free tier with the default email provider refuses template changes). Apply with
 # `supabase config push --project-ref oyntcaxzskzntiyzxquy`.
 [auth.email.template.magic_link]
-subject = "Tu enlace para entrar en Pieza 3D"
+subject = "Your sign-in link for Pieza 3D"
 content_path = "./supabase/templates/magic_link.html"
 
 [auth.email.template.confirmation]
-subject = "Confirma tu correo y entra en Pieza 3D"
+subject = "Confirm your email and sign in to Pieza 3D"
 content_path = "./supabase/templates/confirmation.html"
 

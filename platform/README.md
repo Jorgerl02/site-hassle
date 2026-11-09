@@ -2,6 +2,8 @@
 
 Next.js 16 (App Router) + Chakra UI v3 + Supabase (Auth por enlace mágico, Postgres, Storage). Es la web del MVP descrito en `docs/superpowers/specs/2026-11-09-plataforma-3d-mvp-design.md`; el worker que genera las piezas vive en `src/platform_worker/` (Python).
 
+**Idioma:** todo lo que ve el cliente (landing, app, correos, plantillas de Auth, mensajes del worker en `pieces.error`/`reject_reason`) está en **inglés** con precios en EUR («€69», «€6.90»); el admin (`/admin/**`, `components/admin`, `lib/admin*.ts`) y sus avisos por correo siguen en **español**. Las rutas conservan los slugs en español (`/entrar`, `/panel`, `/piezas`, `/creditos`) salvo `/privacy` (`/privacidad` redirige con 308).
+
 ## Arrancar en local
 
 ```bash
@@ -46,7 +48,7 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Sí | Clientes de Supabase (navegador, servidor y proxy) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Sí | `createAdminClient()`, solo servidor; salta RLS |
 | `NEXT_PUBLIC_SITE_URL` | **Sí en producción** | Origen público: enlaces mágicos, enlaces de los correos, `metadataBase`, canonical y sitemap. Sin ella todo apunta a `http://localhost:3000` |
-| `STRIPE_SECRET_KEY` | Para cobrar | Checkout. Sin ella, `/creditos` muestra «Pagos no configurados» |
+| `STRIPE_SECRET_KEY` | Para cobrar | Checkout. Sin ella, `/creditos` muestra «Payments not configured» |
 | `STRIPE_WEBHOOK_SECRET` | Para cobrar | Firma del webhook `/api/stripe/webhook` (sin ella responde 503) |
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | No (reservada) | No la usa el código actual (Checkout alojado) |
 | `RESEND_API_KEY` | No | Correos. Sin ella cada aviso es un no-op que se anota en el log |
@@ -54,21 +56,21 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 | `ADMIN_NOTIFY_EMAIL` | No | Quién recibe «Pieza en revisión», «Pieza fallida» y «Presupuesto diario agotado» |
 | `WORKER_SHARED_SECRET` | No | Activa `POST /api/internal/notify` (lo llama el worker). El mismo valor va en el `.env` de la raíz |
 | `NEXT_PUBLIC_META_PIXEL_ID`, `NEXT_PUBLIC_GA_ID` | No | Meta Pixel y GA4. Vacías: no se carga ningún script de terceros ni aparece el aviso de cookies |
-| `NEXT_PUBLIC_CONTACT_EMAIL` | Sí en producción | Correo de contacto de `/privacidad` (derechos RGPD) |
+| `NEXT_PUBLIC_CONTACT_EMAIL` | Sí en producción | Correo de contacto de `/privacy` (derechos RGPD) |
 
 ## Avisos por correo
 
-- **Pieza lista (cliente):** al pulsar «Mostrar al cliente» en `/admin/revision/[id]`, la acción llama a `notifyPieceReady(pieceId)` después de responder (`after()`): «Tu pieza «…» está lista» con el enlace a `/piezas/[id]`. Lleva `Idempotency-Key: piece-ready/{id}` (Resend no lo repite en 24 h).
+- **Pieza lista (cliente):** al pulsar «Mostrar al cliente» en `/admin/revision/[id]`, la acción llama a `notifyPieceReady(pieceId)` después de responder (`after()`): «Your piece “…” is ready» con el enlace a `/piezas/[id]`. Lleva `Idempotency-Key: piece-ready/{id}` (Resend no lo repite en 24 h).
 - **Pieza en revisión (admin):** el worker, al dejar una pieza en `review`, hace `POST {NOTIFY_URL}` con `Authorization: Bearer {WORKER_SHARED_SECRET}` y `{ pieceId, status: "review" }`; la ruta `/api/internal/notify` manda el correo a `ADMIN_NOTIFY_EMAIL`. Sin `NOTIFY_URL` o sin secreto, el worker no avisa; un aviso fallido nunca hace fallar la pieza.
-- **Pieza fallida (admin):** igual, con `status: "failed"`. El detalle técnico queda en `pieces.error` y se ve en la sección «Fallidas» de `/admin/revision` («Reintentar» la devuelve a la cola en el mismo intento; «Rechazar» la cierra con un motivo para el cliente). El cliente solo ve «No hemos podido generar esta pieza. Lo revisamos y te escribimos.».
+- **Pieza fallida (admin):** igual, con `status: "failed"`. El detalle técnico queda en `pieces.error` y se ve en la sección «Fallidas» de `/admin/revision` («Reintentar» la devuelve a la cola en el mismo intento; «Rechazar» la cierra con un motivo para el cliente). El cliente solo ve «We couldn't generate this piece. We're looking into it and will email you.».
 - **Presupuesto agotado (admin):** `status: "budget"`, una vez al día (`Idempotency-Key: budget/{fecha}`), cuando el worker llega a `WORKER_DAILY_BUDGET_USD`.
 - Todo vive en `src/lib/notify.ts` (API REST de Resend con `fetch`, sin SDK). Ningún aviso lanza excepciones.
 
 ## Analítica para anuncios
 
-`src/components/Analytics.tsx` (en el layout raíz) carga Meta Pixel y GA4 solo si hay id **y el visitante ha aceptado** en el aviso de cookies (`src/components/CookieConsent.tsx`, barra inferior con «Aceptar» / «Rechazar» y enlace a `/privacidad`). La elección se guarda en `localStorage` (`sh_consent` = `granted|denied` y `sh_consent_at`) durante 180 días; en `/privacidad` se puede cambiar. Sin id configurado no hay aviso. Con consentimiento, los scripts se cargan con `lazyOnload` y se envía una vista de página por navegación (origen + ruta, sin query string). Antes del consentimiento no se envía ningún evento (se pierden, no se encolan).
+`src/components/Analytics.tsx` (en el layout raíz) carga Meta Pixel y GA4 solo si hay id **y el visitante ha aceptado** en el aviso de cookies (`src/components/CookieConsent.tsx`, barra inferior con «Accept» / «Reject» y enlace a `/privacy`). La elección se guarda en `localStorage` (`sh_consent` = `granted|denied` y `sh_consent_at`) durante 180 días; en `/privacy` se puede cambiar. Sin id configurado no hay aviso. Con consentimiento, los scripts se cargan con `lazyOnload` y se envía una vista de página por navegación (origen + ruta, sin query string). Antes del consentimiento no se envía ningún evento (se pierden, no se encolan).
 
-En Meta Events Manager, **desactiva «Automatic Advanced Matching»** del píxel: enviaría a Meta datos de formularios (como el correo de `/entrar`) sin que lo hayamos previsto en `/privacidad`. La compra lleva `eventID` = id de la sesión de Stripe para deduplicar.
+En Meta Events Manager, **desactiva «Automatic Advanced Matching»** del píxel: enviaría a Meta datos de formularios (como el correo de `/entrar`) sin que lo hayamos previsto en `/privacy`. La compra lleva `eventID` = id de la sesión de Stripe para deduplicar.
 
 Eventos del embudo (`src/lib/analytics.ts`):
 
@@ -83,12 +85,13 @@ Cada evento se envía una vez por navegador y clave (`localStorage`). La fuente 
 
 ## Estructura
 
-- `src/app/` — rutas: `/` (landing), `/entrar` (enlace mágico), `/auth/callback`, `/panel`, `/piezas/nueva`, `/piezas/[id]`, `/creditos`, `/admin/revision` (solo `profiles.is_admin`), `/api/stripe/webhook` y `/api/internal/notify`.
+- `src/app/` — rutas: `/` (landing), `/entrar` (enlace mágico), `/auth/callback`, `/panel`, `/piezas/nueva`, `/piezas/[id]`, `/creditos`, `/privacy`, `/admin/revision` (solo `profiles.is_admin`), `/api/stripe/webhook` y `/api/internal/notify`.
+- **Formulario de pieza:** el cliente solo da fotos, medidas y nombre (sugerido del nombre del primer archivo). Tipo, «¿pieza recta?», apoyo y notas van en un `<details>` cerrado («Optional details»); sin abrirlo se guardan `kind = otro`, `rectilinear = null` y `support = no_se`. En `/admin/revision/[id]` y en «Fallidas» el admin corrige esos tres campos con selects; se guardan al pulsar «Regenerar» o «Reintentar».
 - `src/proxy.ts` — en Next.js 16 `middleware.ts` se llama `proxy.ts`. Refresca la sesión de Supabase en cada petición y guarda `utm_*` y `ref` en la cookie `sh_attr` (90 días, último clic).
 - `src/lib/supabase/` — `createClient()` (navegador), `createServerClient()` (cookies; RSC, server actions y route handlers), `createAdminClient()` (service role, `server-only`).
 - `src/lib/auth.ts` — `requireUser()` redirige a `/entrar` sin sesión y devuelve `{ user, profile }`.
-- `src/lib/pricing.ts` — paquetes de créditos (`PACKS`) y `formatEur()` (espacio de no separación antes de «€»).
-- `src/lib/format.ts` — `formatDimensions(ancho, alto, fondo)` → «50 × 48,5 × 50 cm» y `formatCm()`.
+- `src/lib/pricing.ts` — paquetes de créditos (`PACKS`) y `formatEur()` (inglés: «€69», «€6.90», «€1,000»).
+- `src/lib/format.ts` — `formatDimensions(ancho, alto, fondo)` → «50 × 48.5 × 50 cm» y `formatCm()` (punto decimal, coma de miles).
 - `src/lib/attribution.ts` — lectura de UTM y de la cookie de atribución; al registrarse se envía como `data.attribution` y el trigger `handle_new_user` la copia a `profiles.attribution`.
 - `src/lib/database.types.ts` — tipos generados de Supabase más un bloque de alias al final (`Profile`, `Piece`…); consérvalo al regenerar.
 - `src/lib/pieces.ts` — etiquetas de estado (`PIECE_STATUS_LABEL`), lecturas de la pieza del cliente y URLs firmadas.
@@ -121,7 +124,7 @@ uv run platform-worker piece <id>              # reintento manual de una pieza
 - Aviso al admin: `NOTIFY_URL=https://<dominio>/api/internal/notify` y `WORKER_SHARED_SECRET` (el mismo de Vercel) en el `.env` de la raíz.
 - **Un solo worker.** La cola aguantaría dos (`FOR UPDATE SKIP LOCKED`), pero el presupuesto diario y la limpieza de huérfanas suponen un único proceso.
 - Mientras el Mac esté apagado, las piezas esperan en `queued`. El worker renueva `claimed_at` antes de cada llamada al proveedor y de cada entrega; al arrancar (y cada 10 vueltas) devuelve a la cola las piezas en `generating` sin latido desde hace más de 90 min.
-- **Presupuesto diario del proveedor:** `WORKER_DAILY_BUDGET_USD` (20 por defecto). Antes de cada llamada al proveedor suma lo gastado hoy (hora de Madrid: `cost_usd` de los modelos de hoy más `pieces.provider_cost_usd`, el coste de los intentos fallidos); si se pasa, la pieza orgánica vuelve a `queued` con «Presupuesto diario agotado; se reintenta mañana» y `not_before` = medianoche de Madrid, y el admin recibe un aviso al día. Las rectilíneas (ruta E) no gastan y siguen.
+- **Presupuesto diario del proveedor:** `WORKER_DAILY_BUDGET_USD` (20 por defecto). Antes de cada llamada al proveedor suma lo gastado hoy (hora de Madrid: `cost_usd` de los modelos de hoy más `pieces.provider_cost_usd`, el coste de los intentos fallidos); si se pasa, la pieza orgánica vuelve a `queued` con «Daily generation budget reached; we'll retry tomorrow.» y `not_before` = medianoche de Madrid, y el admin recibe un aviso al día. Las rectilíneas (ruta E) no gastan y siguen.
 - Piezas excluidas (lámparas, metal, cromo, vidrio): `rejected` con el motivo en `reject_reason`, sin coste.
 - Fotos: el worker usa solo las 4 primeras por `position` y rechaza (pieza `failed`) cualquier ruta que no esté directamente bajo `{user_id}/{piece_id}/`.
 - Para dejarlo corriendo: una ventana de terminal con `just worker`, o un `launchd` (pendiente; no incluido).
@@ -130,9 +133,9 @@ uv run platform-worker piece <id>              # reintento manual de una pieza
 
 En pruebas (sandbox):
 
-1. Pega `STRIPE_SECRET_KEY=sk_test_…` en `.env.local` y ejecuta `pnpm stripe:setup` (crea «Piezas 3D» y los precios `pieza_1` 9 €, `pieza_10` 69 €, `pieza_30` 169 €, IVA incluido).
+1. Pega `STRIPE_SECRET_KEY=sk_test_…` en `.env.local` y ejecuta `pnpm stripe:setup` (crea «3D pieces» y los precios `pieza_1` €9, `pieza_10` €69, `pieza_30` €169, IVA incluido; si ya existía «Piezas 3D», lo renombra).
 2. `stripe listen --forward-to localhost:3000/api/stripe/webhook` y pega el `whsec_…` que imprime como `STRIPE_WEBHOOK_SECRET`; reinicia `pnpm dev`.
-3. `/creditos` → «Comprar» → tarjeta `4242 4242 4242 4242` → vuelves a `/creditos?ok=1…` con el saldo sumado y una fila «Compra».
+3. `/creditos` → «Buy» → tarjeta `4242 4242 4242 4242` → vuelves a `/creditos?ok=1…` con el saldo sumado y una fila «Purchase».
 
 Para producción:
 
@@ -153,7 +156,7 @@ Para producción:
    additional_redirect_urls = ["https://<dominio>/auth/callback", "http://localhost:3000/auth/callback", "http://localhost:3000/**"]
    ```
    y `supabase config push` desde la raíz (proyecto enlazado `oyntcaxzskzntiyzxquy`). También se puede hacer en Dashboard → Authentication → URL Configuration. Sin esto, los enlaces mágicos de producción acaban en `localhost`.
-4. **Correo de Auth:** el SMTP por defecto de Supabase envía muy pocos correos por hora; antes de anuncios configura SMTP propio (p. ej. Resend → Supabase → Authentication → SMTP) con el mismo dominio verificado, y revisa la plantilla del enlace mágico en español.
+4. **Correo de Auth:** el SMTP por defecto de Supabase envía muy pocos correos por hora; antes de anuncios configura SMTP propio (p. ej. Resend → Supabase → Authentication → SMTP) con el mismo dominio verificado, y aplica las plantillas del enlace mágico (en inglés).
 5. **Resend:** verifica el dominio (DNS SPF/DKIM), crea la clave y define `RESEND_API_KEY`, `NOTIFY_FROM_EMAIL` y `ADMIN_NOTIFY_EMAIL`.
 6. **Worker:** en el `.env` de la raíz del Mac, `NOTIFY_URL=https://<dominio>/api/internal/notify` y el mismo `WORKER_SHARED_SECRET`; `just worker`.
 7. **Stripe live:** ver la sección anterior.
@@ -162,20 +165,20 @@ Para producción:
 ### Lista de comprobación antes de anuncios
 
 - [ ] `NEXT_PUBLIC_SITE_URL` y Redirect URLs de Supabase con el dominio de producción (`supabase config push`).
-- [ ] SMTP propio en Supabase Auth y plantilla del enlace mágico en español.
+- [ ] SMTP propio en Supabase Auth y plantillas del enlace mágico (en inglés) aplicadas.
 - [ ] Stripe en live: precios creados con `pnpm stripe:setup`, webhook con los tres eventos, compra real de prueba hecha.
 
-- [ ] Resend con dominio verificado; recibes «Pieza en revisión» y el cliente «Tu pieza está lista».
+- [ ] Resend con dominio verificado; recibes «Pieza en revisión» y el cliente «Your piece “…” is ready».
 - [ ] `NEXT_PUBLIC_META_PIXEL_ID` y/o `NEXT_PUBLIC_GA_ID`; eventos comprobados con Meta Pixel Helper / GA DebugView tras pulsar «Aceptar»; «Automatic Advanced Matching» desactivado en Meta.
-- [ ] `NEXT_PUBLIC_CONTACT_EMAIL` y el titular (nombre y NIF) en `/privacidad` (`src/app/privacidad/page.tsx`, TODO).
+- [ ] `NEXT_PUBLIC_CONTACT_EMAIL` y el titular (nombre y NIF) en `/privacy` (`src/app/privacy/page.tsx`, TODO).
 - [ ] **Fotos de la landing:** `public/examples/` usa fotos de catálogos de terceros del piloto. Sustitúyelas por fotos propias o con permiso escrito.
-- [ ] Aviso legal (titular, NIF, domicilio) y condiciones de venta; `/privacidad` ya existe en lenguaje llano, conviene que lo revise un abogado.
+- [ ] Aviso legal (titular, NIF, domicilio) y condiciones de venta; `/privacy` ya existe en lenguaje llano, conviene que lo revise un abogado.
 - [ ] Worker corriendo en el Mac con `PROVIDER` decidido (sin proveedor, las piezas orgánicas fallan).
 - [ ] Un recorrido completo en producción desde el móvil: registro, pieza, revisión, visor con RA, compra y descarga.
 
 ### Cobros: factura, desistimiento, devoluciones y disputas
 
-- Checkout crea **factura** (`invoice_creation`), pide **NIF/CIF** opcional (`tax_id_collection`) y la dirección de facturación. Antes de «Comprar», `/creditos` exige marcar «Acepto que el contenido digital se entrega de inmediato y renuncio al derecho de desistimiento.» (comprobado también en el servidor; queda en `metadata.withdrawal_waiver` de la sesión).
+- Checkout crea **factura** (`invoice_creation`), pide **NIF/CIF** opcional (`tax_id_collection`) y la dirección de facturación. Antes de «Buy», `/creditos` exige marcar «I agree that the digital content is delivered immediately and I waive my right of withdrawal.» (comprobado también en el servidor; queda en `metadata.withdrawal_waiver` de la sesión).
 - **Devoluciones:** el evento `charge.refunded` con la devolución **completa** de un cobro que conocemos (`purchases.stripe_payment_intent`) resta los créditos del paquete con una fila `refund` negativa, una sola vez por evento (`credit_ledger.stripe_event_id` único). El saldo puede quedar negativo si ya se gastaron. Las devoluciones **parciales** solo se anotan en el log: ajusta los créditos a mano (fila `refund` desde el SQL editor).
 - **Disputas** (`charge.dispute.*`): manuales. Responde en el Dashboard de Stripe y, si la pierdes, resta los créditos a mano.
 

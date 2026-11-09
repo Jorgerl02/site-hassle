@@ -5,15 +5,15 @@ import { LazyModel } from "./LazyModel";
 
 export function Examples() {
   return (
-    <Box as="section" id="ejemplos" py={{ base: 14, md: 24 }} bg="bg.subtle" scrollMarginTop="4">
+    <Box as="section" id="examples" py={{ base: 14, md: 24 }} bg="bg.subtle" scrollMarginTop="4">
       <Container maxW="6xl" px={{ base: 4, md: 8 }}>
         <Stack gap="3" maxW="40em" mb={{ base: 8, md: 12 }}>
           <Heading as="h2" fontSize={{ base: "3xl", md: "4xl" }} fontWeight="500" letterSpacing="-0.01em">
-            Piezas reales, con sus medidas
+            Real pieces, with their dimensions
           </Heading>
           <Text color="fg.muted" fontSize="lg" textWrap="pretty">
-            A la izquierda, la foto de catálogo; a la derecha, el modelo 3D que sale de ella. Los dos primeros puedes
-            girarlos y, desde el móvil, colocarlos en tu casa a tamaño real. Medidas en ancho × alto × fondo.
+            On the left, the catalogue photo; on the right, the 3D model made from it. You can spin the first two and,
+            on your phone, place them in your room at real size. Dimensions are width × height × depth.
           </Text>
         </Stack>
         <Grid templateColumns={{ base: "1fr", md: "repeat(2, 1fr)", xl: "repeat(3, 1fr)" }} gap={{ base: 4, md: 6 }}>
@@ -27,14 +27,14 @@ export function Examples() {
 }
 
 function ExampleCard({ example }: { example: Example }) {
-  const alt3d = `Modelo 3D: ${example.name.toLowerCase()}`;
+  const alt3d = `3D model: ${example.name.toLowerCase()}`;
   return (
     <Stack as="article" bg="bg.panel" rounded="xl" borderWidth="1px" borderColor="border" p="4" gap="3">
       <HStack gap="3" align="stretch">
         <Box flex="1" position="relative" aspectRatio="1" rounded="lg" overflow="hidden" bg="white">
           <Image
             src={photoSrc(example.id)}
-            alt={`Foto de catálogo: ${example.name.toLowerCase()}`}
+            alt={`Catalogue photo: ${example.name.toLowerCase()}`}
             fill
             sizes="(max-width: 768px) 45vw, 240px"
             style={{ objectFit: "contain" }}

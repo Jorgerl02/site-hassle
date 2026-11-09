@@ -1,14 +1,14 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("landing", () => {
-  test("loads with Spanish metadata and the main headline", async ({ page }) => {
+  test("loads with English metadata and the main headline", async ({ page }) => {
     const response = await page.goto("/");
     expect(response?.status()).toBe(200);
-    await expect(page).toHaveTitle(/escala real/);
-    await expect(page.locator("html")).toHaveAttribute("lang", "es");
-    await expect(page.getByRole("heading", { level: 1 })).toContainText("a escala real");
-    await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /foto de catálogo/);
-    await expect(page.locator('meta[property="og:locale"]')).toHaveAttribute("content", "es_ES");
+    await expect(page).toHaveTitle(/true-to-scale/);
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+    await expect(page.getByRole("heading", { level: 1 })).toContainText("true to scale");
+    await expect(page.locator('meta[name="description"]')).toHaveAttribute("content", /catalogue photo/);
+    await expect(page.locator('meta[property="og:locale"]')).toHaveAttribute("content", "en_GB");
   });
 
   test("hydrates / and /entrar without a mismatch", async ({ page }) => {
@@ -37,35 +37,35 @@ test.describe("landing", () => {
   test("shows the five sections", async ({ page }) => {
 
     await page.goto("/");
-    for (const name of ["Piezas reales, con sus medidas", "Cómo funciona", "Precios", "Preguntas frecuentes"]) {
+    for (const name of ["Real pieces, with their dimensions", "How it works", "Pricing", "Frequently asked questions"]) {
       await expect(page.getByRole("heading", { level: 2, name })).toBeVisible();
     }
-    await expect(page.locator("#ejemplos article")).toHaveCount(7);
+    await expect(page.locator("#examples article")).toHaveCount(7);
   });
 
   test("primary CTA leads to /entrar", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("link", { name: "Prueba con una pieza gratis" }).click();
+    await page.getByRole("link", { name: "Try a piece for free" }).click();
     await expect(page).toHaveURL(/\/entrar$/);
-    await expect(page.getByRole("heading", { level: 1, name: "Entra con tu correo" })).toBeVisible();
-    await expect(page.getByLabel("Correo electrónico")).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1, name: "Sign in with your email" })).toBeVisible();
+    await expect(page.getByLabel("Email")).toBeVisible();
   });
 
   test("pricing block shows the three packs", async ({ page }) => {
     await page.goto("/");
-    const pricing = page.locator("#precios");
-    await expect(pricing.getByTestId("pack-pieza_1")).toContainText("9\u00a0€");
-    await expect(pricing.getByTestId("pack-pieza_10")).toContainText("69\u00a0€");
-    await expect(pricing.getByTestId("pack-pieza_10")).toContainText("Más elegido");
-    await expect(pricing.getByTestId("pack-pieza_10")).toContainText("6,90\u00a0€ por pieza");
-    await expect(pricing.getByTestId("pack-pieza_30")).toContainText("169\u00a0€");
-    await expect(pricing.getByTestId("pack-pieza_30")).toContainText("5,63\u00a0€ por pieza");
+    const pricing = page.locator("#pricing");
+    await expect(pricing.getByTestId("pack-pieza_1")).toContainText("€9");
+    await expect(pricing.getByTestId("pack-pieza_10")).toContainText("€69");
+    await expect(pricing.getByTestId("pack-pieza_10")).toContainText("Most popular");
+    await expect(pricing.getByTestId("pack-pieza_10")).toContainText("€6.90 per piece");
+    await expect(pricing.getByTestId("pack-pieza_30")).toContainText("€169");
+    await expect(pricing.getByTestId("pack-pieza_30")).toContainText("€5.63 per piece");
   });
 
   test("model-viewer loads only when the examples scroll into view", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("model-viewer")).toHaveCount(0);
-    await page.locator("#ejemplos").scrollIntoViewIfNeeded();
+    await page.locator("#examples").scrollIntoViewIfNeeded();
     await expect(page.locator("model-viewer").first()).toBeAttached({ timeout: 15_000 });
     await expect(page.locator("model-viewer").first()).toHaveAttribute("ar-scale", "fixed");
     await expect(page.locator("model-viewer").first()).toHaveAttribute("ar-modes", "webxr scene-viewer quick-look");

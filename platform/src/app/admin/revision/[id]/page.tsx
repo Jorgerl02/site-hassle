@@ -4,8 +4,7 @@ import NextLink from "next/link";
 import { notFound } from "next/navigation";
 import { AdminHeader } from "@/components/admin/AdminHeader";
 import { ReviewForm } from "@/components/admin/ReviewForm";
-import { MAX_ATTEMPT, getReviewDetail, requireAdmin } from "@/lib/admin";
-import { PIECE_STATUS_LABEL } from "@/lib/pieces";
+import { MAX_ATTEMPT, STATUS_LABEL, getReviewDetail, requireAdmin } from "@/lib/admin";
 
 export const metadata: Metadata = {
   title: "Revisar pieza",
@@ -33,7 +32,7 @@ export default async function ReviewDetailPage({ params }: { params: Promise<{ i
             {piece.name}
           </Heading>
           <Badge colorPalette={inReview ? "clay" : "gray"} data-testid="piece-status">
-            {PIECE_STATUS_LABEL[piece.status]}
+            {STATUS_LABEL[piece.status]}
           </Badge>
         </Flex>
         <Flex gap="2" wrap="wrap" color="fg.muted" mb="8">
@@ -126,7 +125,12 @@ export default async function ReviewDetailPage({ params }: { params: Promise<{ i
           Modelos del intento {piece.attempt}
         </Heading>
         {inReview ? (
-          <ReviewForm pieceId={piece.id} candidates={piece.candidates} canRegenerate={piece.attempt < MAX_ATTEMPT} />
+          <ReviewForm
+            pieceId={piece.id}
+            candidates={piece.candidates}
+            canRegenerate={piece.attempt < MAX_ATTEMPT}
+            shape={piece.shape}
+          />
         ) : (
           <Box bg="bg.subtle" rounded="xl" p="6">
             <Text>Esta pieza ya no está en revisión.</Text>

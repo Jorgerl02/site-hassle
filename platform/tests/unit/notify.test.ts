@@ -111,7 +111,7 @@ describe("notifyPieceReady", () => {
     const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     expect(body.to).toEqual(["cliente@example.com"]);
-    expect(body.subject).toBe("Tu pieza «Cabecero Rigole» está lista");
+    expect(body.subject).toBe("Your piece “Cabecero Rigole” is ready");
     expect(body.text).toContain(`https://pieza3d.example/piezas/${PIECE_ID}`);
     expect(body.html).toContain(`href="https://pieza3d.example/piezas/${PIECE_ID}"`);
     expect(new Headers(init.headers).get("idempotency-key")).toBe(`piece-ready/${PIECE_ID}`);
