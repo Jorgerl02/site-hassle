@@ -25,6 +25,7 @@ supabase gen types typescript --project-id oyntcaxzskzntiyzxquy > supabase/datab
 | `20261109000002_functions.sql` | `credit_balance`, `pieces_created_today`, `daily_piece_limit` (3), trigger `enforce_daily_piece_limit`, `approve_piece`, `request_new_version`, `reject_piece`, `claim_next_piece`, `requeue_stale_pieces`, `grant_credits`; vista `admin_review_queue`. |
 | `20261109000003_storage.sql` | Buckets `photos` (privado, 20 MB, JPEG/PNG/WebP), `previews` (público), `models` y `renders` (privados) y políticas de `photos`. |
 | `20261109000004_review_queue_selected.sql` | `admin_review_queue` elige, dentro del último intento, el candidato `selected`; el cliente solo ve los `piece_models` del intento actual de la pieza. |
+| `20261109000005_attribution_filter.sql` | `handle_new_user` filtra la atribución del registro: solo `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term` y `ref`, como texto de 200 caracteres como máximo; el resto se descarta y, si no queda nada, `attribution` es `null` (cualquiera con la clave anónima puede mandar `data` arbitraria a `/auth/v1/otp`). |
 
 ### Quién puede qué
 

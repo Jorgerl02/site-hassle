@@ -218,6 +218,29 @@ def test_new_user_gets_profile_with_attribution(svc: httpx.Client, a: User) -> N
     assert r.json() == [{"is_admin": False}]
 
 
+def test_signup_attribution_is_filtered(svc: httpx.Client) -> None:
+    email = f"test_attr_{uuid.uuid4().hex[:10]}@site-hassle.test"
+    r = svc.post(
+        "/auth/v1/admin/users",
+        json={
+            "email": email,
+            "password": PASSWORD,
+            "email_confirm": True,
+            "user_metadata": {
+                "attribution": {"utm_source": "x" * 500, "evil": {"big": "y" * 1000}}
+            },
+        },
+    )
+    assert r.status_code in (200, 201), r.text
+    user_id = r.json()["id"]
+    try:
+        r = svc.get(f"/rest/v1/profiles?id=eq.{user_id}&select=attribution")
+        assert r.status_code == 200, r.text
+        assert r.json() == [{"attribution": {"utm_source": "x" * 200}}]
+    finally:
+        svc.delete(f"/auth/v1/admin/users/{user_id}")
+
+
 # ---------------------------------------------------------------- credits and approval
 
 
