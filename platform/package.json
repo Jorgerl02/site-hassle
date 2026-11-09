@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "stripe:setup": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --env-file-if-exists=.env.local scripts/stripe-setup.ts"
   },
   "dependencies": {
     "@chakra-ui/react": "^3.38.0",
@@ -19,7 +20,8 @@
     "next": "16.4.5",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "stripe": "23.1.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.0",
