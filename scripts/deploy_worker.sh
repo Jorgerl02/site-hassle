@@ -26,7 +26,7 @@ echo "==> npm ci (tools/gltf)"
 ssh "$HOST" 'cd ~/apps/pieza3d && PATH=~/.local/node/bin:$PATH npm ci --prefix tools/gltf --no-audit --no-fund --omit=dev'
 
 echo "==> materiales"
-ssh "$HOST" 'cd ~/apps/pieza3d && ~/.local/bin/uv run python scripts/fetch_materials.py'
+ssh "$HOST" 'cd ~/apps/pieza3d && ~/.local/bin/uv run --no-dev python scripts/fetch_materials.py'
 
 echo "==> reinicio del agente launchd es.pieza3d.worker"
 ssh "$HOST" 'if launchctl print "gui/$(id -u)/es.pieza3d.worker" >/dev/null 2>&1; then
