@@ -32,12 +32,36 @@ describe("claim token", () => {
 });
 
 describe("safeNext", () => {
-  it("keeps same-site paths and falls back to /panel", () => {
-    expect(safeNext(`/piezas/${ANON}?download=1`)).toBe(`/piezas/${ANON}?download=1`);
-    expect(safeNext("//evil.example/x")).toBe("/panel");
-    expect(safeNext("https://evil.example")).toBe("/panel");
-    expect(safeNext("/\\evil.example")).toBe("/panel");
-    expect(safeNext(null)).toBe("/panel");
+  const ORIGIN = "https://pieza-3d.vercel.app";
+
+  it("keeps same-site paths", () => {
+    expect(safeNext(`/piezas/${ANON}?download=1`, ORIGIN)).toBe(`/piezas/${ANON}?download=1`);
+    expect(safeNext("/panel#x", ORIGIN)).toBe("/panel#x");
+  });
+
+  it.each([
+    // What `searchParams.get("next")` returns for ?next=/%09/evil.com and ?next=/%0a/evil.com.
+    ["/\t/evil.com"],
+    ["/\n/evil.com"],
+    ["/\r/evil.com"],
+    ["/\u0000/evil.com"],
+    ["/\\evil.com"],
+    ["/\\/evil.com"],
+    ["//evil.com"],
+    ["https://evil.com"],
+    ["evil.com"],
+    [""],
+    [null],
+    [42],
+  ])("sends %j to /panel", (value) => {
+    expect(safeNext(value, ORIGIN)).toBe("/panel");
+  });
+
+  it("keeps still-encoded input on the site (it is a path, never a host)", () => {
+    expect(safeNext("/%09/evil.com", ORIGIN)).toBe("/%09/evil.com");
+    expect(safeNext("/%0a/evil.com", ORIGIN)).toBe("/%0a/evil.com");
+    expect(safeNext("/%2F%2Fevil", ORIGIN)).toBe("/%2F%2Fevil");
+    expect(new URL(safeNext("/%2F%2Fevil", ORIGIN), ORIGIN).origin).toBe(ORIGIN);
   });
 });
 
@@ -46,6 +70,7 @@ describe("claimAnonymousPieces", () => {
     const { claimAnonymousPieces } = await import("@/lib/claim");
     const calls: string[] = [];
     const moved = await claimAnonymousPieces(ANON, ACCOUNT, {
+      inspect: async () => ({ anonymous: true, generating: false }),
       listPieces: async (user) => (user === ANON ? ["p1", "p2"] : []),
       listPhotos: async (_user, piece) => (piece === "p1" ? ["1.jpg", "thumb.jpg"] : ["1.png"]),
       movePhoto: async (from, to) => void calls.push(`${from} -> ${to}`),
@@ -67,8 +92,67 @@ describe("claimAnonymousPieces", () => {
     const { claimAnonymousPieces } = await import("@/lib/claim");
     const reassign = vi.fn();
     expect(
-      await claimAnonymousPieces(ANON, ANON, { listPieces: vi.fn(), listPhotos: vi.fn(), movePhoto: vi.fn(), reassign }),
+      await claimAnonymousPieces(ANON, ANON, { inspect: vi.fn(), listPieces: vi.fn(), listPhotos: vi.fn(), movePhoto: vi.fn(), reassign }),
     ).toBe(0);
     expect(reassign).not.toHaveBeenCalled();
+  });
+
+  it("checks before touching any file: not anonymous or a piece generating → nothing moves", async () => {
+    const { claimAnonymousPieces } = await import("@/lib/claim");
+    for (const state of [{ anonymous: false, generating: false }, { anonymous: true, generating: true }]) {
+      const movePhoto = vi.fn();
+      const reassign = vi.fn();
+      await expect(
+        claimAnonymousPieces(ANON, ACCOUNT, {
+          inspect: async () => state,
+          listPieces: async () => ["p1"],
+          listPhotos: async () => ["1.jpg"],
+          movePhoto,
+          reassign,
+        }),
+      ).rejects.toThrow();
+      expect(movePhoto).not.toHaveBeenCalled();
+      expect(reassign).not.toHaveBeenCalled();
+    }
+  });
+
+  it("moves the files back when the SQL reassignment fails", async () => {
+    const { claimAnonymousPieces } = await import("@/lib/claim");
+    const calls: string[] = [];
+    await expect(
+      claimAnonymousPieces(ANON, ACCOUNT, {
+        inspect: async () => ({ anonymous: true, generating: false }),
+        listPieces: async () => ["p1"],
+        listPhotos: async () => ["1.jpg", "2.jpg"],
+        movePhoto: async (from, to) => void calls.push(`${from} -> ${to}`),
+        reassign: async () => {
+          throw new Error("rpc down");
+        },
+      }),
+    ).rejects.toThrow("rpc down");
+    expect(calls).toEqual([
+      `${ANON}/p1/1.jpg -> ${ACCOUNT}/p1/1.jpg`,
+      `${ANON}/p1/2.jpg -> ${ACCOUNT}/p1/2.jpg`,
+      `${ACCOUNT}/p1/2.jpg -> ${ANON}/p1/2.jpg`,
+      `${ACCOUNT}/p1/1.jpg -> ${ANON}/p1/1.jpg`,
+    ]);
+  });
+
+  it("moves back the files already moved when a move fails half-way", async () => {
+    const { claimAnonymousPieces } = await import("@/lib/claim");
+    const calls: string[] = [];
+    await expect(
+      claimAnonymousPieces(ANON, ACCOUNT, {
+        inspect: async () => ({ anonymous: true, generating: false }),
+        listPieces: async () => ["p1"],
+        listPhotos: async () => ["1.jpg", "2.jpg"],
+        movePhoto: async (from, to) => {
+          if (from.endsWith("2.jpg") && from.startsWith(ANON)) throw new Error("storage down");
+          calls.push(`${from} -> ${to}`);
+        },
+        reassign: vi.fn(),
+      }),
+    ).rejects.toThrow("storage down");
+    expect(calls).toEqual([`${ANON}/p1/1.jpg -> ${ACCOUNT}/p1/1.jpg`, `${ACCOUNT}/p1/1.jpg -> ${ANON}/p1/1.jpg`]);
   });
 });

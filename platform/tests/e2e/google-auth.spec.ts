@@ -15,6 +15,12 @@ test("«Continue with Google» on /entrar starts the Supabase Google OAuth flow 
   expect(redirect.searchParams.get("next")).toBe("/panel");
 });
 
+test("a Google account already linked to another user lands on /entrar with an explanation", async ({ page }) => {
+  await page.goto("/auth/callback?error=server_error&error_code=identity_already_exists&next=/panel");
+  await expect(page).toHaveURL(/\/entrar\?error=google$/);
+  await expect(page.getByText("This Google account already has a Pieza 3D account.")).toBeVisible();
+});
+
 test("the callback never redirects off-site through `next`", async ({ page }) => {
   // No code/token: the callback fails, but must not follow `next` anywhere.
   await page.goto("/auth/callback?next=//evil.example/x");

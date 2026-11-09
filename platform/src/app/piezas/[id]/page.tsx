@@ -95,8 +95,11 @@ export default async function PiecePage({ params, searchParams }: { params: Prom
   // Back from Checkout (pack modal): credit the pack before reading the balance.
   const sessionId = param(query.session_id);
   const returned: ReturnInfo = param(query.ok) === "1" ? await confirmCheckoutReturn(sessionId, user.id) : { state: null };
-  // `?download=1`: the customer asked to download before signing up or buying; carry on without another click.
+  // `?download=1`: the customer asked to download before signing up or buying. The credit is
+  // spent without another click only right after a verified payment or a sign-up; any other
+  // arrival (a bookmark, a shared link) opens the confirmation instead.
   const autoDownload = param(query.download) === "1";
+  const autoSpend = returned.state === "paid" || param(query.registro) === "1";
   const model = await getSelectedModel(piece);
   const showsModel = piece.status === "ready" || piece.status === "approved";
   const [renders, downloads, balance, iosSrc] = await Promise.all([
@@ -199,7 +202,7 @@ export default async function PiecePage({ params, searchParams }: { params: Prom
                   pieceId={piece.id}
                   balance={balance}
                   anonymous={anonymous}
-                  autoDownload={autoDownload}
+                  autoDownload={autoDownload ? (autoSpend ? "spend" : "confirm") : null}
                   source={source}
                   paymentsEnabled={isStripeConfigured()}
                   versionsLeft={Math.max(0, MAX_EXTRA_VERSIONS - (piece.attempt - 1))}

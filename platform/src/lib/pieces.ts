@@ -147,7 +147,8 @@ export async function previewUsdzUrl(model: Pick<PieceModel, "preview_path"> | n
   if (!model?.preview_path?.endsWith(".glb")) return null;
   const url = `${supabaseUrl()}/storage/v1/object/public/previews/${encodePath(model.preview_path.replace(/\.glb$/, ".usdz"))}`;
   try {
-    const response = await fetch(url, { method: "HEAD", cache: "no-store" });
+    // A slow storage answer must not hold the page: no answer in 1.5 s = no USDZ.
+    const response = await fetch(url, { method: "HEAD", cache: "no-store", signal: AbortSignal.timeout(1500) });
     return response.ok ? url : null;
   } catch {
     return null;

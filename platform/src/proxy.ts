@@ -7,11 +7,19 @@ import {
   readAttributionCookie,
   serializeAttribution,
 } from "@/lib/attribution";
+import { CLAIM_COOKIE } from "@/lib/claim-token";
 import { updateSession } from "@/lib/supabase/proxy";
 
 // Next.js 16 renamed `middleware.ts` to `proxy.ts`.
 export async function proxy(request: NextRequest) {
-  const response = await updateSession(request);
+  const { response, user } = await updateSession(request);
+
+  // A pending claim (anonymous trial → existing account) is stale once an
+  // account is signed in by any other way: drop it on the account pages.
+  const path = request.nextUrl.pathname;
+  if (user && !user.isAnonymous && (path === "/entrar" || path === "/panel") && request.cookies.has(CLAIM_COOKIE)) {
+    response.cookies.delete(CLAIM_COOKIE);
+  }
 
   // Last-touch attribution: a new ad click overwrites the previous one; an
   // internal CTA (`?source=` only) is added to it instead of erasing the ad.

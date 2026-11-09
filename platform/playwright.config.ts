@@ -66,6 +66,8 @@ export default defineConfig({
       // The Google button is built in so its wiring is tested; the OAuth request itself is intercepted
       // (`google-auth.spec.ts`). Without the flag the button is absent (unit test `google-auth.test.ts`).
       NEXT_PUBLIC_GOOGLE_AUTH_ENABLED: "true",
+      // Every run creates anonymous pieces from localhost: don't trip the per-network trial cap.
+      TRIAL_IP_DAILY_LIMIT: "1000",
     },
   },
 });

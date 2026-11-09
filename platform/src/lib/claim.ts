@@ -29,6 +29,8 @@ export async function takeClaim(): Promise<string | null> {
 }
 
 export interface ClaimDeps {
+  /** `from` as seen by the service role: still anonymous, and whether any piece is being generated. */
+  inspect(userId: string): Promise<{ anonymous: boolean; generating: boolean }>;
   /** Pieces of the anonymous user. */
   listPieces(userId: string): Promise<string[]>;
   /** Object names under `{userId}/{pieceId}/` in the `photos` bucket. */
@@ -38,27 +40,55 @@ export interface ClaimDeps {
   reassign(from: string, to: string): Promise<number>;
 }
 
+export class ClaimError extends Error {}
+
 /**
  * Moves an anonymous trial's pieces to the account `to` («email already
- * registered»). Photo objects first (their `{user_id}/` prefix is checked by
- * storage RLS, the photo trigger and the worker), then the rows in one SQL
- * call. Only the pieces of `from`, which `claim_anonymous_pieces` checks is
- * still anonymous.
+ * registered», or Google). Checks first (service role) that `from` is still
+ * anonymous and that none of its pieces is `generating` (the worker reads the
+ * photos by their `{user_id}/` path). Then moves the photo objects (checked by
+ * storage RLS, the photo trigger and the worker) and the rows in one SQL call;
+ * if that call fails, the objects go back where they were.
  */
 export async function claimAnonymousPieces(from: string, to: string, deps: ClaimDeps = adminClaimDeps()): Promise<number> {
   if (from === to) return 0;
-  for (const pieceId of await deps.listPieces(from)) {
-    for (const name of await deps.listPhotos(from, pieceId)) {
-      await deps.movePhoto(`${from}/${pieceId}/${name}`, `${to}/${pieceId}/${name}`);
+  const state = await deps.inspect(from);
+  if (!state.anonymous) throw new ClaimError("claim: the source user is not anonymous");
+  if (state.generating) throw new ClaimError("claim: a piece is being generated; try again later");
+
+  const moved: [string, string][] = [];
+  try {
+    for (const pieceId of await deps.listPieces(from)) {
+      for (const name of await deps.listPhotos(from, pieceId)) {
+        const pair: [string, string] = [`${from}/${pieceId}/${name}`, `${to}/${pieceId}/${name}`];
+        await deps.movePhoto(...pair);
+        moved.push(pair);
+      }
     }
+    return await deps.reassign(from, to);
+  } catch (error) {
+    for (const [original, current] of moved.reverse()) {
+      await deps.movePhoto(current, original).catch((undo) => console.error("[claim] could not move back", current, undo));
+    }
+    throw error;
   }
-  return deps.reassign(from, to);
 }
 
 function adminClaimDeps(): ClaimDeps {
   const db = createAdminClient() as unknown as SupabaseClient;
   const photos = () => db.storage.from("photos");
   return {
+    async inspect(userId) {
+      const { data, error } = await db.auth.admin.getUserById(userId);
+      if (error || !data.user) throw new ClaimError(`claim: user: ${error?.message ?? "not found"}`);
+      const { count, error: piecesError } = await db
+        .from("pieces")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("status", "generating");
+      if (piecesError) throw new ClaimError(`claim: pieces: ${piecesError.message}`);
+      return { anonymous: data.user.is_anonymous === true, generating: (count ?? 0) > 0 };
+    },
     async listPieces(userId) {
       const { data, error } = await db.from("pieces").select("id").eq("user_id", userId);
       if (error) throw new Error(`claim: pieces: ${error.message}`);

@@ -18,8 +18,11 @@ interface ResultActionsProps {
   versionsLeft: number;
   /** Anonymous trial: downloading asks for an account first (same user, same pieces). */
   anonymous: boolean;
-  /** `?download=1`: the customer already asked to download (before signing up or buying). */
-  autoDownload: boolean;
+  /**
+   * `?download=1`: the customer already asked to download. `spend` (right after a verified
+   * payment or sign-up) spends the credit without another click; `confirm` opens the dialog.
+   */
+  autoDownload: "spend" | "confirm" | null;
   paymentsEnabled: boolean;
   source: string;
 }
@@ -81,7 +84,7 @@ export function ResultActions({
   useEffect(() => {
     if (!autoDownload || autoStarted.current) return;
     autoStarted.current = true;
-    startDownload(false);
+    startDownload(autoDownload === "confirm");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on arrival
   }, [autoDownload]);
 

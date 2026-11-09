@@ -10,6 +10,15 @@ additional_redirect_urls = ["https://pieza-3d.vercel.app/auth/callback", "https:
 enable_anonymous_sign_ins = true
 enable_manual_linking = true
 
+# Anti-abuse of the anonymous trial: at most 10 anonymous sign-ins per hour per IP (the web
+# also caps anonymous pieces per IP, table `trial_ips`). Turnstile is the next layer (README).
+[auth.rate_limit]
+anonymous_users = 10
+
+# Unused; stated so a `config push` (CLI 2.116 default: true) keeps it off.
+[storage.vector]
+enabled = false
+
 # Sign-in links without PKCE: they carry a token hash that /auth/callback verifies with
 # verifyOtp, so they work in any browser. A first sign-in gets the «confirmation» email
 # (type=signup); later ones the «magic_link» email (type=magiclink). Both need custom SMTP

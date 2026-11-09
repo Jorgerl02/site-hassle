@@ -9,6 +9,7 @@ import { sendMagicLink, type SignInState } from "./actions";
 
 const CALLBACK_ERRORS: Record<string, string> = {
   enlace: "This link has expired or has already been used. Request a new one and open it on this device.",
+  google: "This Google account already has a Pieza 3D account. Continue with Google here to log in; we'll move your piece to it.",
 };
 
 export function SignInForm() {

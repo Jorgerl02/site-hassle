@@ -8,7 +8,13 @@ import { supabaseAnonKey, supabaseUrl } from "./env";
  * guide). Returns the response that carries the refreshed cookies; callers
  * must return it (or copy its cookies) or the user is signed out.
  */
-export async function updateSession(request: NextRequest): Promise<NextResponse> {
+export interface SessionInfo {
+  response: NextResponse;
+  /** Signed-in user (verified JWT claims), or null. */
+  user: { id: string; isAnonymous: boolean } | null;
+}
+
+export async function updateSession(request: NextRequest): Promise<SessionInfo> {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient<Database>(supabaseUrl(), supabaseAnonKey(), {
@@ -30,7 +36,11 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
   });
 
   // Do not run code between createServerClient and getClaims (Supabase guide).
-  await supabase.auth.getClaims();
+  const { data } = await supabase.auth.getClaims();
+  const claims = data?.claims;
 
-  return response;
+  return {
+    response,
+    user: claims?.sub ? { id: claims.sub, isAnonymous: claims.is_anonymous === true } : null,
+  };
 }

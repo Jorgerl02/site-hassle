@@ -38,10 +38,26 @@ export function verifyClaim(value: string | null | undefined, secret: string, no
   return uid;
 }
 
-/** Same-site path to return to after sign-in (`/piezas/…?download=1`); anything else → `/panel`. */
-export function safeNext(value: unknown): string {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) {
-    return "/panel";
+const FALLBACK = "/panel";
+// Control characters (tab, newline… are dropped by the URL parser, so «/\t/evil.com»
+// would become «//evil.com») and backslashes (read as «/» by browsers).
+const UNSAFE = /[\u0000-\u001f\u007f\\]/;
+
+/**
+ * Same-site path to return to after sign-in (`/piezas/…?download=1`);
+ * anything else → `/panel`. Rejects control characters, backslashes and
+ * protocol-relative `//`, then resolves against `origin` and requires the
+ * result to stay on it.
+ */
+export function safeNext(value: unknown, origin = "https://pieza-3d.invalid"): string {
+  if (typeof value !== "string" || value.length > 300) return FALLBACK;
+  if (UNSAFE.test(value) || !value.startsWith("/") || value.startsWith("//")) return FALLBACK;
+  try {
+    const base = new URL(origin);
+    const url = new URL(value, base);
+    if (url.origin !== base.origin) return FALLBACK;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return FALLBACK;
   }
-  return value.slice(0, 300);
 }

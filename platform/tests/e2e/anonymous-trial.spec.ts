@@ -107,10 +107,16 @@ test("converting the trial keeps the same user and piece, then the pack modal an
   await expect(packs.getByTestId("modal-pack-pieza_30")).toContainText("€5.63");
   await expect(packs).toContainText("Used credits are non-refundable · unused credits never expire.");
 
-  // Back from Checkout (`?download=1`, credits granted as the webhook would): downloads without another click.
   expect((await db.rpc("grant_credits", { p_user: anonymousId, p_delta: 1, p_reason: "grant" })).error).toBeNull();
-  const download = page.waitForEvent("download");
+  // A bare `?download=1` (bookmark, shared link) never spends by itself: it asks first.
   await page.goto(`/piezas/${pieceId}?download=1`);
+  await expect(page.getByRole("button", { name: "Use 1 credit and download" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByTestId("piece-status")).toHaveText("Ready");
+
+  // Right after sign-up (or a verified Checkout return): downloads without another click.
+  const download = page.waitForEvent("download");
+  await page.goto(`/piezas/${pieceId}?download=1&registro=1`);
   await expect(page.getByTestId("piece-status")).toHaveText("Downloaded", { timeout: 15_000 });
   await expect(page.getByTestId("auto-download")).toBeVisible();
   expect((await download).suggestedFilename()).toMatch(/\.glb$/);

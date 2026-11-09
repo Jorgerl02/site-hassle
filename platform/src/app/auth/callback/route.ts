@@ -30,20 +30,17 @@ export async function GET(request: NextRequest) {
   const tokenHash = searchParams.get("token_hash");
   const rawType = searchParams.get("type") as EmailOtpType | null;
   const type = rawType && LINK_TYPES.has(rawType) ? rawType : null;
-  const next = safeNext(searchParams.get("next"));
+  const next = safeNext(searchParams.get("next"), origin);
 
   const supabase = await createServerClient();
 
   // «Continue with Google» from an anonymous trial (`linkIdentity`) whose Google
-  // account already has a user: sign in to that user instead; the claim cookie
-  // set before linking moves the trial's pieces there on the way back.
-  const oauthError = searchParams.get("error_code") ?? "";
-  if (oauthError === "identity_already_exists" || /already (linked|exists)/i.test(searchParams.get("error_description") ?? "")) {
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${origin}/auth/callback?next=${encodeURIComponent(next)}` },
-    });
-    if (!error && data.url) return NextResponse.redirect(data.url);
+  // account already has a user: no session is started here (the error comes
+  // without a provider `code`). /entrar explains it; logging in with Google
+  // there signs in to that user, and the claim cookie set before linking moves
+  // the trial's pieces on the way back.
+  if (!code && !tokenHash && searchParams.get("error_code") === "identity_already_exists") {
+    return NextResponse.redirect(new URL("/entrar?error=google", origin));
   }
 
   let ok = false;
@@ -71,6 +68,7 @@ export async function GET(request: NextRequest) {
   }
 
   const target = new URL(next, origin);
+  if (target.origin !== origin) return NextResponse.redirect(new URL("/panel", origin));
   const converted = searchParams.get("signup") === "1" && !user.is_anonymous;
   if (converted || isFirstSignIn(user)) target.searchParams.set("registro", "1");
   return NextResponse.redirect(target);

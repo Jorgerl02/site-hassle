@@ -1,12 +1,42 @@
 "use server";
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { dailyLimitMessage, isUuid, sqlErrorCode } from "@/lib/pieces";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createServerClient } from "@/lib/supabase/server";
+import { TRIAL_IP_LIMIT_MESSAGE, TRIAL_IP_WINDOW_MS, clientIp, hashIp, trialIpAllowed, type TrialIpStore } from "@/lib/trial-ip";
 import { MAX_PHOTOS, validatePieceInput, type PieceField } from "@/lib/validation";
+
+/** `trial_ips` through the service role (the table has no client policies). */
+function trialIpStore(): TrialIpStore {
+  const db = createAdminClient() as unknown as SupabaseClient;
+  return {
+    async countSince(ipHash, sinceIso) {
+      const { count, error } = await db
+        .from("trial_ips")
+        .select("id", { count: "exact", head: true })
+        .eq("ip_hash", ipHash)
+        .gte("created_at", sinceIso);
+      if (error) throw new Error(`trial_ips: ${error.message}`);
+      return count ?? 0;
+    },
+    async record(ipHash) {
+      const { error } = await db.from("trial_ips").insert({ ip_hash: ipHash });
+      if (error) throw new Error(`trial_ips: ${error.message}`);
+    },
+    async prune(beforeIso) {
+      await db.from("trial_ips").delete().lt("created_at", beforeIso);
+    },
+  };
+}
+
+function ipSalt(): string {
+  return process.env.IP_HASH_SALT?.trim() || process.env.WORKER_SHARED_SECRET?.trim() || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+}
 
 export type CreatePieceResult = { ok: false; message: string; errors?: Partial<Record<PieceField, string>> };
 
@@ -61,6 +91,19 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
   }
   const piece = result.value;
 
+  // Anonymous trials: also capped per network (hashed IP), on top of 1 a day per user.
+  const anonymous = current.user.is_anonymous === true;
+  const ip = anonymous ? clientIp(await headers()) : null;
+  const ipHash = ip ? hashIp(ip, ipSalt()) : null;
+  if (ipHash) {
+    try {
+      if (!(await trialIpAllowed(ipHash, trialIpStore()))) return { ok: false, message: TRIAL_IP_LIMIT_MESSAGE };
+    } catch (error) {
+      // Never block a trial because the counter is down; the daily limit per user still applies.
+      console.error("createPiece: trial IP check failed", error);
+    }
+  }
+
   const { error: pieceError } = await supabase.from("pieces").insert({
     id,
     user_id: userId,
@@ -94,6 +137,12 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
     const { error: undoError } = await createAdminClient().from("pieces").delete().eq("id", id).eq("user_id", userId);
     if (undoError) console.error("createPiece: undo piece failed", undoError.message);
     return { ok: false, message: "We couldn't save your photos. Please try again." };
+  }
+
+  if (ipHash) {
+    const store = trialIpStore();
+    await store.record(ipHash).catch((error) => console.error("createPiece: trial IP record failed", error));
+    await store.prune(new Date(Date.now() - 2 * TRIAL_IP_WINDOW_MS).toISOString()).catch(() => {});
   }
 
   revalidatePath("/panel");
