@@ -70,6 +70,12 @@ async function thumbnail(file: File): Promise<Blob | null> {
   }
 }
 
+/** Next's redirect/notFound signals must keep propagating. */
+function isNavigation(error: unknown): boolean {
+  const digest = (error as { digest?: unknown } | null)?.digest;
+  return typeof digest === "string" && (digest.startsWith("NEXT_REDIRECT") || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK"));
+}
+
 const DIMENSIONS = [
   { name: "widthCm", label: "Ancho" },
   { name: "heightCm", label: "Alto" },
@@ -138,7 +144,13 @@ export function PieceForm({ userId, defaults = EMPTY_PIECE }: { userId: string; 
       setProgress("Creando la pieza…");
       formData.set("id", pieceId);
       // Redirects to /piezas/[id] on success; returns only on failure.
-      const failure = await createPiece(formData);
+      let failure: Awaited<ReturnType<typeof createPiece>> | undefined;
+      try {
+        failure = await createPiece(formData);
+      } catch (error) {
+        if (isNavigation(error)) throw error;
+        failure = { ok: false, message: "No hemos podido crear la pieza. Vuelve a intentarlo en unos minutos." };
+      }
       if (!failure) return;
       await cleanup();
       setProgress(null);

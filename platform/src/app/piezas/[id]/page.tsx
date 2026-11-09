@@ -138,7 +138,7 @@ export default async function PiecePage({ params }: { params: Promise<{ id: stri
                 <ResultActions
                   pieceId={piece.id}
                   balance={balance}
-                  versionsLeft={Math.max(0, Math.min(MAX_EXTRA_VERSIONS, 3 - piece.attempt))}
+                  versionsLeft={Math.max(0, MAX_EXTRA_VERSIONS - (piece.attempt - 1))}
                 />
               ) : (
                 <Notice status="warning" title="La previsualización no está disponible ahora mismo." />

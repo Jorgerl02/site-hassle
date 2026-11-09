@@ -2,14 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth";
-import {
-  findPieceForUser,
-  getSelectedModel,
-  isUuid,
-  signedModelUrls,
-  sqlErrorCode,
-  type DownloadUrls,
-} from "@/lib/pieces";
+import { isUuid, sqlErrorCode } from "@/lib/pieces";
 import { createServerClient } from "@/lib/supabase/server";
 
 export type ActionCode =
@@ -37,6 +30,7 @@ function fail(code: ActionCode): { ok: false; code: ActionCode; message: string 
 
 function codeOf(error: { message: string }): ActionCode {
   const code = sqlErrorCode(error);
+  if (code === "forbidden") return "not_found";
   return code && code in MESSAGES ? (code as ActionCode) : "unknown";
 }
 
@@ -45,23 +39,19 @@ function refresh(id: string) {
   revalidatePath("/panel");
 }
 
-/** Spends 1 credit (once: `approve_piece` is idempotent) and returns the signed GLB and USDZ URLs (1 h). */
-export async function downloadPiece(id: string): Promise<ActionResult<{ urls: DownloadUrls; balance: number }>> {
+/**
+ * Spends 1 credit (once: `approve_piece` is idempotent). The page then shows
+ * the signed GLB and USDZ links (1 h), signed on every visit.
+ */
+export async function downloadPiece(id: string): Promise<ActionResult> {
   if (!isUuid(id)) return fail("not_found");
   if (!(await getCurrentUser())) return fail("not_authenticated");
   const supabase = await createServerClient();
 
-  const { data, error } = await supabase.rpc("approve_piece", { p_piece_id: id });
+  const { error } = await supabase.rpc("approve_piece", { p_piece_id: id });
   if (error) return fail(codeOf(error));
-  const balance = Number((data as { balance?: number } | null)?.balance ?? 0);
-
-  // Re-read through RLS: only the owner's approved piece gets signed URLs.
-  const piece = await findPieceForUser(id);
-  if (!piece) return fail("not_found");
-  const urls = await signedModelUrls(piece, await getSelectedModel(piece));
   refresh(id);
-  if (!urls) return fail("unknown");
-  return { ok: true, urls, balance };
+  return { ok: true };
 }
 
 /** Back to the queue for a new attempt, free (at most 2 extra versions). */

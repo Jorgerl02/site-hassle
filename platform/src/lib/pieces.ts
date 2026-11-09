@@ -90,7 +90,7 @@ export async function getPieceForUser(id: string): Promise<CustomerPiece> {
   return piece;
 }
 
-/** Selected model of the current attempt, once the piece has been shown to the customer. */
+/** Selected model (`selected = true`) of the current attempt, once the piece has been shown to the customer. */
 export async function getSelectedModel(piece: CustomerPiece): Promise<PieceModel | null> {
   if (!MODEL_STATUSES.includes(piece.status)) return null;
   const supabase = await createServerClient();
@@ -99,7 +99,7 @@ export async function getSelectedModel(piece: CustomerPiece): Promise<PieceModel
     .select("*")
     .eq("piece_id", piece.id)
     .eq("attempt", piece.attempt)
-    .order("selected", { ascending: false })
+    .eq("selected", true)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();

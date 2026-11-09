@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { DAILY_LIMIT_MESSAGE, isUuid, sqlErrorCode } from "@/lib/pieces";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { createServerClient } from "@/lib/supabase/server";
 import { MAX_PHOTOS, validatePieceInput, type PieceField } from "@/lib/validation";
 
@@ -81,9 +82,13 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
     piece.photos.map((photo, i) => ({ piece_id: id, storage_path: `${folder}/${photo.name}`, position: i + 1 })),
   );
   if (photosError) {
-    // The piece exists: the worker waits 10 min for photos and then marks it
-    // `needs_photos`, where the customer can send them again.
+    // Without its photo rows the worker would wait 10 min for nothing: undo the
+    // piece (clients cannot delete pieces, hence the service role) and let the
+    // browser clean its uploads and retry.
     console.error("createPiece: insert piece_photos failed", photosError.message);
+    const { error: undoError } = await createAdminClient().from("pieces").delete().eq("id", id).eq("user_id", userId);
+    if (undoError) console.error("createPiece: undo piece failed", undoError.message);
+    return { ok: false, message: "No hemos podido guardar las fotos. Vuelve a intentarlo." };
   }
 
   revalidatePath("/panel");
