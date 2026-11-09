@@ -22,3 +22,4 @@ platform/.next/
 platform/test-results/
 platform/playwright-report/
 platform/public/examples/*.usdz
+platform/.vercel/

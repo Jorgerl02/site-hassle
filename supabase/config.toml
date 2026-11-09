@@ -1,8 +1,8 @@
 project_id = "site-hassle"
 
 [auth]
-site_url = "http://localhost:3000"
-additional_redirect_urls = ["http://localhost:3000/auth/callback", "http://localhost:3000/**"]
+site_url = "https://pieza-3d.vercel.app"
+additional_redirect_urls = ["https://pieza-3d.vercel.app/auth/callback", "https://pieza-3d.vercel.app/**", "https://*-rodriguezlorajorge-6960s-projects.vercel.app/auth/callback", "http://localhost:3000/auth/callback", "http://localhost:3000/**", "http://localhost:3150/**"]
 
 # Sign-in links without PKCE: they carry a token hash that /auth/callback verifies with
 # verifyOtp, so they work in any browser. A first sign-in gets the «confirmation» email

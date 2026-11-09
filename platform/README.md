@@ -178,3 +178,7 @@ Para producción:
 - Checkout crea **factura** (`invoice_creation`), pide **NIF/CIF** opcional (`tax_id_collection`) y la dirección de facturación. Antes de «Comprar», `/creditos` exige marcar «Acepto que el contenido digital se entrega de inmediato y renuncio al derecho de desistimiento.» (comprobado también en el servidor; queda en `metadata.withdrawal_waiver` de la sesión).
 - **Devoluciones:** el evento `charge.refunded` con la devolución **completa** de un cobro que conocemos (`purchases.stripe_payment_intent`) resta los créditos del paquete con una fila `refund` negativa, una sola vez por evento (`credit_ledger.stripe_event_id` único). El saldo puede quedar negativo si ya se gastaron. Las devoluciones **parciales** solo se anotan en el log: ajusta los créditos a mano (fila `refund` desde el SQL editor).
 - **Disputas** (`charge.dispute.*`): manuales. Responde en el Dashboard de Stripe y, si la pierdes, resta los créditos a mano.
+
+## Despliegue actual
+
+Proyecto Vercel `pieza-3d` (equipo rodriguezlorajorge-6960), URL pública **https://pieza-3d.vercel.app**. Variables de producción cargadas: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `WORKER_SHARED_SECRET`, `NEXT_PUBLIC_SITE_URL`. Faltan: Stripe, Resend y los ids de analítica. Auth de Supabase ya acepta `https://pieza-3d.vercel.app/auth/callback` (empujado con `supabase config push` sin las secciones de plantillas, que el plan gratuito rechaza). El worker corre en el Mac con `NOTIFY_URL=https://pieza-3d.vercel.app/api/internal/notify`.
