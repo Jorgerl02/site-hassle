@@ -1,6 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
+import { claimSecret } from "@/lib/claim";
+import { DOWNLOAD_MARKER_COOKIE, verifyDownloadMarker } from "@/lib/claim-token";
 import { getCurrentUser } from "@/lib/auth";
 import { isUuid, sqlErrorCode } from "@/lib/pieces";
 import { createServerClient } from "@/lib/supabase/server";
@@ -11,6 +14,7 @@ export type ActionCode =
   | "max_versions"
   | "not_found"
   | "not_authenticated"
+  | "needs_confirmation"
   | "unknown";
 
 export type ActionResult<T = object> = ({ ok: true } & T) | { ok: false; code: ActionCode; message: string };
@@ -23,6 +27,7 @@ const MESSAGES: Record<ActionCode, string> = {
 
   not_found: "We can't find this piece.",
   not_authenticated: "Your session has expired. Please sign in again.",
+  needs_confirmation: "Confirm the download to use your credit.",
   unknown: "Something went wrong. Please try again in a few minutes.",
 };
 
@@ -54,6 +59,22 @@ export async function downloadPiece(id: string): Promise<ActionResult> {
   if (error) return fail(codeOf(error));
   refresh(id);
   return { ok: true };
+}
+
+/**
+ * The download right after a sign-up that started from «Download»: spends the
+ * credit without another click only with the one-shot marker the callback set
+ * for this piece and user, which is consumed here. Without it: confirm first.
+ */
+export async function downloadAfterSignup(id: string): Promise<ActionResult> {
+  if (!isUuid(id)) return fail("not_found");
+  const current = await getCurrentUser();
+  if (!current) return fail("not_authenticated");
+  const store = await cookies();
+  const marker = store.get(DOWNLOAD_MARKER_COOKIE)?.value;
+  store.delete({ name: DOWNLOAD_MARKER_COOKIE, path: `/piezas/${id}` });
+  if (!verifyDownloadMarker(marker, id, current.user.id, claimSecret())) return fail("needs_confirmation");
+  return downloadPiece(id);
 }
 
 /** Back to the queue for a new attempt, free (at most 2 extra versions). */

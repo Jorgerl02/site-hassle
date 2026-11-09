@@ -8,25 +8,21 @@ import { getCurrentUser } from "@/lib/auth";
 import { dailyLimitMessage, isUuid, sqlErrorCode } from "@/lib/pieces";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createServerClient } from "@/lib/supabase/server";
-import { TRIAL_IP_LIMIT_MESSAGE, TRIAL_IP_WINDOW_MS, clientIp, hashIp, trialIpAllowed, type TrialIpStore } from "@/lib/trial-ip";
+import { TRIAL_IP_LIMIT_MESSAGE, TRIAL_IP_WINDOW_MS, clientIp, hashIp, trialIpLimit, type TrialIpStore } from "@/lib/trial-ip";
 import { MAX_PHOTOS, validatePieceInput, type PieceField } from "@/lib/validation";
 
-/** `trial_ips` through the service role (the table has no client policies). */
+/** `trial_ips` through the service role (SQL functions; the table has no client policies). */
 function trialIpStore(): TrialIpStore {
   const db = createAdminClient() as unknown as SupabaseClient;
   return {
-    async countSince(ipHash, sinceIso) {
-      const { count, error } = await db
-        .from("trial_ips")
-        .select("id", { count: "exact", head: true })
-        .eq("ip_hash", ipHash)
-        .gte("created_at", sinceIso);
-      if (error) throw new Error(`trial_ips: ${error.message}`);
-      return count ?? 0;
+    async claim(ipHash, limit) {
+      const { data, error } = await db.rpc("claim_trial_slot", { p_ip_hash: ipHash, p_limit: limit });
+      if (error) throw new Error(`claim_trial_slot: ${error.message}`);
+      return typeof data === "number" ? data : null;
     },
-    async record(ipHash) {
-      const { error } = await db.from("trial_ips").insert({ ip_hash: ipHash });
-      if (error) throw new Error(`trial_ips: ${error.message}`);
+    async release(id) {
+      const { error } = await db.rpc("release_trial_slot", { p_id: id });
+      if (error) throw new Error(`release_trial_slot: ${error.message}`);
     },
     async prune(beforeIso) {
       await db.from("trial_ips").delete().lt("created_at", beforeIso);
@@ -91,18 +87,24 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
   }
   const piece = result.value;
 
-  // Anonymous trials: also capped per network (hashed IP), on top of 1 a day per user.
+  // Anonymous trials: also capped per network (hashed IP or IPv6 /64), on top of 1 a day per
+  // user. The slot is taken atomically before the piece exists and given back if it fails.
   const anonymous = current.user.is_anonymous === true;
   const ip = anonymous ? clientIp(await headers()) : null;
-  const ipHash = ip ? hashIp(ip, ipSalt()) : null;
-  if (ipHash) {
+  const store = trialIpStore();
+  let slot: number | null = null;
+  if (ip) {
     try {
-      if (!(await trialIpAllowed(ipHash, trialIpStore()))) return { ok: false, message: TRIAL_IP_LIMIT_MESSAGE };
+      slot = await store.claim(hashIp(ip, ipSalt()), trialIpLimit());
+      if (slot === null) return { ok: false, message: TRIAL_IP_LIMIT_MESSAGE };
     } catch (error) {
       // Never block a trial because the counter is down; the daily limit per user still applies.
-      console.error("createPiece: trial IP check failed", error);
+      console.error("createPiece: trial IP slot failed", error);
     }
   }
+  const releaseSlot = async () => {
+    if (slot !== null) await store.release(slot).catch((error) => console.error("createPiece: release slot failed", error));
+  };
 
   const { error: pieceError } = await supabase.from("pieces").insert({
     id,
@@ -119,6 +121,7 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
     status: "queued",
   });
   if (pieceError) {
+    await releaseSlot();
     if (sqlErrorCode(pieceError) === "daily_limit") {
       return { ok: false, message: dailyLimitMessage(current.user.is_anonymous === true) };
     }
@@ -136,12 +139,11 @@ export async function createPiece(formData: FormData): Promise<CreatePieceResult
     console.error("createPiece: insert piece_photos failed", photosError.message);
     const { error: undoError } = await createAdminClient().from("pieces").delete().eq("id", id).eq("user_id", userId);
     if (undoError) console.error("createPiece: undo piece failed", undoError.message);
+    await releaseSlot();
     return { ok: false, message: "We couldn't save your photos. Please try again." };
   }
 
-  if (ipHash) {
-    const store = trialIpStore();
-    await store.record(ipHash).catch((error) => console.error("createPiece: trial IP record failed", error));
+  if (slot !== null) {
     await store.prune(new Date(Date.now() - 2 * TRIAL_IP_WINDOW_MS).toISOString()).catch(() => {});
   }
 

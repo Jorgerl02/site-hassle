@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { signClaim } from "../../src/lib/claim-token";
+import { isBoundClaim, signClaim, signDownloadMarker } from "../../src/lib/claim-token";
 import {
   P12_PNG,
   createPieceTestUser,
@@ -15,6 +15,7 @@ import {
 test.describe.configure({ mode: "serial" });
 
 const db = serviceDb();
+const SECRET = process.env.CLAIM_SECRET?.trim() || process.env.SUPABASE_SERVICE_ROLE_KEY!;
 let anonymousId: string;
 let pieceId: string;
 const users: PieceTestUser[] = [];
@@ -114,13 +115,29 @@ test("converting the trial keeps the same user and piece, then the pack modal an
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByTestId("piece-status")).toHaveText("Ready");
 
-  // Right after sign-up (or a verified Checkout return): downloads without another click.
-  const download = page.waitForEvent("download");
+  // A forged `registro=1` does not spend either.
   await page.goto(`/piezas/${pieceId}?download=1&registro=1`);
+  await expect(page.getByRole("button", { name: "Use 1 credit and download" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  // Right after sign-up the callback leaves a one-shot marker for this piece: downloads without another click.
+  await page.context().addCookies([
+    {
+      name: "sh_dl",
+      value: signDownloadMarker(pieceId, anonymousId, SECRET),
+      domain: "localhost",
+      path: `/piezas/${pieceId}`,
+      httpOnly: true,
+    },
+  ]);
+  const download = page.waitForEvent("download");
+  await page.goto(`/piezas/${pieceId}?download=1`);
   await expect(page.getByTestId("piece-status")).toHaveText("Downloaded", { timeout: 15_000 });
   await expect(page.getByTestId("auto-download")).toBeVisible();
   expect((await download).suggestedFilename()).toMatch(/\.glb$/);
   await expect(page).toHaveURL(new RegExp(`/piezas/${pieceId}$`));
+  // The marker was consumed.
+  expect((await page.context().cookies()).some((c) => c.name === "sh_dl")).toBe(false);
   users.push({ id: anonymousId, email });
   anonymousId = "";
 });
@@ -136,9 +153,22 @@ test("an existing account claims an anonymous trial's piece on sign-in", async (
   users.push({ id: trial, email: "" });
 
   // What «email already registered» leaves in the browser, then the sign-in link of that account.
-  const secret = process.env.CLAIM_SECRET?.trim() || process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  await context.addCookies([{ name: "sh_claim", value: signClaim(trial, secret), domain: "localhost", path: "/", httpOnly: true }]);
+  await context.addCookies([{ name: "sh_claim", value: signClaim(trial, SECRET), domain: "localhost", path: "/", httpOnly: true }]);
   await signInAs(page, db, account.email);
+
+  // Still queued: the worker reads its photos by the trial's path, so it stays with the trial
+  // and the claim is kept, bound to this account, for its next sign-in.
+  expect((await db.from("pieces").select("user_id").eq("id", claimed).single()).data?.user_id).toBe(trial);
+  const pending = (await context.cookies()).find((c) => c.name === "sh_claim");
+  expect(pending && isBoundClaim(pending.value)).toBe(true);
+  await page.goto("/panel"); // a bound claim survives the account pages
+  expect((await context.cookies()).some((c) => c.name === "sh_claim")).toBe(true);
+
+  // Once it is ready, the next sign-in of that account moves it.
+  await simulateWorkerReady(db, claimed);
+  const { data: link } = await db.auth.admin.generateLink({ type: "magiclink", email: account.email });
+  await page.goto(`/auth/callback?token_hash=${link.properties!.hashed_token}&type=magiclink`);
+  await expect(page).toHaveURL(/\/panel(\?|$)/);
 
   const { data: after } = await db.from("pieces").select("user_id").eq("id", claimed).single();
   expect(after?.user_id).toBe(account.id);

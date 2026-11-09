@@ -1,8 +1,14 @@
 import type { EmailOtpType, User } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
 import { isFirstSignIn } from "@/lib/analytics";
-import { claimAnonymousPieces, takeClaim } from "@/lib/claim";
-import { safeNext } from "@/lib/claim-token";
+import { claimAnonymousPieces, claimSecret, setClaimCookie, takeClaim } from "@/lib/claim";
+import {
+  DOWNLOAD_MARKER_COOKIE,
+  DOWNLOAD_MARKER_MAX_AGE_SECONDS,
+  pieceIdOfPath,
+  safeNext,
+  signDownloadMarker,
+} from "@/lib/claim-token";
 import { createServerClient } from "@/lib/supabase/server";
 
 /**
@@ -56,20 +62,36 @@ export async function GET(request: NextRequest) {
   }
   if (!ok || !user) return NextResponse.redirect(new URL("/entrar?error=enlace", origin));
 
-  const claimedFrom = await takeClaim();
-  if (claimedFrom && claimedFrom !== user.id && !user.is_anonymous) {
+  const claim = await takeClaim();
+  if (claim && claim.from !== user.id && !user.is_anonymous && (claim.to === null || claim.to === user.id)) {
     try {
-      const moved = await claimAnonymousPieces(claimedFrom, user.id);
-      console.info(`[claim] ${moved} piece(s) moved from anonymous ${claimedFrom} to ${user.id}`);
+      const { moved, left } = await claimAnonymousPieces(claim.from, user.id);
+      console.info(`[claim] ${moved.length} piece(s) moved from anonymous ${claim.from} to ${user.id}; ${left} left`);
+      // Queued or generating pieces stay with the trial: this account claims them on its next sign-in.
+      if (left > 0) await setClaimCookie(claim.from, user.id);
     } catch (error) {
       // The sign-in still succeeds; the pieces stay with the anonymous user (admin can move them).
       console.error("[claim] failed", error);
+      await setClaimCookie(claim.from, user.id);
     }
   }
 
   const target = new URL(next, origin);
   if (target.origin !== origin) return NextResponse.redirect(new URL("/panel", origin));
   const converted = searchParams.get("signup") === "1" && !user.is_anonymous;
-  if (converted || isFirstSignIn(user)) target.searchParams.set("registro", "1");
-  return NextResponse.redirect(target);
+  const signedUp = converted || isFirstSignIn(user);
+  if (signedUp) target.searchParams.set("registro", "1");
+  const response = NextResponse.redirect(target);
+  // Signed up from «Download» on a piece: allow that one download without another click.
+  const pieceId = pieceIdOfPath(target.pathname);
+  if (signedUp && pieceId && target.searchParams.get("download") === "1") {
+    response.cookies.set(DOWNLOAD_MARKER_COOKIE, signDownloadMarker(pieceId, user.id, claimSecret()), {
+      path: `/piezas/${pieceId}`,
+      maxAge: DOWNLOAD_MARKER_MAX_AGE_SECONDS,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+    });
+  }
+  return response;
 }

@@ -1,5 +1,6 @@
 import { Alert, Badge, Box, Button, Container, Flex, Heading, Link, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import NextLink from "next/link";
 import { TrackEvent } from "@/components/Analytics";
 import { AppHeader } from "@/components/pieces/AppHeader";
@@ -10,6 +11,8 @@ import { ResultActions } from "@/components/pieces/ResultActions";
 import { StatusSteps } from "@/components/pieces/StatusSteps";
 import { sourceOf } from "@/lib/attribution";
 import { requireUser } from "@/lib/auth";
+import { claimSecret } from "@/lib/claim";
+import { DOWNLOAD_MARKER_COOKIE, verifyDownloadMarker } from "@/lib/claim-token";
 import { confirmCheckoutReturn, type ReturnInfo } from "@/lib/checkout-return";
 import { formatCm } from "@/lib/format";
 import {
@@ -96,10 +99,12 @@ export default async function PiecePage({ params, searchParams }: { params: Prom
   const sessionId = param(query.session_id);
   const returned: ReturnInfo = param(query.ok) === "1" ? await confirmCheckoutReturn(sessionId, user.id) : { state: null };
   // `?download=1`: the customer asked to download before signing up or buying. The credit is
-  // spent without another click only right after a verified payment or a sign-up; any other
-  // arrival (a bookmark, a shared link) opens the confirmation instead.
+  // spent without another click only after a verified payment, or after a sign-up that left
+  // the one-shot marker for this piece (checked and consumed again by the action); any other
+  // arrival (a bookmark, a shared link, a forged `registro=1`) opens the confirmation.
   const autoDownload = param(query.download) === "1";
-  const autoSpend = returned.state === "paid" || param(query.registro) === "1";
+  const signupMarker = verifyDownloadMarker((await cookies()).get(DOWNLOAD_MARKER_COOKIE)?.value, id, user.id, claimSecret());
+  const autoMode = !autoDownload ? null : returned.state === "paid" ? "spend" : signupMarker ? "signup" : "confirm";
   const model = await getSelectedModel(piece);
   const showsModel = piece.status === "ready" || piece.status === "approved";
   const [renders, downloads, balance, iosSrc] = await Promise.all([
@@ -202,7 +207,7 @@ export default async function PiecePage({ params, searchParams }: { params: Prom
                   pieceId={piece.id}
                   balance={balance}
                   anonymous={anonymous}
-                  autoDownload={autoDownload ? (autoSpend ? "spend" : "confirm") : null}
+                  autoDownload={autoMode}
                   source={source}
                   paymentsEnabled={isStripeConfigured()}
                   versionsLeft={Math.max(0, MAX_EXTRA_VERSIONS - (piece.attempt - 1))}

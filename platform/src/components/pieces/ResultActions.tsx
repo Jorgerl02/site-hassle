@@ -4,7 +4,7 @@ import { Alert, Button, Dialog, Field, Flex, Portal, Stack, Text, Textarea } fro
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import { trackOnce } from "@/lib/analytics";
-import { downloadPiece, rejectPiece, requestNewVersion, type ActionResult } from "@/app/piezas/[id]/actions";
+import { downloadAfterSignup, downloadPiece, rejectPiece, requestNewVersion, type ActionResult } from "@/app/piezas/[id]/actions";
 import { PacksDialog } from "./PacksDialog";
 import { SaveAccountForm } from "./SaveAccount";
 
@@ -19,10 +19,11 @@ interface ResultActionsProps {
   /** Anonymous trial: downloading asks for an account first (same user, same pieces). */
   anonymous: boolean;
   /**
-   * `?download=1`: the customer already asked to download. `spend` (right after a verified
-   * payment or sign-up) spends the credit without another click; `confirm` opens the dialog.
+   * `?download=1`: the customer already asked to download. `spend` (after a verified payment)
+   * spends the credit without another click; `signup` does too if the server accepts the
+   * one-shot sign-up marker (else it asks); `confirm` opens the dialog.
    */
-  autoDownload: "spend" | "confirm" | null;
+  autoDownload: "spend" | "signup" | "confirm" | null;
   paymentsEnabled: boolean;
   source: string;
 }
@@ -57,13 +58,14 @@ export function ResultActions({
       }
       setOpen(null);
       if (result.code === "insufficient_credits") setPacksOpen(true);
+      else if (result.code === "needs_confirmation") setOpen("download");
       else setError(result.message);
     });
   }
 
-  function download() {
+  function download(action: (id: string) => Promise<ActionResult> = downloadPiece) {
     run(
-      () => downloadPiece(pieceId),
+      () => action(pieceId),
       () => {
         trackOnce("piece_approved", `piece_approved:${pieceId}`, { source });
         // The approved page starts the GLB download by itself.
@@ -73,24 +75,24 @@ export function ResultActions({
   }
 
   /** Where the download goes next: account first, then credits, then confirm (or straight on when asked before). */
-  function startDownload(confirmFirst: boolean) {
+  function startDownload(mode: "confirm" | "spend" | "signup") {
     if (anonymous) return setOpen("signup");
     if (balance !== null && balance < 1) return setPacksOpen(true);
-    if (confirmFirst) return setOpen("download");
-    download();
+    if (mode === "confirm") return setOpen("download");
+    download(mode === "signup" ? downloadAfterSignup : downloadPiece);
   }
 
   // Back from sign-up or Checkout with `?download=1`: continue without another click.
   useEffect(() => {
     if (!autoDownload || autoStarted.current) return;
     autoStarted.current = true;
-    startDownload(autoDownload === "confirm");
+    startDownload(autoDownload);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on arrival
   }, [autoDownload]);
 
   function onDownloadClick() {
     trackOnce("download_clicked", `download_clicked:${pieceId}`, { source });
-    startDownload(true);
+    startDownload("confirm");
   }
 
   const dialog: { title: string; body: ReactNode; confirm?: string; onConfirm?: () => void } | null = (() => {
@@ -105,7 +107,7 @@ export function ResultActions({
             </Text>
           ),
           confirm: "Use 1 credit and download",
-          onConfirm: download,
+          onConfirm: () => download(),
         };
       case "version":
         return {

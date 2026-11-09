@@ -7,17 +7,20 @@ import {
   readAttributionCookie,
   serializeAttribution,
 } from "@/lib/attribution";
-import { CLAIM_COOKIE } from "@/lib/claim-token";
+import { CLAIM_COOKIE, isBoundClaim } from "@/lib/claim-token";
 import { updateSession } from "@/lib/supabase/proxy";
 
 // Next.js 16 renamed `middleware.ts` to `proxy.ts`.
 export async function proxy(request: NextRequest) {
   const { response, user } = await updateSession(request);
 
-  // A pending claim (anonymous trial → existing account) is stale once an
-  // account is signed in by any other way: drop it on the account pages.
+  // An unbound claim (anonymous trial → whichever account signs in next) is
+  // stale once an account is signed in by any other way: drop it on the
+  // account pages. A claim bound to an account (pieces still generating) stays
+  // for that account's next sign-in.
   const path = request.nextUrl.pathname;
-  if (user && !user.isAnonymous && (path === "/entrar" || path === "/panel") && request.cookies.has(CLAIM_COOKIE)) {
+  const claimCookie = request.cookies.get(CLAIM_COOKIE)?.value;
+  if (user && !user.isAnonymous && (path === "/entrar" || path === "/panel") && claimCookie && !isBoundClaim(claimCookie)) {
     response.cookies.delete(CLAIM_COOKIE);
   }
 
