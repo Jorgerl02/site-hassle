@@ -13,8 +13,12 @@
  * | `purchase`       | `Purchase` (value, currency)    | `purchase`       |
  *
  * The vendors' queue stubs are created on first use, so events fired before
- * the scripts finish loading are kept and sent in order.
+ * the scripts finish loading are kept and sent in order. Nothing is created or
+ * sent without a stored `granted` consent (`lib/consent.ts`): events before
+ * the visitor accepts are dropped.
  */
+
+import { measurementAllowed, readConsent } from "@/lib/consent";
 
 export type AnalyticsEvent = "signup" | "piece_created" | "piece_approved" | "purchase";
 
@@ -62,7 +66,7 @@ let initialised = false;
 
 /** Same queue stubs as the vendors' snippets; idempotent. */
 export function initAnalytics(): void {
-  if (initialised || typeof window === "undefined") return;
+  if (initialised || !measurementActive()) return;
   initialised = true;
   if (META_PIXEL_ID && !window.fbq) {
     const fbq = function (...args: unknown[]) {
@@ -90,39 +94,61 @@ export function initAnalytics(): void {
   }
 }
 
+/** Some measurement id is configured (the consent banner exists only then). */
 export function analyticsEnabled(): boolean {
   return Boolean(META_PIXEL_ID || GA_ID);
 }
 
-export function trackPageView(path: string): void {
-  if (!analyticsEnabled()) return;
-  initAnalytics();
-  window.fbq?.("track", "PageView");
-  window.gtag?.("event", "page_view", { page_path: path, page_location: window.location.href });
+/** An id is configured and the visitor accepted measurement cookies. */
+export function measurementActive(): boolean {
+  return typeof window !== "undefined" && measurementAllowed(analyticsEnabled(), readConsent());
 }
 
-export function track(event: AnalyticsEvent, params: EventParams = {}): void {
-  if (!analyticsEnabled() || typeof window === "undefined") return;
+export function trackPageView(path: string): void {
+  if (!measurementActive()) return;
+  initAnalytics();
+  window.fbq?.("track", "PageView");
+  // Origin + path only: no query string (it can carry session ids or e-mail links).
+  window.gtag?.("event", "page_view", { page_path: path, page_location: `${window.location.origin}${path}` });
+}
+
+/** Sends one funnel event; returns whether it was sent (needs an id and consent). */
+export function track(event: AnalyticsEvent, params: EventParams = {}): boolean {
+  if (!measurementActive()) return false;
   initAnalytics();
   const money = params.value !== undefined ? { value: params.value, currency: params.currency ?? "EUR" } : {};
   const meta = META_EVENT[event];
-  window.fbq?.(meta.standard ? "track" : "trackCustom", meta.name, money);
+  // eventID lets Meta deduplicate the purchase (e.g. against a future Conversions API call).
+  const metaOptions = params.transactionId ? [{ eventID: params.transactionId }] : [];
+  window.fbq?.(meta.standard ? "track" : "trackCustom", meta.name, money, ...metaOptions);
   window.gtag?.("event", GA_EVENT[event], {
     ...money,
     ...(params.transactionId ? { transaction_id: params.transactionId } : {}),
   });
+  return true;
 }
 
-/** Fires `event` once per browser for `onceKey` (localStorage; best effort). */
+/**
+ * Fires `event` once per browser for `onceKey` (localStorage; best effort).
+ * Without an id or consent nothing is read or written: the key is marked only
+ * after a real send, so an event dropped before consent can still fire later.
+ */
 export function trackOnce(event: AnalyticsEvent, onceKey: string, params?: EventParams): void {
+  if (!measurementActive()) return;
   const key = `sh_tracked:${onceKey}`;
+  let storage: Storage | null = null;
   try {
-    if (window.localStorage.getItem(key)) return;
-    window.localStorage.setItem(key, "1");
+    storage = window.localStorage;
+    if (storage.getItem(key)) return;
   } catch {
-    // Storage blocked: send anyway (a duplicate beats a lost conversion).
+    storage = null; // storage blocked: send anyway (a duplicate beats a lost conversion)
   }
-  track(event, params);
+  if (!track(event, params)) return;
+  try {
+    storage?.setItem(key, "1");
+  } catch {
+    // ignore
+  }
 }
 
 const PIECE_PAGE = /^\/piezas\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

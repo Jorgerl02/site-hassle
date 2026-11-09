@@ -9,6 +9,28 @@ const PORT = Number(process.env.E2E_PORT ?? 3150);
 export const E2E_WORKER_SECRET = process.env.E2E_WORKER_SECRET ?? "e2e-worker-secret";
 process.env.E2E_WORKER_SECRET = E2E_WORKER_SECRET;
 
+/**
+ * The e2e build has measurement ids (fake unless real ones are exported) so
+ * the cookie banner exists; `consent.spec.ts` checks that nothing loads
+ * before «Aceptar». Every other spec starts with `sh_consent=denied` stored,
+ * so the banner never covers the page (the third-party scripts never load).
+ */
+const E2E_META_PIXEL_ID = process.env.NEXT_PUBLIC_META_PIXEL_ID || "000000000000000";
+const E2E_GA_ID = process.env.NEXT_PUBLIC_GA_ID || "G-E2ETEST000";
+const BASE_URL = `http://localhost:${PORT}`;
+export const CONSENT_DENIED_STATE = {
+  cookies: [],
+  origins: [
+    {
+      origin: BASE_URL,
+      localStorage: [
+        { name: "sh_consent", value: "denied" },
+        { name: "sh_consent_at", value: String(Date.now()) },
+      ],
+    },
+  ],
+};
+
 export default defineConfig({
   testDir: "tests/e2e",
   // Every suite signs users in against the hosted Supabase project, whose Auth
@@ -18,8 +40,9 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: "list",
   use: {
-    baseURL: `http://localhost:${PORT}`,
+    baseURL: BASE_URL,
     locale: "es-ES",
+    storageState: CONSENT_DENIED_STATE,
     trace: "retain-on-failure",
   },
   projects: [
@@ -33,6 +56,11 @@ export default defineConfig({
     url: `http://localhost:${PORT}`,
     reuseExistingServer: !process.env.CI,
     timeout: 240_000,
-    env: { ...(process.env as Record<string, string>), WORKER_SHARED_SECRET: E2E_WORKER_SECRET },
+    env: {
+      ...(process.env as Record<string, string>),
+      WORKER_SHARED_SECRET: E2E_WORKER_SECRET,
+      NEXT_PUBLIC_META_PIXEL_ID: E2E_META_PIXEL_ID,
+      NEXT_PUBLIC_GA_ID: E2E_GA_ID,
+    },
   },
 });

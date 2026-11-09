@@ -70,7 +70,7 @@ export function envDeps(): NotifyDeps {
 
 export async function sendEmail(message: EmailMessage, deps: NotifyDeps = envDeps()): Promise<NotifyResult> {
   if (!deps.apiKey) {
-    deps.log(`[notify] RESEND_API_KEY sin configurar: no se envía «${message.subject}» a ${message.to}`);
+    deps.log(`[notify] RESEND_API_KEY sin configurar: no se envía «${message.subject}»`);
     return { sent: false, reason: "not_configured" };
   }
   const headers: Record<string, string> = {

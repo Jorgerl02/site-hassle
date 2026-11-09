@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Fraunces, Inter } from "next/font/google";
 import type { ReactNode } from "react";
 import { Analytics } from "@/components/Analytics";
+import { CookieConsent } from "@/components/CookieConsent";
 import { Provider } from "@/components/ui/provider";
 import { PRODUCT_NAME, siteUrl } from "@/lib/site";
 import "./globals.css";
@@ -50,7 +51,10 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html lang="es" className={`${serif.variable} ${sans.variable}`} suppressHydrationWarning>
       <body>
-        <Provider>{children}</Provider>
+        <Provider>
+          {children}
+          <CookieConsent />
+        </Provider>
         <Analytics />
       </body>
     </html>

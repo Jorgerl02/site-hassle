@@ -33,11 +33,14 @@ describe("track", () => {
     vi.resetModules();
   });
 
-  async function load(env: Record<string, string>) {
+  async function load(env: Record<string, string>, consent?: "granted" | "denied") {
     for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
-    const storage = new Map<string, string>();
+    const storage = new Map<string, string>(
+      consent ? [["sh_consent", consent], ["sh_consent_at", String(Date.now())]] : [],
+    );
     vi.stubGlobal("window", {
-      location: { href: "https://pieza3d.example/creditos" },
+      dispatchEvent: () => true,
+      location: { href: "https://pieza3d.example/creditos?ok=1", origin: "https://pieza3d.example" },
       localStorage: {
         getItem: (k: string) => storage.get(k) ?? null,
         setItem: (k: string, v: string) => void storage.set(k, v),
@@ -54,8 +57,40 @@ describe("track", () => {
     expect((window as Window).gtag).toBeUndefined();
   });
 
+  it("sends nothing before the visitor accepts", async () => {
+    for (const consent of [undefined, "denied"] as const) {
+      vi.resetModules();
+      const analytics = await load({ NEXT_PUBLIC_META_PIXEL_ID: "123", NEXT_PUBLIC_GA_ID: "G-TEST" }, consent);
+      analytics.track("signup");
+      analytics.trackOnce("purchase", "purchase:cs_0", { value: 9 });
+      analytics.trackPageView("/");
+      expect(analytics.measurementActive()).toBe(false);
+      expect((window as Window).fbq).toBeUndefined();
+      expect((window as Window).gtag).toBeUndefined();
+      // A dropped trackOnce is not spent: it can still fire after consent.
+      expect(window.localStorage.getItem("sh_tracked:purchase:cs_0")).toBeNull();
+    }
+  });
+
+  it("a trackOnce dropped before consent fires once after «Aceptar»", async () => {
+    const analytics = await load({ NEXT_PUBLIC_META_PIXEL_ID: "123", NEXT_PUBLIC_GA_ID: "" });
+    analytics.trackOnce("signup", "signup:u1");
+    expect(window.localStorage.getItem("sh_tracked:signup:u1")).toBeNull();
+    expect((window as Window).fbq).toBeUndefined();
+
+    window.localStorage.setItem("sh_consent", "granted");
+    window.localStorage.setItem("sh_consent_at", String(Date.now()));
+    analytics.trackOnce("signup", "signup:u1");
+    analytics.trackOnce("signup", "signup:u1");
+    expect(window.localStorage.getItem("sh_tracked:signup:u1")).toBe("1");
+    expect((window as Window).fbq!.queue).toEqual([
+      ["init", "123"],
+      ["track", "CompleteRegistration", {}],
+    ]);
+  });
+
   it("queues the pixel init and the mapped events, once per key", async () => {
-    const analytics = await load({ NEXT_PUBLIC_META_PIXEL_ID: "123", NEXT_PUBLIC_GA_ID: "G-TEST" });
+    const analytics = await load({ NEXT_PUBLIC_META_PIXEL_ID: "123", NEXT_PUBLIC_GA_ID: "G-TEST" }, "granted");
     analytics.trackOnce("purchase", "purchase:cs_1", { value: 69, transactionId: "cs_1" });
     analytics.trackOnce("purchase", "purchase:cs_1", { value: 69, transactionId: "cs_1" });
     analytics.track("piece_created");
@@ -63,7 +98,7 @@ describe("track", () => {
     const fbqQueue = (window as Window).fbq!.queue;
     expect(fbqQueue).toEqual([
       ["init", "123"],
-      ["track", "Purchase", { value: 69, currency: "EUR" }],
+      ["track", "Purchase", { value: 69, currency: "EUR" }, { eventID: "cs_1" }],
       ["trackCustom", "PieceCreated", {}],
     ]);
     const layer = ((window as Window).dataLayer ?? []).map((args) => Array.from(args as ArrayLike<unknown>));
@@ -72,5 +107,10 @@ describe("track", () => {
       ["event", "purchase", { value: 69, currency: "EUR", transaction_id: "cs_1" }],
       ["event", "piece_created", {}],
     ]);
+
+    // Page views carry origin + path only, never the query string.
+    analytics.trackPageView("/creditos");
+    const last = Array.from((window as Window).dataLayer!.at(-1) as ArrayLike<unknown>);
+    expect(last).toEqual(["event", "page_view", { page_path: "/creditos", page_location: "https://pieza3d.example/creditos" }]);
   });
 });

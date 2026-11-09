@@ -24,6 +24,10 @@ pnpm dev                     # http://localhost:3000
 
 Desde la raíz del repo hay atajos de `just`: `just platform-dev`, `just platform-test`, `just platform-e2e` y `just worker`.
 
+**Para el E2E completo, para antes el worker de producción** (`just worker`): `run --once` reclama la pieza más antigua de la cola y un worker en marcha podría llevarse la del test (o el test una pieza real).
+
+El build de los e2e lleva ids de medición falsos (`NEXT_PUBLIC_META_PIXEL_ID`/`NEXT_PUBLIC_GA_ID`, salvo que exportes los tuyos) para que exista el aviso de cookies; todas las specs salvo `consent.spec.ts` empiezan con `sh_consent=denied` guardado. Las peticiones a Meta y Google de `consent.spec.ts` se responden en local. Antes de medir Lighthouse o servir en local, vuelve a hacer `pnpm build` sin esos ids.
+
 Si reutilizas un servidor ya arrancado en el 3150 para los e2e, arráncalo con `WORKER_SHARED_SECRET=e2e-worker-secret` (el mismo que usa el test del recorrido completo) o el aviso del worker fallará.
 
 Lighthouse móvil de la landing (con `pnpm start` corriendo):
@@ -47,7 +51,8 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 | `NOTIFY_FROM_EMAIL` | Con Resend | Remitente en un dominio verificado en Resend, p. ej. `Pieza 3D <avisos@tudominio.es>`. Vacío: remitente de pruebas de Resend (solo entrega al dueño de la cuenta) |
 | `ADMIN_NOTIFY_EMAIL` | No | Quién recibe «Pieza en revisión» |
 | `WORKER_SHARED_SECRET` | No | Activa `POST /api/internal/notify` (lo llama el worker). El mismo valor va en el `.env` de la raíz |
-| `NEXT_PUBLIC_META_PIXEL_ID`, `NEXT_PUBLIC_GA_ID` | No | Meta Pixel y GA4. Vacías: no se carga ningún script de terceros |
+| `NEXT_PUBLIC_META_PIXEL_ID`, `NEXT_PUBLIC_GA_ID` | No | Meta Pixel y GA4. Vacías: no se carga ningún script de terceros ni aparece el aviso de cookies |
+| `NEXT_PUBLIC_CONTACT_EMAIL` | Sí en producción | Correo de contacto de `/privacidad` (derechos RGPD) |
 
 ## Avisos por correo
 
@@ -57,7 +62,11 @@ pnpm dlx lighthouse http://localhost:3000 --form-factor=mobile --screenEmulation
 
 ## Analítica para anuncios
 
-`src/components/Analytics.tsx` (en el layout raíz) carga Meta Pixel y GA4 solo si hay id, con `lazyOnload`, y envía una vista de página por navegación. Eventos del embudo (`src/lib/analytics.ts`):
+`src/components/Analytics.tsx` (en el layout raíz) carga Meta Pixel y GA4 solo si hay id **y el visitante ha aceptado** en el aviso de cookies (`src/components/CookieConsent.tsx`, barra inferior con «Aceptar» / «Rechazar» y enlace a `/privacidad`). La elección se guarda en `localStorage` (`sh_consent` = `granted|denied` y `sh_consent_at`) durante 180 días; en `/privacidad` se puede cambiar. Sin id configurado no hay aviso. Con consentimiento, los scripts se cargan con `lazyOnload` y se envía una vista de página por navegación (origen + ruta, sin query string). Antes del consentimiento no se envía ningún evento (se pierden, no se encolan).
+
+En Meta Events Manager, **desactiva «Automatic Advanced Matching»** del píxel: enviaría a Meta datos de formularios (como el correo de `/entrar`) sin que lo hayamos previsto en `/privacidad`. La compra lleva `eventID` = id de la sesión de Stripe para deduplicar.
+
+Eventos del embudo (`src/lib/analytics.ts`):
 
 | Evento | Cuándo | Meta | GA4 |
 |---|---|---|---|
@@ -144,8 +153,9 @@ Para producción:
 - [ ] SMTP propio en Supabase Auth y plantilla del enlace mágico en español.
 - [ ] Stripe en live: precios creados con `pnpm stripe:setup`, webhook con los dos eventos, compra real de prueba hecha.
 - [ ] Resend con dominio verificado; recibes «Pieza en revisión» y el cliente «Tu pieza está lista».
-- [ ] `NEXT_PUBLIC_META_PIXEL_ID` y/o `NEXT_PUBLIC_GA_ID`; eventos comprobados con Meta Pixel Helper / GA DebugView.
+- [ ] `NEXT_PUBLIC_META_PIXEL_ID` y/o `NEXT_PUBLIC_GA_ID`; eventos comprobados con Meta Pixel Helper / GA DebugView tras pulsar «Aceptar»; «Automatic Advanced Matching» desactivado en Meta.
+- [ ] `NEXT_PUBLIC_CONTACT_EMAIL` y el titular (nombre y NIF) en `/privacidad` (`src/app/privacidad/page.tsx`, TODO).
 - [ ] **Fotos de la landing:** `public/examples/` usa fotos de catálogos de terceros del piloto. Sustitúyelas por fotos propias o con permiso escrito.
-- [ ] Textos legales: aviso legal, privacidad y cookies (el píxel de Meta y GA necesitan consentimiento en la UE: banner de cookies antes de cargarlos).
+- [ ] Aviso legal (titular, NIF, domicilio) y condiciones de venta; `/privacidad` ya existe en lenguaje llano, conviene que lo revise un abogado.
 - [ ] Worker corriendo en el Mac con `PROVIDER` decidido (sin proveedor, las piezas orgánicas fallan).
 - [ ] Un recorrido completo en producción desde el móvil: registro, pieza, revisión, visor con RA, compra y descarga.

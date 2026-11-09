@@ -336,11 +336,12 @@ def notify_status(
     """POST ``{pieceId, status}`` to the web's ``/api/internal/notify`` (admin heads-up on
     ``review``). Only when ``NOTIFY_URL`` and ``WORKER_SHARED_SECRET`` are set; returns
     whether the web accepted it. Never raises: a lost notice must not fail a finished piece."""
-    env = settings if settings is not None else load_settings()
-    url, secret = env.get("NOTIFY_URL"), env.get("WORKER_SHARED_SECRET")
-    if not url or not secret:
-        return False
     try:
+        # Inside the try: a broken .env must never turn a reviewed piece into ``failed``.
+        env = settings if settings is not None else load_settings()
+        url, secret = env.get("NOTIFY_URL"), env.get("WORKER_SHARED_SECRET")
+        if not url or not secret:
+            return False
         post = client.post if client is not None else httpx.post
         response = post(
             url,

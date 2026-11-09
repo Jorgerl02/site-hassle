@@ -33,7 +33,12 @@ export function SiteFooter() {
       <Container maxW="6xl" px={{ base: 4, md: 8 }}>
         <Flex direction={{ base: "column", sm: "row" }} gap="3" justify="space-between" color="fg.subtle" fontSize="sm">
           <Text>{PRODUCT_NAME}. Modelos 3D de muebles a escala real.</Text>
-          <Text>Precios con IVA incluido.</Text>
+          <Flex gap="4" wrap="wrap">
+            <Text>Precios con IVA incluido.</Text>
+            <Link asChild color="fg.subtle">
+              <NextLink href="/privacidad">Privacidad y cookies</NextLink>
+            </Link>
+          </Flex>
         </Flex>
       </Container>
     </Box>

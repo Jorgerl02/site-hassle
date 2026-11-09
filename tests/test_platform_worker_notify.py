@@ -54,3 +54,11 @@ def test_a_failed_notice_never_raises(httpx_mock: HTTPXMock, failure: str) -> No
         httpx_mock.add_exception(httpx.ConnectError("refused"))
     settings = {"NOTIFY_URL": URL, "WORKER_SHARED_SECRET": "s3cret"}
     assert pipeline.notify_status(PIECE_ID, "review", settings=settings) is False
+
+
+def test_a_broken_settings_file_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom() -> dict[str, str | None]:
+        raise OSError("unreadable .env")
+
+    monkeypatch.setattr(pipeline, "load_settings", boom)
+    assert pipeline.notify_status(PIECE_ID, "review") is False

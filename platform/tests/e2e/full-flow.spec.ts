@@ -49,6 +49,14 @@ function blenderBin(): string | null {
   return null;
 }
 
+/** `STRIPE_WEBHOOK_SECRET` from the environment or `platform/.env.local` (what the server under test reads). */
+function stripeWebhookSecret(): string | undefined {
+  if (process.env.STRIPE_WEBHOOK_SECRET) return process.env.STRIPE_WEBHOOK_SECRET;
+  const file = path.join(process.cwd(), ".env.local");
+  if (!existsSync(file)) return undefined;
+  return readFileSync(file, "utf8").match(/^STRIPE_WEBHOOK_SECRET=(.*)$/m)?.[1]?.trim() || undefined;
+}
+
 const db = serviceDb();
 let customer: PieceTestUser | undefined;
 let admin: TestUser | undefined;
@@ -106,6 +114,8 @@ test("the customer creates a straight piece from the form", async ({ page }) => 
   await page.getByLabel("Fondo").fill("6");
   await page.getByText("Sí", { exact: true }).click();
   await page.getByLabel("Añadir fotos").setInputFiles(P12_PNG);
+  // The photo is read asynchronously (size, preview): submit only once it is listed.
+  await expect(page.getByRole("img", { name: /Foto 1: p12\.png/ })).toBeVisible();
   await page.getByRole("button", { name: "Crear pieza" }).click();
 
   await expect(page).toHaveURL(/\/piezas\/[0-9a-f-]{36}$/, { timeout: 30_000 });
@@ -192,7 +202,7 @@ test("the customer sees the free viewer and cannot download without credits", as
 });
 
 test("with a credit the customer downloads the GLB and the USDZ", async ({ page, request }) => {
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  const webhookSecret = stripeWebhookSecret();
   if (webhookSecret) {
     // Stripe configured: a signed `checkout.session.completed` through the real webhook route.
     const payload = JSON.stringify({
