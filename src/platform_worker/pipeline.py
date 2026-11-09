@@ -1,20 +1,32 @@
-"""One piece end to end: photos → checks → route → generation → post-processing → geometry
-→ renders and contact sheet → delivery (GLB 2K + USDZ, preview GLB) → Storage → rows.
+"""One piece end to end: photos → checks → interpretation and route → generation →
+post-processing → (library material) → geometry → renders and contact sheet → delivery
+(GLB 2K + USDZ, preview GLB + USDZ) → Storage → rows → automatic publishing or review.
 
-Reuses the harness: ``validate_input``/``explain`` (via ``intake``), ``rule_classify``, the
-parametric variant E, ``postprocess``, ``measure_candidate``, ``render_views`` and
-``deliver``. Organic pieces get ``ORGANIC_CANDIDATES`` candidates from the provider, each
-post-processed with the guarded fit-to-box; the lowest ``max_error`` is ``selected``. Every
-successful candidate gets renders, contact sheet, GLB 2K + USDZ and preview, so the admin can
-pick either: the selected one under ``{piece_id}/{attempt}/``, the others under
-``{piece_id}/{attempt}/cand_{n}/`` (see :func:`storage_prefix`).
+Reuses the harness: ``validate_input``/``explain`` (via ``intake``), the parametric variant
+E, ``postprocess``, ``measure_candidate``, ``apply_material``, ``render_views``,
+``deliver`` and the VLM judge. The photo interpretation (``interpret``) fills the optional
+answers the customer skipped and decides the route (``intake.decide_route``). Organic
+pieces get ``ORGANIC_CANDIDATES`` candidates from the provider, each post-processed with
+the guarded fit-to-box; the lowest ``max_error`` is ``selected``. Every successful
+candidate gets renders, contact sheet, GLB 2K + USDZ and preview (GLB + USDZ for iOS
+Quick Look), so the admin can pick either: the selected one under
+``{piece_id}/{attempt}/``, the others under ``{piece_id}/{attempt}/cand_{n}/`` (see
+:func:`storage_prefix`). The selected candidate then goes through
+``autopublish.decide``: ``ready`` (customer notified) or ``review`` (admin notified).
 
 Storage paths stored in ``piece_models`` are relative to their bucket (``models``:
-``glb_path``/``usdz_path``; ``previews``: ``preview_path``; ``renders``: ``render_paths``).
+``glb_path``/``usdz_path``; ``previews``: ``preview_path``, with the preview USDZ next to
+it under the same name and ``.usdz``; ``renders``: ``render_paths``).
+
+``piece_models.meta`` keys written here: ``interpretation`` (the photo reading plus
+``effective`` answers, ``source`` and ``conflict``), ``dimension_warnings``, ``routing``,
+``material``, ``deliver`` (with ``warnings`` and ``optimize_error``), ``warnings`` (every
+warning for the admin) and, on the selected row, ``auto_review``.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import time
@@ -29,16 +41,25 @@ from zoneinfo import ZoneInfo
 import httpx
 from PIL import Image, ImageOps
 
-from harness.core.models import Piece
+from harness.core.config import resolve_scale_tolerance
+from harness.core.models import GeometryMetrics, Piece
 from harness.eval.geometry import measure_candidate
-from harness.eval.render import render_views
+from harness.eval.judge import judge_candidate
+from harness.eval.render import VIEWS, render_views
+from harness.post import materials
 from harness.post.blender_post import postprocess
-from harness.post.deliver import deliver
+from harness.post.deliver import DeliverError, deliver
+from harness.post.materials import apply_material, detect_material, photo_mean_color
 from harness.prep.clean import clean_image
 from harness.variants.e_parametric import ParametricVariant
-from harness.variants.f_router import rule_classify
-from platform_worker import intake
+from platform_worker import autopublish, intake
 from platform_worker.config import load_settings
+from platform_worker.interpret import (
+    Interpretation,
+    Interpreter,
+    SilhouetteInterpreter,
+    check_dimensions,
+)
 from platform_worker.providers.base import Provider
 
 ORGANIC_CANDIDATES = 2
@@ -47,6 +68,7 @@ DELIVER_MAX_TEX = 2048
 PREVIEW_MAX_TRIS = 15_000
 PREVIEW_MAX_TEX = 512
 PREVIEW_FILENAME = "model_preview.glb"
+PREVIEW_USDZ_FILENAME = "model_preview.usdz"  # iOS Quick Look (``ios-src``) next to the GLB
 CONTACT_FILENAME = "contact.jpg"
 # Harness render name → name in the ``renders`` bucket (Global Constraints).
 RENDER_VIEWS: dict[str, str] = {
@@ -63,6 +85,7 @@ NO_PROVIDER_ERROR = (
 )
 
 STATUS_REVIEW = "review"
+STATUS_READY = "ready"  # published automatically (``autopublish``)
 STATUS_NEEDS_PHOTOS = "needs_photos"
 STATUS_FAILED = "failed"
 STATUS_REJECTED = "rejected"  # excluded categories (lámpara, metal, vidrio)
@@ -92,6 +115,13 @@ NO_PHOTOS_ERROR = (
 )
 PROVIDER_MAX_PX = 2048  # raw-photo fallback for providers (fal base64 limit ≈ 6 MB)
 NOTIFY_TIMEOUT_SECONDS = 10.0
+# Workdir file with the forced parametric kind + params (``ParametricVariant`` reads it).
+E_OVERRIDES_FILENAME = "e_overrides.json"
+# Material swap: the post-processed mesh is kept under this name, the material version
+# takes ``model_post.glb`` (what renders and delivery read).
+POST_GLB = "model_post.glb"
+POST_RAW_GLB = "model_post_raw.glb"
+MATERIAL_GLB = "model_material.glb"
 
 log = logging.getLogger(__name__)
 
@@ -107,6 +137,29 @@ class CandidateRun:
     geometry: dict[str, Any] | None = None
     max_error: float | None = None
     error: str | None = None
+    metrics: GeometryMetrics | None = None
+    material: dict[str, Any] | None = None
+
+
+@dataclass
+class MaterialPlan:
+    """Library material for this attempt: ``material_id`` (None = keep the mesh's own
+    texture), where it came from (``admin`` note, ``detected`` in the name/notes, or
+    ``admin_off``) and whether it applies to route E (only the admin's choice does)."""
+
+    material_id: str | None
+    source: str | None
+    target_rgb: tuple[int, int, int] | None = None
+    target_error: str | None = None
+    real_size_cm: tuple[float, float, float] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"id": self.material_id, "source": self.source}
+        if self.target_rgb is not None:
+            out["target_rgb"] = list(self.target_rgb)
+        if self.target_error:
+            out["target_error"] = self.target_error
+        return out
 
 
 def piece_workdir(root: Path, piece_id: str, attempt: int) -> Path:
@@ -211,6 +264,7 @@ def _measure(cand: CandidateRun, piece: Piece, post: Any) -> None:
     if result.metrics is not None:
         cand.geometry = {"source": result.source, **result.metrics.model_dump()}
         cand.max_error = result.metrics.max_error
+        cand.metrics = result.metrics
     else:
         cand.geometry = {"source": None, "error": result.error}
         cand.max_error = post.max_abs_error
@@ -225,36 +279,84 @@ def _organic_images(photos: list[Path], work: Path) -> list[Path]:
         return [provider_photo(photos[0], work / "clean" / "1_raw.jpg")]
 
 
+def write_e_overrides(work: Path, piece_id: str, kind: str, params: dict[str, Any]) -> Path:
+    """``{piece_id: {"kind", **params}}`` for ``ParametricVariant(overrides_path=…)``: the
+    only way to hand E a kind *with* params (``kind_overrides`` carries the kind only)."""
+    path = Path(work) / E_OVERRIDES_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({piece_id: {"kind": kind, **params}}, indent=2), encoding="utf-8")
+    return path
+
+
+def _apply_material(cand: CandidateRun, plan: MaterialPlan, *, blender_bin: Path | None) -> None:
+    """Swap ``model_post.glb`` for the library-material version (the original is kept as
+    ``model_post_raw.glb``). A failure keeps the mesh's own texture and records why."""
+    if plan.material_id is None:
+        return
+    post = cand.cand_dir / POST_GLB
+    out = cand.cand_dir / MATERIAL_GLB
+    record: dict[str, Any] = {**plan.to_dict(), "applied": False}
+    try:
+        info = apply_material(
+            post,
+            out,
+            material_id=plan.material_id,
+            target_rgb=plan.target_rgb,
+            real_size_cm=plan.real_size_cm,
+            blender_bin=blender_bin,
+        )
+    except Exception as exc:
+        record["error"] = f"{type(exc).__name__}: {exc}"[:ERROR_MAX_CHARS]
+        record["warnings"] = [
+            f"No se pudo aplicar el material «{plan.material_id}»: se entrega la textura "
+            f"original ({type(exc).__name__})"
+        ]
+        cand.material = record
+        return
+    shutil.move(post, cand.cand_dir / POST_RAW_GLB)
+    shutil.move(out, post)
+    record["applied"] = True
+    record["warnings"] = list(info.get("warnings") or [])
+    record["info"] = {k: v for k, v in info.items() if k != "warnings"}
+    cand.material = record
+
+
 def generate_candidates(
     piece: Piece,
-    piece_row: dict[str, Any],
-    route: str,
+    routing: intake.Routing,
     photos: list[Path],
     work: Path,
     *,
     provider: Provider | None,
     blender_bin: Path | None,
     before_provider_call: Callable[[int, float], bool] | None = None,
+    material: MaterialPlan | None = None,
 ) -> list[CandidateRun]:
-    """Candidates of one attempt. For organic pieces ``before_provider_call(index, spent)``
-    (``spent`` = this piece's provider cost so far) runs before every provider call: False
-    before the first one raises :class:`BudgetExhausted`; later, it stops generating."""
-    if route == "E":
-        override = intake.parametric_kind_override(piece_row)
+    """Candidates of one attempt. Route E builds one candidate with ``routing.kind`` and
+    ``routing.params`` (or E's classification when ``routing.kind`` is None). For organic
+    pieces ``before_provider_call(index, spent)`` (``spent`` = this piece's provider cost
+    so far) runs before every provider call: False before the first one raises
+    :class:`BudgetExhausted`; later, it stops generating. ``material`` replaces the mesh's
+    materials after the post-processing (provider meshes; on E only the admin's choice)."""
+    plan = material if material is not None and material.material_id else None
+    if routing.route == intake.ROUTE_E:
+        overrides = (
+            write_e_overrides(work, piece.id, routing.kind, routing.params)
+            if routing.kind
+            else None
+        )
         variant = ParametricVariant(
-            blender_bin=blender_bin,
-            overrides_path=None,
-            kind_overrides={piece.id: override} if override else None,
+            blender_bin=blender_bin, overrides_path=overrides, kind_overrides=None
         )
         result = variant.run(piece, work / "E", candidates=1)
         runs: list[CandidateRun] = []
         for c in result.candidates:
             cand = CandidateRun(c.index, c.glb_path.parent, c.cost_usd, c.seconds, c.meta)
-            post = postprocess(
-                c.glb_path, cand.cand_dir / "model_post.glb", piece, blender_bin=blender_bin
-            )
+            post = postprocess(c.glb_path, cand.cand_dir / POST_GLB, piece, blender_bin=blender_bin)
             cand.post = _post_meta(post)
             _measure(cand, piece, post)
+            if plan is not None and plan.source == "admin":
+                _apply_material(cand, plan, blender_bin=blender_bin)
             runs.append(cand)
         return runs
 
@@ -280,17 +382,74 @@ def generate_candidates(
             )
             post = postprocess(
                 outcome.glb_path,
-                cand.cand_dir / "model_post.glb",
+                cand.cand_dir / POST_GLB,
                 piece,
                 blender_bin=blender_bin,
                 fit_box=True,
             )
             cand.post = _post_meta(post)
             _measure(cand, piece, post)
+            if plan is not None:
+                _apply_material(cand, plan, blender_bin=blender_bin)
         except Exception as exc:  # one failed candidate must not lose the other
             cand.error = f"{type(exc).__name__}: {exc}"[:ERROR_MAX_CHARS]
         runs.append(cand)
     return runs
+
+
+def provider_call_cost(provider: Provider | None) -> float:
+    """Estimated USD of one provider call: Tripo from its credit table
+    (``TripoSettings.estimated_cost_usd``), fal from its price table, else 0."""
+    settings = getattr(provider, "settings", None)
+    estimate = getattr(settings, "estimated_cost_usd", None)
+    if callable(estimate):
+        return float(estimate())
+    endpoint = getattr(provider, "endpoint", None)
+    if endpoint is not None:
+        from platform_worker.providers.fal import USD_PER_MODEL
+
+        return float(USD_PER_MODEL.get(endpoint, 0.0))
+    return 0.0
+
+
+def material_plan(
+    piece_row: dict[str, Any], routing: intake.Routing, photos: list[Path]
+) -> MaterialPlan:
+    """Which library material this attempt gets: the admin's ``material:<id>`` in
+    ``review_note`` wins (any route; ``material:none`` turns detection off); else, for
+    provider meshes only, the material named in the name/notes (``detect_material``). E
+    keeps the photo projection unless the admin chose (ruling 2026-11-09). The colour target
+    is the first photo's mean colour (rembg); failing that, the material's own colour."""
+    chosen = intake.material_from_note(piece_row.get("review_note"))
+    material_id: str | None = None
+    source: str | None = None
+    if chosen == intake.MATERIAL_NONE:
+        source = "admin_off"
+    elif chosen is not None:
+        try:
+            materials.get_material(chosen)
+            material_id, source = chosen, "admin"
+        except Exception:
+            log.warning("Material desconocido en la nota del admin: %r", chosen)
+    if source is None and routing.route == intake.ROUTE_ORGANIC:
+        detected = detect_material(
+            str(piece_row.get("name") or ""), str(piece_row.get("notes") or "")
+        )
+        if detected:
+            material_id, source = detected, "detected"
+    plan = MaterialPlan(material_id, source)
+    if material_id is None:
+        return plan
+    plan.real_size_cm = (
+        float(piece_row["width_cm"]),
+        float(piece_row["height_cm"]),
+        float(piece_row["depth_cm"]),
+    )
+    try:
+        plan.target_rgb = photo_mean_color(photos[0])
+    except Exception as exc:
+        plan.target_error = f"{type(exc).__name__}: {exc}"[:300]
+    return plan
 
 
 class NoProviderError(RuntimeError):
@@ -335,25 +494,58 @@ def storage_prefix(piece_id: str, attempt: int, candidate: int, *, selected: boo
     return base if selected else f"{base}/cand_{candidate}"
 
 
-def _deliver_candidate(
+@dataclass
+class CandidateOutputs:
+    """Local files of one delivered candidate (renders, contact sheet, deliver result)."""
+
+    renders: dict[str, Path]  # harness view → PNG (every ``VIEWS`` entry)
+    contact: Path
+    result: Any  # harness.post.deliver.DeliverResult
+
+    @property
+    def deliverable(self) -> bool:
+        r = self.result
+        return bool(
+            r.glb_path is not None and r.usdz_path is not None and r.preview_glb_path is not None
+        )
+
+    def deliver_meta(self) -> dict[str, Any]:
+        r = self.result
+        return {
+            "glb_bytes": r.glb_bytes,
+            "usdz_bytes": r.usdz_bytes,
+            "usdz_error": r.usdz_error,
+            "tris_after": r.tris_after,
+            "max_tris": r.max_tris,
+            "max_tex": r.max_tex,
+            "within_limit": r.within_limit,
+            "preview_glb_bytes": r.preview_glb_bytes,
+            "preview_usdz_bytes": r.preview_usdz_bytes,
+            "preview_tris_after": r.preview_tris_after,
+            "optimize_error": r.optimize_error,
+            "warnings": list(r.warnings or []),
+        }
+
+
+def build_outputs(
     piece: Piece,
     cand: CandidateRun,
     photos: list[Path],
-    storage: Any,
     *,
-    prefix: str,
     blender_bin: Path | None,
     provenance: dict[str, Any],
-) -> dict[str, Any]:
-    """Renders + contact sheet, GLB 2K/USDZ and preview of one candidate, uploaded under
-    ``prefix`` in ``models``, ``previews`` and ``renders``."""
+) -> CandidateOutputs:
+    """Renders + contact sheet, and ONE ``deliver`` (GLB 2K + USDZ + preview GLB/USDZ,
+    ``strict=False``: an optimizer failure ships the plain GLB with a warning)."""
     renders_dir = cand.cand_dir / "renders"
-    rendered = render_views(cand.cand_dir / "model_post.glb", renders_dir, blender_bin=blender_bin)
+    rendered = render_views(cand.cand_dir / POST_GLB, renders_dir, blender_bin=blender_bin)
     by_view = {p.stem: p for p in rendered}
-    renders = [by_view[view] for view in RENDER_VIEWS]
-    contact = contact_sheet(renders, photos[0] if photos else None, renders_dir / CONTACT_FILENAME)
-
-    full = deliver(
+    contact = contact_sheet(
+        [by_view[view] for view in RENDER_VIEWS],
+        photos[0] if photos else None,
+        renders_dir / CONTACT_FILENAME,
+    )
+    result = deliver(
         cand.cand_dir,
         piece,
         max_tris=DELIVER_MAX_TRIS,
@@ -361,48 +553,46 @@ def _deliver_candidate(
         out_dir=cand.cand_dir / "deliver",
         blender_bin=blender_bin,
         provenance=provenance,
+        preview=True,
+        preview_max_tris=PREVIEW_MAX_TRIS,
+        preview_max_tex=PREVIEW_MAX_TEX,
+        strict=False,
     )
-    preview = deliver(
-        cand.cand_dir,
-        piece,
-        max_tris=PREVIEW_MAX_TRIS,
-        max_tex=PREVIEW_MAX_TEX,
-        out_dir=cand.cand_dir / "preview",
-        blender_bin=blender_bin,
-        provenance={**provenance, "preview": True},
-    )
-    preview_glb = preview.glb_path.with_name(PREVIEW_FILENAME)
-    shutil.copyfile(preview.glb_path, preview_glb)
+    return CandidateOutputs(by_view, contact, result)
 
-    glb_path = storage.upload("models", f"{prefix}/model_web.glb", full.glb_path)
+
+def upload_outputs(storage: Any, outputs: CandidateOutputs, *, prefix: str) -> dict[str, Any]:
+    """Upload one candidate under ``prefix``: ``models`` (``model_web.glb``,
+    ``model.usdz``), ``previews`` (``model_preview.glb`` + ``model_preview.usdz``) and
+    ``renders`` (four views + contact sheet). Returns the bucket-relative paths."""
+    r = outputs.result
+    glb_path = storage.upload("models", f"{prefix}/model_web.glb", r.glb_path)
     usdz_path = (
-        storage.upload("models", f"{prefix}/model.usdz", full.usdz_path)
-        if full.usdz_path is not None
+        storage.upload("models", f"{prefix}/model.usdz", r.usdz_path)
+        if r.usdz_path is not None
         else None
     )
-    preview_path = storage.upload("previews", f"{prefix}/{PREVIEW_FILENAME}", preview_glb)
+    preview_path = (
+        storage.upload("previews", f"{prefix}/{PREVIEW_FILENAME}", r.preview_glb_path)
+        if r.preview_glb_path is not None
+        else None
+    )
+    if r.preview_usdz_path is not None:
+        storage.upload("previews", f"{prefix}/{PREVIEW_USDZ_FILENAME}", r.preview_usdz_path)
     render_paths: dict[str, str] = {}
     for harness_view, name in RENDER_VIEWS.items():
         render_paths[name] = storage.upload(
-            "renders", f"{prefix}/{name}.png", by_view[harness_view]
+            "renders", f"{prefix}/{name}.png", outputs.renders[harness_view]
         )
-    render_paths["contact"] = storage.upload("renders", f"{prefix}/{CONTACT_FILENAME}", contact)
+    render_paths["contact"] = storage.upload(
+        "renders", f"{prefix}/{CONTACT_FILENAME}", outputs.contact
+    )
     return {
         "glb_path": glb_path,
         "usdz_path": usdz_path,
         "preview_path": preview_path,
+        "preview_usdz": r.preview_usdz_path is not None,
         "render_paths": render_paths,
-        "deliver": {
-            "glb_bytes": full.glb_bytes,
-            "usdz_bytes": full.usdz_bytes,
-            "usdz_error": full.usdz_error,
-            "tris_after": full.tris_after,
-            "max_tris": full.max_tris,
-            "max_tex": full.max_tex,
-            "within_limit": full.within_limit,
-            "preview_glb_bytes": preview.glb_bytes,
-            "preview_tris_after": preview.tris_after,
-        },
     }
 
 
@@ -508,6 +698,99 @@ def _wait_for_photos(db: Any, piece_row: dict[str, Any]) -> str:
     return STATUS_QUEUED
 
 
+def interpretation_meta(interpretation: Interpretation, routing: intake.Routing) -> dict[str, Any]:
+    """``meta["interpretation"]``: the photo reading, the effective answers and where each
+    one came from, and the customer-vs-photo conflicts."""
+    eff = routing.effective
+    return {
+        **interpretation.to_dict(),
+        "effective": {
+            key: eff.get(key)
+            for key in ("kind", "rectilinear", "support", "routing_kind", "pedestal_params")
+        },
+        "source": dict(eff.get("source") or {}),
+        "conflict": list(eff.get("conflict") or []),
+    }
+
+
+def routing_meta(routing: intake.Routing) -> dict[str, Any]:
+    return {
+        "route": routing.route,
+        "kind": routing.kind,
+        "params": routing.params,
+        "reasons": routing.reasons,
+        "photo_overrides_support": routing.photo_overrides_support,
+    }
+
+
+def _make_judge(
+    settings: dict[str, str | None],
+    piece: Piece,
+    photos: list[Path],
+    outputs: CandidateOutputs,
+    metrics: GeometryMetrics | None,
+    tolerance: float,
+) -> autopublish.Judge | None:
+    """The VLM judge of the selected candidate when ``ANTHROPIC_API_KEY`` is set."""
+    key = settings.get("ANTHROPIC_API_KEY")
+    if not key:
+        return None
+
+    def judge() -> dict[str, Any]:
+        from harness.clients.vlm import VLMClient
+
+        renders = [outputs.renders[view] for view in VIEWS if view in outputs.renders]
+        return judge_candidate(
+            VLMClient(api_key=key, allow_fallback=False),
+            blind_id=f"pieza-{piece.id[:8]}",
+            photos=photos,
+            renders=renders,
+            geometry=metrics,
+            tolerance=tolerance,
+        )
+
+    return judge
+
+
+def _manual_without_model(
+    db: Any,
+    piece_row: dict[str, Any],
+    *,
+    attempt: int,
+    interpretation: Interpretation,
+    routing: intake.Routing,
+    dimension_warnings: list[str],
+) -> str:
+    """No model can be built yet (organic, no provider, unsure reading): the piece goes to
+    the admin with the reasons in a placeholder ``piece_models`` row (no files, never
+    deliverable) so the review screen shows the interpretation."""
+    piece_id = str(piece_row["id"])
+    reasons = list(routing.reasons)
+    db.delete_models(piece_id, attempt)
+    db.insert_model(
+        {
+            "piece_id": piece_id,
+            "attempt": attempt,
+            "provider": None,
+            "candidate": 0,
+            "meta": {
+                "error": "Sin modelo: " + "; ".join(reasons),
+                "interpretation": interpretation_meta(interpretation, routing),
+                "dimension_warnings": dimension_warnings,
+                "routing": routing_meta(routing),
+                "warnings": list(dimension_warnings),
+                "auto_review": autopublish.AutoReview(
+                    autopublish.DECISION_MANUAL, autopublish.GATE_RULES, reasons
+                ).to_dict(),
+            },
+            "selected": False,
+        }
+    )
+    db.update_piece(piece_id, status=STATUS_REVIEW, error=None)
+    notify_status(piece_id, STATUS_REVIEW)
+    return STATUS_REVIEW
+
+
 def process_piece(
     db: Any,
     storage: Any,
@@ -517,11 +800,17 @@ def process_piece(
     workdir: Path,
     blender_bin: Path | None,
     budget_usd: float | None = None,
+    interpreter: Interpreter | None = None,
+    settings: dict[str, str | None] | None = None,
 ) -> str:
-    """Run one claimed piece; returns the final status (``review|needs_photos|rejected|
-    failed``), or ``queued`` when the piece had no photos yet or the daily provider budget
-    (``budget_usd``, default ``WORKER_DAILY_BUDGET_USD``) is spent and it went back to the
-    queue.
+    """Run one claimed piece; returns the final status (``ready|review|needs_photos|
+    rejected|failed``), or ``queued`` when the piece had no photos yet or the daily
+    provider budget (``budget_usd``, default ``WORKER_DAILY_BUDGET_USD``) is spent and it
+    went back to the queue.
+
+    ``interpreter`` reads the photos (default :class:`SilhouetteInterpreter`); ``settings``
+    (default ``load_settings()``) gives ``AUTO_PUBLISH``, ``ANTHROPIC_API_KEY`` and the
+    budget.
 
     Never raises for a piece-level problem: every failure ends in ``failed`` with a technical
     ``error`` (the traceback goes to ``<work>/error.log``) and a notice to the admin."""
@@ -539,6 +828,7 @@ def process_piece(
         return prior_cost + spent if spent and not models_written else None
 
     try:
+        env = settings if settings is not None else load_settings()
         excluded = intake.excluded_reasons(piece_row)
         if excluded:
             # Out of scope: closed at no cost with the reason (never a photo problem).
@@ -564,13 +854,39 @@ def process_piece(
             return STATUS_NEEDS_PHOTOS
 
         photos = [oriented_copy(p, work / "oriented") for p in photos]
-        piece = intake.build_piece(piece_row, photos)
-        decision = rule_classify(piece)
-        organic = decision.route != "E"
-        route = "E" if not organic else (provider.name if provider is not None else "sin proveedor")
+        width, height, depth = (
+            float(piece_row["width_cm"]),
+            float(piece_row["height_cm"]),
+            float(piece_row["depth_cm"]),
+        )
+        interpretation = (interpreter or SilhouetteInterpreter()).interpret(
+            photos,
+            width_cm=width,
+            height_cm=height,
+            depth_cm=depth,
+            name=str(piece_row.get("name") or ""),
+            notes=str(piece_row.get("notes") or ""),
+        )
+        routing = intake.decide_route(
+            piece_row, interpretation, provider_available=provider is not None
+        )
+        dimension_warnings = check_dimensions(interpretation, width, height, depth)
+        piece = intake.build_piece(piece_row, photos, routing)
+        if routing.route == intake.ROUTE_E:
+            route = "E"
+        else:
+            route = provider.name if provider is not None else "sin proveedor"
         db.update_piece(piece_id, route=route)
 
-        budget = budget_usd if budget_usd is not None else daily_budget_usd()
+        if routing.route == intake.ROUTE_MANUAL:
+            return _manual_without_model(
+                db, piece_row, attempt=attempt, interpretation=interpretation,
+                routing=routing, dimension_warnings=dimension_warnings,
+            )  # fmt: skip
+        plan = material_plan(piece_row, routing, photos)
+
+        budget = budget_usd if budget_usd is not None else daily_budget_usd(env)
+        call_cost = provider_call_cost(provider)
 
         def before_provider_call(index: int, spent: float) -> bool:
             _heartbeat(db, piece_id)
@@ -579,13 +895,14 @@ def process_piece(
             except Exception as exc:  # fail open: a DB blip must not stall every piece
                 log.warning("No se pudo leer el gasto del día: %s", exc)
                 return True
-            return today + spent < budget
+            # The next call's estimated cost (Tripo: its credit table) must fit too.
+            return today + spent < budget and today + spent + call_cost <= budget
 
         try:
             runs = generate_candidates(
-                piece, piece_row, decision.route if not organic else "organic", photos, work,
+                piece, routing, photos, work,
                 provider=provider, blender_bin=blender_bin,
-                before_provider_call=before_provider_call,
+                before_provider_call=before_provider_call, material=plan,
             )  # fmt: skip
         except NoProviderError as exc:
             return _fail(db, piece_id, str(exc))
@@ -601,57 +918,115 @@ def process_piece(
                 f"No se pudo generar ningún modelo: {errors}",
                 provider_cost_usd=failed_cost(),
             )
-        selected = min(ok, key=lambda c: c.max_error)
+        organic = routing.route != intake.ROUTE_E
         provider_name = "parametric" if not organic else provider.name  # type: ignore[union-attr]
-        # Every successful candidate is delivered so the admin can pick either one.
-        delivered: dict[int, dict[str, Any]] = {}
-        for cand in ok:
+        # Every successful candidate is delivered so the admin can pick either one; a
+        # delivery failure only loses that candidate.
+        outputs: dict[int, CandidateOutputs] = {}
+        for cand in sorted(ok, key=lambda c: c.max_error):  # type: ignore[arg-type,return-value]
             _heartbeat(db, piece_id)
-            prefix = storage_prefix(piece_id, attempt, cand.index, selected=cand is selected)
             provenance = {
                 "variant": route,
                 "candidate": cand.index,
                 "attempt": attempt,
                 "provider": provider_name,
             }
-            delivered[cand.index] = _deliver_candidate(
-                piece, cand, photos, storage,
-                prefix=prefix, blender_bin=blender_bin, provenance=provenance,
-            )  # fmt: skip
+            try:
+                outputs[cand.index] = build_outputs(
+                    piece, cand, photos, blender_bin=blender_bin, provenance=provenance
+                )
+            except DeliverError as exc:
+                cand.error = f"Entrega: {type(exc).__name__}: {exc}"[:ERROR_MAX_CHARS]
+        delivered = [c for c in ok if c.index in outputs]
+        if not delivered:
+            errors = "; ".join(c.error for c in ok if c.error) or "sin candidatos"
+            return _fail(
+                db,
+                piece_id,
+                f"No se pudo entregar ningún modelo: {errors}",
+                provider_cost_usd=failed_cost(),
+            )
+        selected = min(
+            delivered,
+            key=lambda c: (not outputs[c.index].deliverable, c.max_error),  # type: ignore[arg-type,return-value]
+        )
+        files: dict[int, dict[str, Any]] = {}
+        for cand in delivered:
+            prefix = storage_prefix(piece_id, attempt, cand.index, selected=cand is selected)
+            files[cand.index] = upload_outputs(storage, outputs[cand.index], prefix=prefix)
+
+        interp_meta = interpretation_meta(interpretation, routing)
+
+        def warnings_of(cand: CandidateRun) -> list[str]:
+            out = list(dimension_warnings)
+            out += [str(w) for w in (cand.gen_meta or {}).get("warnings") or []]
+            out += [str(w) for w in (cand.material or {}).get("warnings") or []]
+            if cand.index in outputs:
+                out += list(outputs[cand.index].result.warnings or [])
+            return out
+
+        tolerance = resolve_scale_tolerance()
+        selected_files = files[selected.index]
+        review = autopublish.decide(
+            enabled=autopublish.auto_publish_enabled(env),
+            route=routing.route,
+            deliverable=bool(
+                selected_files["glb_path"]
+                and selected_files["usdz_path"]
+                and selected_files["preview_path"]
+            ),
+            max_error=selected.max_error,
+            tolerance=tolerance,
+            routing=routing,
+            interpretation=interpretation,
+            conflicts=list(routing.effective.get("conflict") or []),
+            warnings=warnings_of(selected),
+            judge=_make_judge(
+                env, piece, photos, outputs[selected.index], selected.metrics, tolerance
+            ),
+        )
 
         # Re-processing an attempt never leaves duplicates; the selected row goes last so
         # "newest row of the latest attempt" (admin_review_queue) is the selected one.
         db.delete_models(piece_id, attempt)
         for cand in sorted(runs, key=lambda c: (c is selected, c.index)):
             is_selected = cand is selected
-            files = delivered.get(cand.index)
+            cand_files = files.get(cand.index)
             meta: dict[str, Any] = {
-                "route": decision.route,
-                "route_reason": decision.reason,
-                "thin": decision.thin,
+                "route": routing.route,
+                "route_reason": "; ".join(routing.reasons),
                 "provider": provider_name,
                 "candidate": cand.index,
                 "post": cand.post,
                 "geometry": cand.geometry,
                 "generation": cand.gen_meta,
                 "seconds": round(cand.seconds, 3),
+                "interpretation": interp_meta,
+                "dimension_warnings": dimension_warnings,
+                "routing": routing_meta(routing),
+                "material": cand.material or plan.to_dict(),
+                "warnings": warnings_of(cand),
             }
             if cand.error:
                 meta["error"] = cand.error
-            if files is not None:
-                meta["deliver"] = files["deliver"]
+            if cand.index in outputs:
+                meta["deliver"] = {
+                    **outputs[cand.index].deliver_meta(),
+                    "preview_usdz": bool(cand_files and cand_files["preview_usdz"]),
+                }
             if is_selected:
                 meta["total_seconds"] = round(time.monotonic() - start, 3)
+                meta["auto_review"] = review.to_dict()
             db.insert_model(
                 {
                     "piece_id": piece_id,
                     "attempt": attempt,
                     "provider": provider_name,
                     "candidate": cand.index,
-                    "preview_path": files["preview_path"] if files else None,
-                    "glb_path": files["glb_path"] if files else None,
-                    "usdz_path": files["usdz_path"] if files else None,
-                    "render_paths": files["render_paths"] if files else None,
+                    "preview_path": cand_files["preview_path"] if cand_files else None,
+                    "glb_path": cand_files["glb_path"] if cand_files else None,
+                    "usdz_path": cand_files["usdz_path"] if cand_files else None,
+                    "render_paths": cand_files["render_paths"] if cand_files else None,
                     "meta": meta,
                     "max_error": cand.max_error,
                     "cost_usd": cand.cost_usd,
@@ -659,8 +1034,15 @@ def process_piece(
                 }
             )
             models_written = True
+        if review.auto:
+            # Same fields as the admin's «Mostrar al cliente»; the web emails the customer.
+            db.update_piece(
+                piece_id, status=STATUS_READY, error=None, review_note=None, reject_reason=None
+            )
+            notify_status(piece_id, STATUS_READY, settings=env)
+            return STATUS_READY
         db.update_piece(piece_id, status=STATUS_REVIEW, error=None)
-        notify_status(piece_id, STATUS_REVIEW)
+        notify_status(piece_id, STATUS_REVIEW, settings=env)
         return STATUS_REVIEW
     except Exception as exc:
         (work / "error.log").write_text(traceback.format_exc(), encoding="utf-8")

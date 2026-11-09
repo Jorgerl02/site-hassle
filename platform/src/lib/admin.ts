@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { getCurrentUser, type CurrentUser } from "@/lib/auth";
 import type { Json, PieceKind, PieceStatus } from "@/lib/database.types";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { KIND_LABEL, SUPPORT_LABEL, shapeValues, type ShapeValues } from "@/lib/admin-labels";
+import { KIND_LABEL, SUPPORT_LABEL, pieceAnalysis, shapeValues, type PieceAnalysis, type ShapeValues } from "@/lib/admin-labels";
 import type { SupportAnswer } from "@/lib/validation";
 
 export * from "@/lib/admin-labels";
@@ -345,6 +345,8 @@ export interface ReviewDetail {
   waiting: string;
   photos: { url: string; position: number }[];
   candidates: CandidateView[];
+  /** What the worker read in the photos, how it routed, its warnings and the auto-review (selected model). */
+  analysis: PieceAnalysis | null;
 }
 
 const usd = new Intl.NumberFormat("es-ES", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
@@ -460,7 +462,100 @@ export async function getReviewDetail(pieceId: string): Promise<ReviewDetail | n
       return url ? [{ url, position: p.position }] : [];
     }),
     candidates,
+    analysis: pieceAnalysis((models.find((m) => m.selected) ?? models[models.length - 1])?.meta ?? null),
   };
+}
+
+// ---------- Published automatically ----------
+
+/** «Publicadas automáticamente»: how far back the list looks. */
+export const AUTO_PUBLISHED_HOURS = 48;
+
+export interface AutoPublishedItem {
+  id: string;
+  name: string;
+  kindLabel: string;
+  dimensions: string;
+  attempt: number;
+  route: string | null;
+  maxError: string;
+  /** `ready` can be withdrawn; `approved` (downloaded) cannot. */
+  canWithdraw: boolean;
+  statusLabel: string;
+  gate: string;
+  reasons: string[];
+  publishedAgo: string;
+  email: string | null;
+  contactUrl: string | null;
+}
+
+interface AutoPublishedRow {
+  id: string;
+  attempt: number;
+  created_at: string;
+  render_paths: Json | null;
+  max_error: number | null;
+  meta: Json | null;
+  pieces: {
+    id: string;
+    name: string;
+    kind: PieceKind;
+    width_cm: number;
+    height_cm: number;
+    depth_cm: number;
+    status: PieceStatus;
+    attempt: number;
+    route: string | null;
+    profiles: { email: string | null } | null;
+  };
+}
+
+/**
+ * Pieces the worker published without review in the last `AUTO_PUBLISHED_HOURS`
+ * (selected model of the current attempt with `meta.auto_review.decision = auto`,
+ * piece still `ready` or already `approved`), newest first.
+ */
+export async function listAutoPublished(now: number = Date.now()): Promise<AutoPublishedItem[]> {
+  const db = adminDb();
+  const since = new Date(now - AUTO_PUBLISHED_HOURS * 60 * 60 * 1000).toISOString();
+  const { data, error } = await db
+    .from("piece_models")
+    .select(
+      "id, attempt, created_at, render_paths, max_error, meta, pieces!inner(id, name, kind, width_cm, height_cm, depth_cm, status, attempt, route, profiles(email))",
+    )
+    .eq("selected", true)
+    .eq("meta->auto_review->>decision", "auto")
+    .gte("created_at", since)
+    .in("pieces.status", ["ready", "approved"])
+    .order("created_at", { ascending: false });
+  if (error) throw new Error(`No se pudieron leer las piezas publicadas automáticamente: ${error.message}`);
+  const rows = ((data ?? []) as unknown as AutoPublishedRow[]).filter((r) => r.attempt === r.pieces.attempt);
+  const contacts = await signMany(
+    db,
+    "renders",
+    rows.map((r) => asRenderPaths(r.render_paths).contact ?? ""),
+  );
+  return rows.map((r) => {
+    const contact = asRenderPaths(r.render_paths).contact;
+    const review = pieceAnalysis(r.meta)?.autoReview;
+    const p = r.pieces;
+    return {
+      id: p.id,
+      name: p.name,
+      kindLabel: KIND_LABEL[p.kind] ?? p.kind,
+      dimensions: formatDimensions(p.width_cm, p.height_cm, p.depth_cm),
+      attempt: p.attempt,
+      route: p.route,
+      maxError: formatPercent(r.max_error === null ? null : Number(r.max_error)),
+      canWithdraw: p.status === "ready",
+      statusLabel: p.status === "ready" ? "Visible para el cliente" : "Descargada por el cliente",
+      gate: review?.gate ?? "—",
+      reasons: review?.reasons ?? [],
+      publishedAgo: formatWaiting(r.created_at, now),
+      email: p.profiles?.email ?? null,
+      contactUrl: contact ? (contacts.get(contact) ?? null) : null,
+    };
+  });
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

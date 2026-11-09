@@ -4,7 +4,19 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { after } from "next/server";
 import { notifyPieceReady } from "@/lib/notify";
-import { MAX_ATTEMPT, NOT_DELIVERABLE_MESSAGE, adminDb, isDeliverable, isUuid, parseShapeFields, requireAdmin } from "@/lib/admin";
+import {
+  MAX_ATTEMPT,
+  NOT_DELIVERABLE_MESSAGE,
+  adminDb,
+  isDeliverable,
+  isMaterialChoice,
+  isUuid,
+  noteWithMaterial,
+  parseShapeFields,
+  pickShape,
+  requireAdmin,
+  type MaterialChoice,
+} from "@/lib/admin";
 
 type ShapeFields = ReturnType<typeof parseShapeFields>;
 const MAX_TEXT = 2000;
@@ -27,6 +39,22 @@ function shapeFrom(formData: FormData): ShapeFields {
   } catch (error) {
     throw new ReviewError(error instanceof Error ? error.message : String(error));
   }
+}
+
+/** Only kind / rectilinear / support, validated (never `status`, `attempt`…), whatever the caller passed. */
+function safeShape(shape: unknown): ShapeFields {
+  try {
+    return pickShape(shape);
+  } catch (error) {
+    throw new ReviewError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** «Aplicar material» select: a library id, `none`, or nothing (empty = leave the worker's choice). */
+function materialFrom(value: unknown): MaterialChoice | null {
+  if (value === null || value === undefined || value === "") return null;
+  if (!isMaterialChoice(value)) throw new ReviewError(`Material no válido: ${String(value)}`);
+  return value;
 }
 
 /** Reads the piece and makes sure it is still waiting for review. */
@@ -119,21 +147,30 @@ export async function showToClient(pieceId: string, modelId?: string): Promise<v
 /**
  * «Regenerar»: back to the queue with the next attempt and an internal note.
  * The shape answers the admin corrected are saved in the same update, so the
- * worker builds the next attempt with them.
+ * worker builds the next attempt with them. «Aplicar material» travels in the
+ * note as `material:<id>` (`material:none` turns the detection off); the worker
+ * reads it from `review_note` (no extra column).
  */
-export async function regenerate(pieceId: string, note: string, shape: ShapeFields = {}): Promise<void> {
+export async function regenerate(
+  pieceId: string,
+  note: string,
+  shape: ShapeFields = {},
+  material: MaterialChoice | null = null,
+): Promise<void> {
   await requireAdmin();
+  const fields = safeShape(shape);
+  const choice = materialFrom(material);
   const piece = await loadReviewPiece(pieceId);
   if (piece.attempt >= MAX_ATTEMPT) {
     throw new ReviewError("Esta pieza ya va por el tercer intento: muéstrala o recházala.");
   }
   await updateReviewPiece(piece.id, piece.attempt, {
+    ...fields,
     status: "queued",
     attempt: piece.attempt + 1,
-    review_note: cleanText(note) || null,
+    review_note: noteWithMaterial(cleanText(note), choice) || null,
     claimed_at: null,
     error: null,
-    ...shape,
   });
 }
 
@@ -164,7 +201,41 @@ async function updateFailedPiece(pieceId: string, fields: Record<string, unknown
 /** «Reintentar» a failed piece: back to the queue on the same attempt (no version is used), with the corrected shape. */
 export async function retryFailed(pieceId: string, shape: ShapeFields = {}): Promise<void> {
   await requireAdmin();
-  await updateFailedPiece(pieceId, { status: "queued", claimed_at: null, error: null, not_before: null, ...shape });
+  const fields = safeShape(shape);
+  await updateFailedPiece(pieceId, { ...fields, status: "queued", claimed_at: null, error: null, not_before: null });
+}
+
+/**
+ * «Retirar» an automatically published piece: `ready → review`, only while the
+ * customer has not downloaded it (`approved` stays). The admin then reviews it
+ * as any other piece.
+ */
+export async function withdrawAutoPublished(pieceId: string): Promise<void> {
+  await requireAdmin();
+  if (!isUuid(pieceId)) throw new ReviewError("La pieza no existe.");
+  const { data, error } = await adminDb()
+    .from("pieces")
+    .update({ status: "review", review_note: "Retirada de la publicación automática." })
+    .eq("id", pieceId)
+    .eq("status", "ready")
+    .select("id");
+  if (error) throw new ReviewError(`No se pudo retirar: ${error.message}`);
+  if (!data || data.length === 0) {
+    throw new ReviewError("Ya no se puede retirar: el cliente la ha descargado o ya no está publicada.");
+  }
+}
+
+/** Form entry point for «Retirar» in «Publicadas automáticamente» (`useActionState`). */
+export async function submitWithdraw(_prev: ReviewActionResult, formData: FormData): Promise<ReviewActionResult> {
+  await requireAdmin();
+  try {
+    await withdrawAutoPublished(cleanText(formData.get("pieceId")));
+  } catch (error) {
+    if (error instanceof ReviewError) return { ok: false, message: error.message };
+    throw error;
+  }
+  revalidatePath("/admin/revision");
+  return { ok: true, message: "Pieza retirada: está de nuevo en revisión." };
 }
 
 /** «Rechazar» a failed piece: closed at no cost with a reason the customer will read. */
@@ -202,7 +273,7 @@ export async function submitReview(_prev: ReviewActionResult, formData: FormData
   const text = cleanText(formData.get("note"));
   try {
     if (intent === "show") await showToClient(pieceId, modelId || undefined);
-    else if (intent === "regenerate") await regenerate(pieceId, text, shapeFrom(formData));
+    else if (intent === "regenerate") await regenerate(pieceId, text, shapeFrom(formData), materialFrom(formData.get("material")));
     else if (intent === "reject") await rejectInternally(pieceId, text);
     else return { ok: false, message: "Acción desconocida." };
   } catch (error) {

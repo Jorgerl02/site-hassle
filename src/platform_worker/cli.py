@@ -5,7 +5,8 @@
 
 Settings come from ``platform_worker.config.load_settings``: the process environment over
 ``.env`` (or ``WORKER_ENV_FILE``): ``SUPABASE_URL``, ``SUPABASE_SERVICE_ROLE_KEY``, ``PROVIDER``,
-``TRIPO_API_KEY``, ``FAL_KEY``, ``FAL_MODEL``, ``BLENDER_BIN`` and ``WORKER_DAILY_BUDGET_USD``.
+``TRIPO_API_KEY``, ``FAL_KEY``, ``FAL_MODEL``, ``BLENDER_BIN``, ``WORKER_DAILY_BUDGET_USD``,
+``AUTO_PUBLISH`` (default on) and ``ANTHROPIC_API_KEY`` (VLM judge of automatic publishing).
 
 """
 
@@ -52,6 +53,31 @@ def _exit_config(message: str) -> None:
     raise typer.Exit(CONFIG_EXIT_CODE)
 
 
+def startup_warnings(
+    gltf_transform: Path | None = None, materials_dir: Path | None = None
+) -> list[str]:
+    """What the worker host lacks for the best delivery (warnings, never fatal): the local
+    gltf-transform (without it every GLB ships unoptimised, with a warning for the admin)
+    and the CC0 material textures (without them no library material can be applied).
+    Both come from ``scripts/setup_worker.sh``."""
+    from harness.post import deliver, materials
+
+    tool = gltf_transform if gltf_transform is not None else deliver.LOCAL_GLTF_TRANSFORM
+    folder = materials_dir if materials_dir is not None else materials.DEFAULT_MATERIALS_DIR
+    out: list[str] = []
+    if not Path(tool).is_file():
+        out.append(
+            f"Falta gltf-transform ({tool}): los GLB saldrán sin optimizar. "
+            "Ejecuta scripts/setup_worker.sh."
+        )
+    if not Path(folder).is_dir() or not any(Path(folder).iterdir()):
+        out.append(
+            f"Faltan las texturas de materiales ({folder}): no se aplicará ningún material. "
+            "Ejecuta scripts/setup_worker.sh."
+        )
+    return out
+
+
 def build_context(provider_name: str | None) -> dict[str, Any]:
     """DB, Storage, provider and Blender from the settings; exit 2 when something is missing."""
     env = load_settings()
@@ -71,6 +97,8 @@ def build_context(provider_name: str | None) -> dict[str, Any]:
             "Falta Blender: define BLENDER_BIN en .env con la ruta al ejecutable "
             "(p. ej. /Applications/Blender.app/Contents/MacOS/Blender)."
         )
+    for warning in startup_warnings():
+        err_console.print(f"[yellow]{warning}[/yellow]")
     return {
         "db": WorkerDB(url, key),  # type: ignore[arg-type]
         "storage": Storage(url, key),  # type: ignore[arg-type]
@@ -119,7 +147,8 @@ def run_loop(
     if ctx["provider"] is None:
         console.print(
             "[yellow]Sin proveedor (PROVIDER): solo se generan piezas rectilíneas; "
-            "las orgánicas quedarán como fallidas con el motivo.[/yellow]"
+            "las orgánicas quedarán como fallidas con el motivo, y las dudosas, en revisión "
+            "manual.[/yellow]"
         )
     processed = 0
     cycle = 0

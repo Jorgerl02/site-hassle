@@ -1,10 +1,10 @@
 "use client";
 
-import { Box, Button, Flex, Stack, Text, Textarea } from "@chakra-ui/react";
+import { Box, Button, Field, Flex, NativeSelect, Stack, Text, Textarea } from "@chakra-ui/react";
 import { useActionState, useState } from "react";
 import { submitReview, type ReviewActionResult } from "@/app/admin/revision/actions";
 import type { CandidateView } from "@/lib/admin";
-import type { ShapeValues } from "@/lib/admin-labels";
+import { MATERIAL_LABEL, MATERIAL_NONE, MATERIAL_OPTIONS, type ShapeValues } from "@/lib/admin-labels";
 import { ShapeFields } from "./ShapeFields";
 import { ReviewCard } from "./ReviewCard";
 
@@ -49,9 +49,25 @@ export function ReviewForm({ pieceId, candidates, canRegenerate, shape }: Review
             Forma de la pieza
           </Text>
           <Text fontSize="sm" color="fg.muted" mb="3">
-            Corrige lo que el cliente dejó por defecto; se guarda al pulsar «Regenerar».
+            Corrige lo que el cliente dejó por defecto; forma y material se guardan al pulsar «Regenerar».
           </Text>
           <ShapeFields idPrefix={`review-${pieceId}`} defaults={shape} disabled={pending} />
+          <Field.Root disabled={pending} mt="3" maxW={{ sm: "sm" }}>
+            <Field.Label htmlFor={`review-${pieceId}-material`}>Aplicar material</Field.Label>
+            <NativeSelect.Root size="sm" bg="white">
+              <NativeSelect.Field id={`review-${pieceId}-material`} name="material" defaultValue="">
+                <option value="">Automático (según el nombre y las notas)</option>
+                {MATERIAL_OPTIONS.map((material) => (
+                  <option key={material.id} value={material.id}>
+                    {material.label}
+                  </option>
+                ))}
+                <option value={MATERIAL_NONE}>{MATERIAL_LABEL[MATERIAL_NONE]}</option>
+              </NativeSelect.Field>
+              <NativeSelect.Indicator />
+            </NativeSelect.Root>
+            <Field.HelperText>Material PBR real sobre la malla en el siguiente intento; se guarda en la nota.</Field.HelperText>
+          </Field.Root>
         </Box>
 
         <Box bg="bg.panel" borderWidth="1px" borderColor="border" rounded="xl" p={{ base: 4, md: 5 }}>

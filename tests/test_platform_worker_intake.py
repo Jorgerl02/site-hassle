@@ -121,9 +121,7 @@ def test_pdf_is_not_an_image(tmp_path: Path) -> None:
     pdf = tmp_path / "1.jpg"
     pdf.write_bytes(b"%PDF-1.7\n...")
     problems = intake.check(row(), [pdf])
-    assert problems == [
-        "Photo 1: The file isn't an image we can read (use JPG, PNG or WebP)"
-    ]
+    assert problems == ["Photo 1: The file isn't an image we can read (use JPG, PNG or WebP)"]
 
 
 def test_photo_over_20mb(tmp_path: Path, monkeypatch) -> None:

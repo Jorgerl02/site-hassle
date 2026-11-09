@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from PIL import Image, UnidentifiedImageError
 
 from harness.core.models import Piece
 from harness.prep.clean import MIN_BBOX_FRACTION, MIN_LONG_SIDE_PX, validate_input
+from platform_worker.interpret import Interpretation, merge_answers
 
 MAX_PHOTO_BYTES = 20 * 1024 * 1024  # same 20 MB limit as the upload form
 
@@ -88,6 +90,12 @@ PHOTO_REQUIREMENTS: list[str] = [
     f"The piece should fill at least {MIN_BBOX_FRACTION:.0%} of the photo's long side.",
 ]
 
+# Customer copy for a photo where background removal finds nothing (no technical detail).
+NO_OBJECT_MESSAGE = (
+    "We couldn't find the piece in the photo. Use a photo where the whole piece is visible "
+    "on a plain background."
+)
+
 _LOW_RES = re.compile(r"^Resolución insuficiente: lado mayor ([\d.]+) px")
 _NO_OBJECT = re.compile(r"^Objeto no detectado")
 _TOO_SMALL = re.compile(r"^Objeto demasiado pequeño")
@@ -102,7 +110,7 @@ def _english_issue(issue: str) -> str:
             f"(we need at least {MIN_LONG_SIDE_PX:,} px)"
         )
     if _NO_OBJECT.match(issue):
-        return "We couldn't find the piece in the photo (background removal found nothing)"
+        return NO_OBJECT_MESSAGE
     if _TOO_SMALL.match(issue):
         return (
             "The piece is too small in the photo: its longest side should fill at least "
@@ -193,9 +201,16 @@ def is_rectilinear(piece_row: dict[str, Any]) -> bool:
     return (piece_row.get("kind") or "") in RECTILINEAR_KINDS
 
 
-def build_piece(piece_row: dict[str, Any], photo_paths: Sequence[Path]) -> Piece:
-    """Harness ``Piece`` for a ``pieces`` row (``rectilinear`` resolved, never None)."""
+def build_piece(
+    piece_row: dict[str, Any], photo_paths: Sequence[Path], routing: Routing | None = None
+) -> Piece:
+    """Harness ``Piece`` for a ``pieces`` row (``rectilinear`` resolved, never None).
+
+    With ``routing`` the effective kind (customer or photo) feeds the description and
+    ``rectilinear`` is the route's (True only on E); without it, the row's own answers."""
     kind = piece_row.get("kind") or "otro"
+    if routing is not None:
+        kind = str(routing.effective.get("kind") or kind)
     notes = (piece_row.get("notes") or "").strip()
     kind_text = KIND_TEXT.get(kind, "")
     # Notes first: a "mesa auxiliar de travertino" still becomes a panel table.
@@ -211,7 +226,7 @@ def build_piece(piece_row: dict[str, Any], photo_paths: Sequence[Path]) -> Piece
         height_cm=float(piece_row["height_cm"]),
         depth_cm=float(piece_row["depth_cm"]),
         description=description,
-        rectilinear=is_rectilinear(piece_row),
+        rectilinear=routing.rectilinear if routing is not None else is_rectilinear(piece_row),
     )
 
 
@@ -229,3 +244,149 @@ def parametric_kind_override(piece_row: dict[str, Any]) -> str | None:
         notes = _normalise(piece_row.get("notes") or "")
         return "box_legs" if _BASE_WORDS.search(notes) else "box"
     return "box" if (piece_row.get("kind") or "") in BOX_KINDS else None
+
+
+# --------------------------------------------------------------------------- routing
+
+ROUTE_E = "E"
+ROUTE_ORGANIC = "organic"
+# Organic piece and no provider, while the photo reading is not sure it is organic: the admin
+# fixes the shape answers and regenerates (instead of a ``failed`` piece).
+ROUTE_MANUAL = "manual"
+
+
+@dataclass
+class Routing:
+    """Where a piece goes, from its effective answers (``interpret.merge_answers``).
+
+    ``route``: ``E`` (parametric, ``kind`` + ``params`` forced, or E's own classification
+    when ``kind`` is None), ``organic`` (provider) or ``manual`` (no model: admin review
+    with ``reasons``). ``effective`` is the merge result (JSON-ready); ``reasons`` are
+    Spanish sentences for the admin."""
+
+    route: str
+    kind: str | None = None
+    params: dict[str, Any] = field(default_factory=dict)
+    reasons: list[str] = field(default_factory=list)
+    effective: dict[str, Any] = field(default_factory=dict)
+    # A support conflict with a confident central pedestal: built as the photo shows.
+    photo_overrides_support: bool = False
+
+    @property
+    def rectilinear(self) -> bool:
+        """``Piece.rectilinear`` for the harness: True on route E, else False."""
+        return self.route == ROUTE_E
+
+
+def customer_answers(piece_row: dict[str, Any]) -> dict[str, Any]:
+    """What ``merge_answers`` needs from a ``pieces`` row (answers + notes + dimensions)."""
+    return {
+        "kind": piece_row.get("kind"),
+        "rectilinear": piece_row.get("rectilinear"),
+        "support": piece_row.get("support"),
+        "notes": piece_row.get("notes") or "",
+        "width_cm": piece_row.get("width_cm"),
+        "depth_cm": piece_row.get("depth_cm"),
+    }
+
+
+def _pedestal_params(effective: dict[str, Any]) -> dict[str, Any]:
+    params = dict(effective.get("pedestal_params") or {})
+    return {k: v for k, v in params.items() if v is not None}
+
+
+def decide_route(
+    piece_row: dict[str, Any],
+    interpretation: Interpretation,
+    *,
+    provider_available: bool,
+) -> Routing:
+    """Route of a piece from the customer's answers and the photo interpretation.
+
+    - ``routing_kind`` set (table / panel_table / box / box_legs / pedestal) → E with that
+      kind (and ``pedestal_params`` for a pedestal).
+    - A support conflict where the photo shows a confident central pedestal (the form
+      cannot say «pie central», so «patas» was the customer's closest answer) → E pedestal
+      as the photo shows; the conflict still sends the piece to manual review.
+    - The customer said explicitly «es recta» but no support is known → E with its own
+      classification. «No sé»/default never forces E by itself.
+    - Otherwise organic (provider). Without a provider: an organic piece the customer or a
+      confident photo reading says is organic stays ``organic`` (the pipeline fails it
+      with the «no provider» message); anything unsure goes to manual review."""
+    customer = customer_answers(piece_row)
+    effective = merge_answers(customer, interpretation)
+    routing = Routing(route=ROUTE_ORGANIC, effective=effective)
+    kind = effective.get("routing_kind")
+    params: dict[str, Any] = {}
+    if kind == "pedestal":
+        params = _pedestal_params(effective)
+    support_conflict = next(
+        (c for c in effective.get("conflict") or [] if c.get("field") == "support"), None
+    )
+    if (
+        support_conflict is not None
+        and support_conflict.get("inferred") == "pie_central"
+        and effective.get("rectilinear") is not False
+    ):
+        from_photo = merge_answers({**customer, "support": None}, interpretation)
+        if from_photo.get("routing_kind") == "pedestal":
+            kind, params = "pedestal", _pedestal_params(from_photo)
+            routing.photo_overrides_support = True
+            routing.reasons.append(
+                "Conflicto de apoyo: el cliente dijo «"
+                f"{support_conflict.get('customer')}» y la foto muestra un pie central "
+                f"({support_conflict.get('confidence', 0):.0%}); se construye el pedestal de "
+                "la foto"
+            )
+
+    source = effective.get("source") or {}
+    if kind is not None:
+        routing.route, routing.kind, routing.params = ROUTE_E, kind, params
+        routing.reasons.append(f"Ruta E: tipo paramétrico «{kind}»")
+        return routing
+    if effective.get("rectilinear") is True and source.get("rectilinear") == "customer":
+        routing.route = ROUTE_E
+        routing.reasons.append(
+            "Ruta E: el cliente dice que es recta (tipo por la clasificación de E)"
+        )
+        return routing
+
+    organic_sure = effective.get("rectilinear") is False
+    if provider_available or organic_sure:
+        routing.reasons.append(
+            "Ruta orgánica: "
+            + (
+                "pieza no recta"
+                if organic_sure
+                else "la foto no basta para construirla con piezas rectas"
+            )
+        )
+        return routing
+
+    routing.route = ROUTE_MANUAL
+    if effective.get("rectilinear") is True:
+        routing.reasons.append(
+            "La foto parece de una pieza recta, pero no se sabe cómo se apoya y no hay "
+            "proveedor orgánico: fija el apoyo (y el tipo) y regenera"
+        )
+    else:
+        routing.reasons.append(
+            "La interpretación de la foto no es fiable "
+            f"(confianza {interpretation.confidence:.0%}) y no hay proveedor orgánico: "
+            "fija la forma (tipo, recta, apoyo) y regenera"
+        )
+    return routing
+
+
+# --------------------------------------------------------------------------- material
+
+# The admin's «Aplicar material» travels in ``pieces.review_note`` as ``material:<id>``
+# (``material:none`` turns the automatic detection off for the next attempt).
+MATERIAL_NONE = "none"
+_MATERIAL_NOTE = re.compile(r"(?:^|\s)material:([a-z_]+)\b")
+
+
+def material_from_note(review_note: str | None) -> str | None:
+    """``<id>`` of the last ``material:<id>`` token in the admin's note, or None."""
+    found = _MATERIAL_NOTE.findall(review_note or "")
+    return found[-1] if found else None

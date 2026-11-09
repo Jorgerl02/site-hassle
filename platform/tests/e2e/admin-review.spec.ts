@@ -220,3 +220,86 @@ test("the detail shows the customer's support answer", async ({ browser }) => {
   await page.goto(`/admin/revision/${piece.id}`);
   await expect(page.getByTestId("piece-support")).toHaveText("Sobre paneles laterales");
 });
+
+/** Turns a seeded piece into one the worker published by itself (selected model with `auto_review: auto`). */
+async function markAutoPublished(piece: SeededPiece, status: "ready" | "approved"): Promise<void> {
+  const { data: model } = await db.from("piece_models").select("meta").eq("id", piece.modelIds[0]).single();
+  const meta = {
+    ...(model?.meta as Record<string, unknown>),
+    interpretation: {
+      rectilinear: true,
+      support: "pie_central",
+      kind: "mesa",
+      confidence: 0.82,
+      support_confidence: 0.9,
+      reasons: ["pedestal: top on one central column → buildable (parametric pedestal)"],
+      effective: { kind: "mesa", rectilinear: true, support: "no_se", routing_kind: "pedestal", pedestal_params: { base_diameter_ratio: 0.51, top_shape: "round" } },
+      source: { kind: "inferred", rectilinear: "inferred", support: "default" },
+      conflict: [],
+    },
+    routing: { route: "E", kind: "pedestal", params: { base_diameter_ratio: 0.51, top_shape: "round" }, reasons: ["Ruta E: tipo paramétrico «pedestal»"] },
+    dimension_warnings: [],
+    warnings: [],
+    auto_review: {
+      decision: "auto",
+      gate: "rules",
+      reasons: ["Ruta E con escala exacta (error 0,2 %)", "recta: foto con confianza 82,0 %"],
+    },
+  };
+  const { error: modelError } = await db.from("piece_models").update({ meta }).eq("id", piece.modelIds[0]);
+  expect(modelError).toBeNull();
+  const { error } = await db.from("pieces").update({ status, route: "E" }).eq("id", piece.id);
+  expect(error).toBeNull();
+}
+
+test("automatically published pieces are listed and «Retirar» sends them back to review", async ({ browser }) => {
+  const ready = await seedReviewPiece(db, customer, `test_ Mesa auto ${Date.now()}`);
+  const approved = await seedReviewPiece(db, customer, `test_ Mesa auto descargada ${Date.now()}`);
+  pieces.push(ready, approved);
+  await markAutoPublished(ready, "ready");
+  await markAutoPublished(approved, "approved");
+  const page = await adminPage(browser);
+  await page.goto("/admin/revision");
+
+  await expect(page.getByRole("heading", { level: 2, name: "Publicadas automáticamente (últimas 48 h)" })).toBeVisible();
+  const readyItem = page.getByTestId("auto-published-item").filter({ hasText: ready.name });
+  await expect(readyItem).toContainText("Visible para el cliente");
+  await expect(readyItem.getByTestId("auto-published-reasons")).toContainText("Decisión por reglas");
+  await expect(readyItem.getByTestId("auto-published-reasons")).toContainText("Ruta E con escala exacta");
+  await expect(readyItem.getByTestId("contact-sheet")).toBeVisible();
+  const approvedItem = page.getByTestId("auto-published-item").filter({ hasText: approved.name });
+  await expect(approvedItem).toContainText("Descargada por el cliente");
+  await expect(approvedItem.getByRole("button", { name: "Retirar" })).toHaveCount(0);
+  // Neither is in the review queue.
+  await expect(page.getByTestId("queue-item").filter({ hasText: ready.name })).toHaveCount(0);
+
+  await readyItem.getByRole("button", { name: "Retirar" }).click();
+  await expect(page.getByTestId("auto-published-item").filter({ hasText: ready.name })).toHaveCount(0);
+  await expect(page.getByTestId("queue-item").filter({ hasText: ready.name })).toBeVisible();
+  const { data: row } = await db.from("pieces").select("status, review_note").eq("id", ready.id).single();
+  expect(row).toEqual({ status: "review", review_note: "Retirada de la publicación automática." });
+  const { data: still } = await db.from("pieces").select("status").eq("id", approved.id).single();
+  expect(still?.status).toBe("approved");
+
+  // The detail explains what the worker read and decided.
+  await page.goto(`/admin/revision/${ready.id}`);
+  await expect(page.getByTestId("auto-review-decision")).toHaveText("Publicada automáticamente (reglas)");
+  const answers = page.getByTestId("effective-answers");
+  await expect(answers).toContainText("Pedestal (pie central), base 51 % del tablero");
+  await expect(answers).toContainText("Mesa (foto)");
+  await expect(page.getByTestId("auto-review-reasons")).toContainText("recta: foto con confianza 82,0 %");
+});
+
+test("regenerate keeps only the shape fields and stores the chosen material in the note", async ({ browser }) => {
+  const piece = await seedReviewPiece(db, customer, `test_ Sillón material ${Date.now()}`);
+  pieces.push(piece);
+  const page = await adminPage(browser);
+  await page.goto(`/admin/revision/${piece.id}`);
+  await page.getByLabel("Aplicar material").selectOption("linen");
+  await page.getByLabel("Nota o motivo").fill("Tela más clara.");
+  await page.getByRole("button", { name: "Regenerar" }).click();
+  await expect(page).toHaveURL(/\/admin\/revision$/);
+  const { data: row } = await db.from("pieces").select("status, attempt, review_note").eq("id", piece.id).single();
+  await cleanupPiece(db, piece); // a running worker must never pick the test piece up
+  expect(row).toEqual({ status: "queued", attempt: 2, review_note: "Tela más clara.\nmaterial:linen" });
+});

@@ -19,6 +19,7 @@ from harness.post.blender_post import PostResult
 from harness.post.deliver import DeliverResult
 from harness.prep import clean
 from platform_worker import cli, config, pipeline
+from platform_worker.interpret import Interpretation
 from platform_worker.providers import FakeProvider
 from platform_worker.providers.base import GenerationOutcome
 
@@ -38,6 +39,8 @@ WORKER_ENV_KEYS = (
     "TRIPO_API_KEY",
     "BLENDER_BIN",
     "WORKER_ENV_FILE",
+    "AUTO_PUBLISH",
+    "ANTHROPIC_API_KEY",
 )
 
 
@@ -191,14 +194,34 @@ def fake_render_views(glb, out_dir, **kwargs) -> list[Path]:
     return [_png(Path(out_dir) / f"{v}.png", (40 * i, 80, 120)) for i, v in enumerate(views)]
 
 
+DELIVER_CALLS: list[dict[str, Any]] = []
+DELIVER_WARNINGS: list[str] = []
+
+
 def fake_deliver(cand_dir, piece, *, max_tris, max_tex, out_dir, **kwargs) -> DeliverResult:
+    DELIVER_CALLS.append({"cand_dir": Path(cand_dir), "max_tris": max_tris, **kwargs})
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     glb = out_dir / "model_web.glb"
     glb.write_bytes(f"glb tris={max_tris} tex={max_tex}".encode())
     usdz = out_dir / "model.usdz"
     usdz.write_bytes(b"usdz")
+    preview = out_dir / "preview"
+    preview.mkdir(exist_ok=True)
+    preview_glb = preview / "model_preview.glb"
+    preview_glb.write_bytes(
+        f"glb tris={kwargs['preview_max_tris']} tex={kwargs['preview_max_tex']}".encode()
+    )
+    preview_usdz = preview / "model_preview.usdz"
+    preview_usdz.write_bytes(b"preview usdz")
     return DeliverResult(
+        preview_glb_path=preview_glb,
+        preview_usdz_path=preview_usdz,
+        preview_glb_bytes=preview_glb.stat().st_size,
+        preview_usdz_bytes=12,
+        preview_tris_after=min(900, kwargs["preview_max_tris"]),
+        warnings=list(DELIVER_WARNINGS),
+        optimize_error="gltf-transform no disponible" if DELIVER_WARNINGS else None,
         out_dir=out_dir,
         glb_path=glb,
         usdz_path=usdz,
@@ -219,6 +242,12 @@ class FakeParametric:
 
     def __init__(self, blender_bin=None, overrides_path=None, kind_overrides=None) -> None:
         self.kind_overrides = kind_overrides
+        # What the pipeline forces: ``{"kind", **params}`` of the overrides file, or None.
+        self.forced = (
+            json.loads(Path(overrides_path).read_text(encoding="utf-8"))[PIECE_ID]
+            if overrides_path is not None
+            else None
+        )
         FakeParametric.instances.append(self)
 
     def run(self, piece, workdir, candidates=1) -> VariantResult:
@@ -240,6 +269,23 @@ class BrokenProvider:
         raise RuntimeError("proveedor caído")
 
 
+# What the stub interpreter "sees" in the photos (tests set it); default: no evidence.
+NO_EVIDENCE = Interpretation(None, None, None, 0.0, ["no evidence"])
+INTERPRETATION: list[Interpretation] = [NO_EVIDENCE]
+
+
+class StubInterpreter:
+    calls: list[dict[str, Any]] = []
+
+    def interpret(self, photos, **kwargs) -> Interpretation:
+        StubInterpreter.calls.append({"photos": list(photos), **kwargs})
+        return INTERPRETATION[0]
+
+
+def see(interpretation: Interpretation) -> None:
+    INTERPRETATION[0] = interpretation
+
+
 @pytest.fixture(autouse=True)
 def simulated_harness(monkeypatch) -> None:
     monkeypatch.setattr(clean, "_remove_background", _fake_rembg)
@@ -251,7 +297,13 @@ def simulated_harness(monkeypatch) -> None:
     monkeypatch.setattr(
         pipeline, "clean_image", lambda src, dst, size=1024: Path(shutil.copyfile(src, _dst(dst)))
     )
+    monkeypatch.setattr(pipeline, "SilhouetteInterpreter", StubInterpreter)
+    monkeypatch.setattr(pipeline, "photo_mean_color", lambda photo: (200, 180, 160))
     FakeParametric.instances.clear()
+    StubInterpreter.calls.clear()
+    INTERPRETATION[0] = NO_EVIDENCE
+    DELIVER_CALLS.clear()
+    DELIVER_WARNINGS.clear()
 
 
 def _dst(dst: Path) -> Path:
@@ -307,7 +359,7 @@ def test_rectilinear_piece_goes_through_e_to_review(tmp_path: Path) -> None:
 
     assert db.pieces[PIECE_ID]["status"] == "review"
     assert db.pieces[PIECE_ID]["route"] == "E"
-    assert FakeParametric.instances[0].kind_overrides == {PIECE_ID: "box"}
+    assert FakeParametric.instances[0].forced == {"kind": "box"}
     assert len(db.models) == 1
     model = db.models[0]
     prefix = f"{PIECE_ID}/1"
@@ -328,7 +380,11 @@ def test_rectilinear_piece_goes_through_e_to_review(tmp_path: Path) -> None:
     uploads = storage.uploads
     assert uploads[("models", f"{prefix}/model_web.glb")] == b"glb tris=60000 tex=2048"
     assert uploads[("previews", f"{prefix}/model_preview.glb")] == b"glb tris=15000 tex=512"
+    assert uploads[("previews", f"{prefix}/model_preview.usdz")] == b"preview usdz"
     assert ("models", f"{prefix}/model.usdz") in uploads
+    # deliver runs ONCE per candidate, non-strict, with the preview limits.
+    assert len(DELIVER_CALLS) == 1
+    assert DELIVER_CALLS[0]["strict"] is False and DELIVER_CALLS[0]["preview"] is True
     contact = tmp_path / "contact.jpg"
     contact.write_bytes(uploads[("renders", f"{prefix}/contact.jpg")])
     with Image.open(contact) as img:  # first photo + 4 renders in one row
@@ -404,7 +460,7 @@ def test_provider_exception_fails(tmp_path: Path) -> None:
 
 
 def test_organic_without_provider_fails_with_message(tmp_path: Path) -> None:
-    db, storage, row = setup(tmp_path, kind="sillon", name="Sillón")
+    db, storage, row = setup(tmp_path, kind="sillon", name="Sillón", rectilinear=False)
     assert run(db, storage, row, tmp_path, provider=None) == "failed"
     assert db.pieces[PIECE_ID]["error"] == pipeline.NO_PROVIDER_ERROR
 
@@ -850,4 +906,281 @@ def test_heartbeat_refreshes_claimed_at_between_candidates(tmp_path: Path) -> No
 def test_support_answer_picks_the_parametric_kind(tmp_path, support, notes, expected) -> None:
     db, storage, row = setup(tmp_path, kind="aparador", support=support, notes=notes)
     assert run(db, storage, row, tmp_path) == "review"
-    assert FakeParametric.instances[0].kind_overrides == {PIECE_ID: expected}
+    assert FakeParametric.instances[0].forced == {"kind": expected}
+
+
+# ---------------------------------------------------------------- wiring (interpretation,
+# materials, single delivery, automatic publishing)
+
+TRAVERTINE = Interpretation(
+    rectilinear=True,
+    support="pie_central",
+    kind="mesa",
+    confidence=0.82,
+    reasons=["pedestal: top on one central column → buildable (parametric pedestal)"],
+    top_shape="round",
+    base_ratio=0.51,
+    photo_aspect=1.10,
+    support_confidence=0.90,
+)
+TRAVERTINE_ROW = {
+    "name": "Mesa Travertino",
+    "kind": "otro",
+    "support": "no_se",
+    "width_cm": 60,
+    "height_cm": 45,
+    "depth_cm": 60,
+}
+
+
+def _notices(monkeypatch) -> list[tuple[str, str]]:
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pipeline, "notify_status", lambda pid, status, **kw: sent.append((pid, status)) or True
+    )
+    return sent
+
+
+def _selected(db: FakeDB) -> dict[str, Any]:
+    [model] = [m for m in db.models if m["selected"]]
+    return model
+
+
+def test_travertine_default_answers_auto_publish_as_e_pedestal(tmp_path, monkeypatch) -> None:
+    monkeypatch.setitem(CAND_ERRORS, "cand_1", 0.001)
+    sent = _notices(monkeypatch)
+    see(TRAVERTINE)
+    db, storage, row = setup(tmp_path, **TRAVERTINE_ROW)
+    assert run(db, storage, row, tmp_path) == "ready"
+
+    forced = FakeParametric.instances[0].forced
+    assert forced["kind"] == "pedestal" and forced["top_shape"] == "round"
+    assert forced["base_diameter_ratio"] == pytest.approx(0.5, abs=0.02)
+    piece = db.pieces[PIECE_ID]
+    assert piece["status"] == "ready" and piece["route"] == "E" and piece["error"] is None
+    assert all("support" not in fields for _, fields in db.updates)  # never pie_central
+    assert sent == [(PIECE_ID, "ready")]
+    meta = _selected(db)["meta"]
+    assert meta["auto_review"]["decision"] == "auto" and meta["auto_review"]["gate"] == "rules"
+    interp = meta["interpretation"]
+    assert interp["support"] == "pie_central" and interp["confidence"] == 0.82
+    assert interp["effective"]["routing_kind"] == "pedestal"
+    assert interp["effective"]["support"] == "no_se"
+    assert interp["source"]["rectilinear"] == "inferred" and interp["conflict"] == []
+    assert meta["routing"]["kind"] == "pedestal" and meta["dimension_warnings"] == []
+    assert meta["material"] == {"id": None, "source": None}  # E keeps the photo texture
+    assert StubInterpreter.calls[0]["width_cm"] == 60.0
+    assert StubInterpreter.calls[0]["name"] == "Mesa Travertino"
+
+
+def test_travertine_support_conflict_goes_to_manual_review(tmp_path, monkeypatch) -> None:
+    """The owner's case: «mesa» + «patas», photo = one central column."""
+    monkeypatch.setitem(CAND_ERRORS, "cand_1", 0.001)
+    sent = _notices(monkeypatch)
+    see(TRAVERTINE)
+    db, storage, row = setup(tmp_path, **{**TRAVERTINE_ROW, "kind": "mesa", "support": "patas"})
+    assert run(db, storage, row, tmp_path) == "review"
+
+    forced = FakeParametric.instances[0].forced
+    assert forced["kind"] == "pedestal"
+    assert forced["base_diameter_ratio"] == pytest.approx(0.5, abs=0.02)
+    assert sent == [(PIECE_ID, "review")]
+    meta = _selected(db)["meta"]
+    assert meta["auto_review"]["decision"] == "manual"
+    assert "Conflicto en «support»" in meta["auto_review"]["reasons"][0]
+    [conflict] = meta["interpretation"]["conflict"]
+    assert conflict == {
+        "field": "support",
+        "customer": "patas",
+        "inferred": "pie_central",
+        "confidence": 0.9,
+    }
+    assert meta["routing"]["photo_overrides_support"] is True
+
+
+def test_dimension_warnings_are_stored_and_block_publishing(tmp_path, monkeypatch) -> None:
+    """The original travertine inputs: 60 × 30 × 25 contradict the photo."""
+    monkeypatch.setitem(CAND_ERRORS, "cand_1", 0.001)
+    see(TRAVERTINE)
+    db, storage, row = setup(tmp_path, **{**TRAVERTINE_ROW, "height_cm": 30, "depth_cm": 25})
+    assert run(db, storage, row, tmp_path) == "review"
+    meta = _selected(db)["meta"]
+    assert len(meta["dimension_warnings"]) == 2
+    assert meta["dimension_warnings"][0].startswith("From the photo, the height")
+    assert meta["warnings"][:2] == meta["dimension_warnings"]
+    assert meta["auto_review"]["reasons"][0].startswith("Aviso: From the photo")
+
+
+def test_unsure_piece_without_provider_waits_for_the_admin(tmp_path, monkeypatch) -> None:
+    sent = _notices(monkeypatch)
+    see(Interpretation(True, None, None, 0.55, ["silhouette: …"]))
+    db, storage, row = setup(tmp_path, name="Pieza", kind="otro", support="no_se")
+    assert run(db, storage, row, tmp_path, provider=None) == "review"
+    assert FakeParametric.instances == [] and storage.uploads == {}
+    piece = db.pieces[PIECE_ID]
+    assert piece["status"] == "review" and piece["route"] == "sin proveedor"
+    [model] = db.models
+    assert model["candidate"] == 0 and model["selected"] is False
+    assert model.get("glb_path") is None
+    assert model["meta"]["error"].startswith("Sin modelo: La interpretación de la foto no es")
+    assert model["meta"]["interpretation"]["confidence"] == 0.55
+    assert model["meta"]["auto_review"]["decision"] == "manual"
+    assert sent == [(PIECE_ID, "review")]
+
+
+def test_organic_route_by_default_answers_uses_the_provider(tmp_path) -> None:
+    see(Interpretation(False, None, "sofa", 0.9, ["text: sofá"]))
+    db, storage, row = setup(tmp_path, name="Sofá", kind="otro", support="no_se", depth_cm=90)
+    assert run(db, storage, row, tmp_path, provider=FakeProvider(SAMPLE_GLB)) == "review"
+    assert db.pieces[PIECE_ID]["route"] == "fake" and FakeParametric.instances == []
+    meta = _selected(db)["meta"]
+    assert meta["auto_review"]["reasons"][0].startswith("Pieza orgánica sin juez visual")
+
+
+MATERIAL_CALLS: list[dict[str, Any]] = []
+
+
+@pytest.fixture
+def fake_material(monkeypatch) -> list[dict[str, Any]]:
+    MATERIAL_CALLS.clear()
+
+    def apply(glb_in, glb_out, *, material_id, target_rgb, real_size_cm, blender_bin):
+        MATERIAL_CALLS.append({"in": Path(glb_in), "id": material_id, "rgb": target_rgb,
+                               "size": real_size_cm})  # fmt: skip
+        Path(glb_out).write_bytes(b"material " + material_id.encode())
+        return {"warnings": [], "uv": "box"}
+
+    monkeypatch.setattr(pipeline, "apply_material", apply)
+    return MATERIAL_CALLS
+
+
+def test_material_is_applied_to_provider_meshes(tmp_path, fake_material) -> None:
+    db, storage, row = setup(
+        tmp_path, kind="sofa", name="Sofá de lino", width_cm=200, depth_cm=90, rectilinear=False
+    )
+    assert run(db, storage, row, tmp_path, provider=FakeProvider(SAMPLE_GLB)) == "review"
+    assert [c["id"] for c in fake_material] == ["linen", "linen"]
+    assert fake_material[0]["rgb"] == (200, 180, 160)
+    assert fake_material[0]["size"] == (200.0, 60.0, 90.0)
+    cand = tmp_path / "runs" / PIECE_ID / "1" / "fake" / "cand_1"
+    assert (cand / "model_post.glb").read_bytes() == b"material linen"  # renders + deliver
+    assert (cand / "model_post_raw.glb").is_file()
+    material = _selected(db)["meta"]["material"]
+    assert material["id"] == "linen" and material["source"] == "detected"
+    assert material["applied"] is True and material["target_rgb"] == [200, 180, 160]
+
+
+def test_material_is_never_auto_applied_to_e_pieces(tmp_path, fake_material) -> None:
+    see(TRAVERTINE)
+    db, storage, row = setup(tmp_path, **{**TRAVERTINE_ROW, "notes": "Travertino macizo"})
+    run(db, storage, row, tmp_path)
+    assert fake_material == []
+
+
+def test_admin_material_note_applies_to_any_route(tmp_path, fake_material) -> None:
+    see(TRAVERTINE)
+    db, storage, row = setup(
+        tmp_path, **TRAVERTINE_ROW, review_note="Más cálido.\nmaterial:travertine"
+    )
+    run(db, storage, row, tmp_path)
+    assert [c["id"] for c in fake_material] == ["travertine"]
+    assert _selected(db)["meta"]["material"]["source"] == "admin"
+
+
+def test_admin_can_turn_material_detection_off(tmp_path, fake_material) -> None:
+    db, storage, row = setup(
+        tmp_path, kind="sofa", name="Sofá de lino", rectilinear=False, review_note="material:none"
+    )
+    run(db, storage, row, tmp_path, provider=FakeProvider(SAMPLE_GLB))
+    assert fake_material == []
+    assert _selected(db)["meta"]["material"] == {"id": None, "source": "admin_off"}
+
+
+def test_material_failure_keeps_the_mesh_and_warns(tmp_path, monkeypatch) -> None:
+    def broken(*args, **kwargs):
+        raise RuntimeError("faltan los mapas")
+
+    monkeypatch.setattr(pipeline, "apply_material", broken)
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá de piel", rectilinear=False)
+    assert run(db, storage, row, tmp_path, provider=FakeProvider(SAMPLE_GLB)) == "review"
+    meta = _selected(db)["meta"]
+    assert meta["material"]["applied"] is False and "faltan los mapas" in meta["material"]["error"]
+    assert any("No se pudo aplicar el material «leather»" in w for w in meta["warnings"])
+
+
+def test_delivery_warnings_reach_the_admin_and_block_publishing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setitem(CAND_ERRORS, "cand_1", 0.001)
+    DELIVER_WARNINGS.append("GLB sin optimizar: gltf-transform no disponible")
+    see(TRAVERTINE)
+    db, storage, row = setup(tmp_path, **TRAVERTINE_ROW)
+    assert run(db, storage, row, tmp_path) == "review"
+    meta = _selected(db)["meta"]
+    assert meta["deliver"]["warnings"] == ["GLB sin optimizar: gltf-transform no disponible"]
+    assert meta["deliver"]["optimize_error"] == "gltf-transform no disponible"
+    assert meta["deliver"]["preview_usdz"] is True
+    assert "GLB sin optimizar: gltf-transform no disponible" in meta["warnings"]
+    assert meta["auto_review"]["decision"] == "manual"
+
+
+def test_auto_publish_off_keeps_manual_review(tmp_path, monkeypatch) -> None:
+    monkeypatch.setitem(CAND_ERRORS, "cand_1", 0.001)
+    monkeypatch.setenv("AUTO_PUBLISH", "0")
+    see(TRAVERTINE)
+    db, storage, row = setup(tmp_path, **TRAVERTINE_ROW)
+    assert run(db, storage, row, tmp_path) == "review"
+    assert _selected(db)["meta"]["auto_review"]["reasons"] == ["Publicación automática desactivada"]
+
+
+def test_failed_delivery_of_the_best_candidate_selects_the_other(tmp_path, monkeypatch) -> None:
+    from harness.post.deliver import BlenderDeliverError
+
+    def deliver(cand_dir, piece, **kwargs):
+        if Path(cand_dir).name == "cand_2":
+            raise BlenderDeliverError("Blender se cayó al exportar")
+        return fake_deliver(cand_dir, piece, **kwargs)
+
+    monkeypatch.setattr(pipeline, "deliver", deliver)
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá", rectilinear=False)
+    assert run(db, storage, row, tmp_path, provider=FakeProvider(SAMPLE_GLB)) == "review"
+    selected = _selected(db)
+    assert selected["candidate"] == 1 and selected["glb_path"] == f"{PIECE_ID}/1/model_web.glb"
+    other = next(m for m in db.models if m["candidate"] == 2)
+    assert other["glb_path"] is None and "Blender se cayó" in other["meta"]["error"]
+
+
+def test_budget_counts_the_next_call_cost(tmp_path) -> None:
+    """Tripo's estimate (credit table: 60 credits = 0,60 $) must fit in the budget."""
+
+    class Settings:
+        def estimated_cost_usd(self) -> float:
+            return 0.6
+
+    class PricedProvider(FakeProvider):
+        settings = Settings()
+
+    assert pipeline.provider_call_cost(PricedProvider(SAMPLE_GLB)) == 0.6
+    assert pipeline.provider_call_cost(FakeProvider(SAMPLE_GLB)) == 0.0
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá", rectilinear=False)
+    db.spend_today = 19.5
+    status = pipeline.process_piece(
+        db, storage, row, provider=PricedProvider(SAMPLE_GLB), workdir=tmp_path / "runs",
+        blender_bin=None, budget_usd=20.0,
+    )  # fmt: skip
+    assert status == "queued" and db.pieces[PIECE_ID]["error"] == pipeline.BUDGET_MESSAGE
+
+
+def test_vlm_judge_runs_with_the_photos_and_renders(tmp_path, monkeypatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def judge(vlm, *, blind_id, photos, renders, geometry, tolerance):
+        seen.update(blind_id=blind_id, photos=photos, renders=renders, tolerance=tolerance)
+        return {"parecido": 5, "geometria": 4, "materiales": 4, "escala": 5, "apt": True}
+
+    monkeypatch.setattr(pipeline, "judge_candidate", judge)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    db, storage, row = setup(tmp_path, kind="sofa", name="Sofá", rectilinear=False)
+    assert run(db, storage, row, tmp_path, provider=FakeProvider(SAMPLE_GLB)) == "ready"
+    assert [p.stem for p in seen["renders"]] == ["front", "side", "back", "three_quarter", "top"]
+    assert len(seen["photos"]) == 1 and PIECE_ID not in seen["blind_id"]
+    review = _selected(db)["meta"]["auto_review"]
+    assert review["gate"] == "vlm" and review["scores"]["geometria"] == 4

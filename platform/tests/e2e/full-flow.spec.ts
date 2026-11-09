@@ -17,9 +17,13 @@ import {
 /**
  * The whole MVP once, with the real worker: sign-up → rectilinear piece from
  * the form with `p12.png` → `platform-worker run --once --provider fake`
- * (route E, real Blender) → the admin shows it → free viewer → «Download»
- * blocked without credits → a credit (Stripe webhook when configured, else
- * `grant_credits` by service role) → download, GLB and USDZ answer 200.
+ * (route E, real Blender) → published automatically (customer explicit
+ * «cabecero» + «Yes», support read from the photo at 90 %, exact scale) → the
+ * admin sees it under «Publicadas automáticamente», «Retirar» sends it back to
+ * review and «Mostrar al cliente» publishes it again → free viewer (preview GLB
+ * + iOS USDZ) → «Download» blocked without credits → a credit (Stripe webhook
+ * when configured, else `grant_credits` by service role) → download, GLB and
+ * USDZ answer 200.
  */
 test.describe.configure({ mode: "serial", timeout: 420_000 });
 
@@ -125,7 +129,7 @@ test("the customer creates a straight piece from the form", async ({ page }) => 
   await expect(page.getByTestId("piece-status")).toHaveText("Queued");
 });
 
-test("the real worker turns it into a model waiting for review", async () => {
+test("the real worker publishes it automatically", async () => {
   expect(pieceId).toBeTruthy();
   // `run --once` claims the oldest queued piece of the whole project; if someone
   // else's piece is ahead in the queue, process ours by id instead.
@@ -151,12 +155,13 @@ test("the real worker turns it into a model waiting for review", async () => {
       WORKER_SHARED_SECRET: SECRET,
     },
   });
-  expect(stdout).toContain("→ estado review");
-  // The worker → web notice was accepted (the server under test shares the secret).
+  expect(stdout).toContain("→ estado ready");
+  // The worker → web notice (customer «ready») was accepted (the server under test shares the secret).
   expect(stderr).not.toContain("No se pudo avisar a la web");
 
-  const { data: piece } = await db.from("pieces").select("status, route, error").eq("id", pieceId!).single();
-  expect(piece).toMatchObject({ status: "review", route: "E", error: null });
+  const { data: piece } = await db.from("pieces").select("status, route, error, support").eq("id", pieceId!).single();
+  // The support read from the photo lives in the model's meta, never in `pieces.support`.
+  expect(piece).toMatchObject({ status: "ready", route: "E", error: null, support: "no_se" });
   const { data: models } = await db.from("piece_models").select("*").eq("piece_id", pieceId!);
   expect(models).toHaveLength(1);
   expect(models![0]).toMatchObject({
@@ -167,17 +172,37 @@ test("the real worker turns it into a model waiting for review", async () => {
     usdz_path: `${pieceId}/1/model.usdz`,
   });
   expect(Number(models![0].max_error)).toBeLessThan(0.03);
+  const meta = models![0].meta as {
+    auto_review: { decision: string; gate: string };
+    interpretation: { effective: { routing_kind: string }; source: Record<string, string> };
+    deliver: { preview_usdz: boolean; warnings: string[] };
+  };
+  expect(meta.auto_review).toMatchObject({ decision: "auto", gate: "rules" });
+  expect(meta.interpretation.effective.routing_kind).toBe("box");
+  expect(meta.interpretation.source).toMatchObject({ kind: "customer", rectilinear: "customer", support: "inferred" });
+  expect(meta.deliver).toMatchObject({ preview_usdz: true, warnings: [] });
+  const usdz = await db.storage.from("previews").download(`${pieceId}/1/model_preview.usdz`);
+  expect(usdz.error).toBeNull();
 });
 
-test("the customer waits while the admin shows it", async ({ page, browser }) => {
+test("the admin withdraws it and shows it again", async ({ page, browser }) => {
+  const adminTab = await signedInAdmin(browser);
+  await adminTab.goto("/admin/revision");
+  const item = adminTab.getByTestId("auto-published-item").filter({ hasText: "test_ Cabecero recorrido completo" });
+  await expect(item).toContainText("Visible para el cliente");
+  await expect(item.getByTestId("auto-published-reasons")).toContainText("Ruta E con escala exacta");
+  await item.getByRole("button", { name: "Retirar" }).click();
+  await expect(adminTab.getByTestId("queue-item").filter({ hasText: "test_ Cabecero recorrido completo" })).toBeVisible();
+
+  // Withdrawn: the customer waits again, without the viewer.
   await signInAs(page, db, customer!.email);
   await page.goto(`/piezas/${pieceId}`);
   await expect(page.getByTestId("piece-status")).toHaveText("In review");
   await expect(page.locator("model-viewer")).toHaveCount(0);
 
-  const adminTab = await signedInAdmin(browser);
   await adminTab.goto(`/admin/revision/${pieceId}`);
   await expect(adminTab.getByTestId("candidate")).toHaveCount(1);
+  await expect(adminTab.getByTestId("auto-review-decision")).toHaveText("Publicada automáticamente (reglas)");
   await adminTab.getByRole("button", { name: "Mostrar al cliente" }).click();
   await expect(adminTab).toHaveURL(/\/admin\/revision$/);
   const { data: piece } = await db.from("pieces").select("status").eq("id", pieceId!).single();
@@ -191,6 +216,7 @@ test("the customer sees the free viewer and cannot download without credits", as
   const viewer = page.locator("model-viewer");
   await expect(viewer).toHaveAttribute("src", new RegExp(`/storage/v1/object/public/previews/${pieceId}/1/model_preview\\.glb$`));
   await expect(viewer).toHaveAttribute("ar-scale", "fixed");
+  await expect(viewer).toHaveAttribute("ios-src", new RegExp(`/storage/v1/object/public/previews/${pieceId}/1/model_preview\\.usdz$`));
   const preview = await page.request.get((await viewer.getAttribute("src"))!);
   expect(preview.status()).toBe(200);
   const measures = page.getByTestId("measures");

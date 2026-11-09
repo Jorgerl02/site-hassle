@@ -4,7 +4,8 @@ import NextLink from "next/link";
 import { AdminHeader } from "@/components/admin/AdminHeader";
 import { ContactSheet } from "@/components/admin/ContactSheet";
 import { FailedActions } from "@/components/admin/FailedActions";
-import { listFailedPieces, listReviewQueue, requireAdmin } from "@/lib/admin";
+import { WithdrawButton } from "@/components/admin/WithdrawButton";
+import { AUTO_PUBLISHED_HOURS, listAutoPublished, listFailedPieces, listReviewQueue, requireAdmin } from "@/lib/admin";
 
 export const metadata: Metadata = {
   title: "Revisión interna",
@@ -14,7 +15,7 @@ export const metadata: Metadata = {
 export default async function ReviewQueuePage() {
   // 404 before anything streams for non-admins.
   await requireAdmin();
-  const [items, failed] = await Promise.all([listReviewQueue(), listFailedPieces()]);
+  const [items, failed, published] = await Promise.all([listReviewQueue(), listFailedPieces(), listAutoPublished()]);
 
   return (
     <>
@@ -83,6 +84,80 @@ export default async function ReviewQueuePage() {
             ))}
           </Stack>
         )}
+
+        <Stack as="section" gap="4" mt="14" aria-labelledby="publicadas">
+          <Flex justify="space-between" align="baseline" gap="4" wrap="wrap">
+            <Heading as="h2" id="publicadas" fontSize={{ base: "2xl", md: "3xl" }} fontWeight="500">
+              Publicadas automáticamente (últimas {AUTO_PUBLISHED_HOURS} h)
+            </Heading>
+            <Text color="fg.muted">{published.length === 1 ? "1 pieza" : `${published.length} piezas`}</Text>
+          </Flex>
+          {published.length === 0 ? (
+            <Text color="fg.muted">Ninguna pieza publicada sin revisión en las últimas {AUTO_PUBLISHED_HOURS} h.</Text>
+          ) : (
+            <Stack as="ol" listStyleType="none" gap="4">
+              {published.map((item) => (
+                <Box
+                  as="li"
+                  key={item.id}
+                  data-testid="auto-published-item"
+                  bg="bg.panel"
+                  borderWidth="1px"
+                  borderColor="border"
+                  rounded="xl"
+                  p={{ base: 4, md: 5 }}
+                >
+                  <Stack gap="3">
+                    <Flex justify="space-between" align="baseline" gap="3" wrap="wrap">
+                      <NextLink href={`/admin/revision/${item.id}`}>
+                        <Text fontWeight="600" fontSize="lg">
+                          {item.name}
+                        </Text>
+                      </NextLink>
+                      <Text fontSize="sm" color="fg.muted" fontVariantNumeric="tabular-nums">
+                        Publicada hace {item.publishedAgo}
+                      </Text>
+                    </Flex>
+                    <ContactSheet url={item.contactUrl} alt={`Hoja de contacto de ${item.name}`} />
+                    <Flex gap="2" wrap="wrap" fontSize="sm" color="fg.muted" align="center">
+                      <Text>{item.kindLabel}</Text>
+                      <Text aria-hidden>·</Text>
+                      <Text fontVariantNumeric="tabular-nums">{item.dimensions}</Text>
+                      <Text aria-hidden>·</Text>
+                      <Text>Intento {item.attempt}</Text>
+                      {item.route ? (
+                        <>
+                          <Text aria-hidden>·</Text>
+                          <Text>Ruta {item.route}</Text>
+                        </>
+                      ) : null}
+                      <Badge colorPalette="gray" fontVariantNumeric="tabular-nums">
+                        Error máx. {item.maxError}
+                      </Badge>
+                      <Badge colorPalette={item.canWithdraw ? "green" : "gray"}>{item.statusLabel}</Badge>
+                      {item.email ? (
+                        <Text ms="auto" color="fg.subtle">
+                          {item.email}
+                        </Text>
+                      ) : null}
+                    </Flex>
+                    <Box fontSize="sm" data-testid="auto-published-reasons">
+                      <Text color="fg.muted">Decisión por {item.gate}:</Text>
+                      <Stack as="ul" gap="0.5" ps="4" listStyleType="disc">
+                        {item.reasons.map((reason) => (
+                          <Text as="li" key={reason}>
+                            {reason}
+                          </Text>
+                        ))}
+                      </Stack>
+                    </Box>
+                    {item.canWithdraw ? <WithdrawButton pieceId={item.id} /> : null}
+                  </Stack>
+                </Box>
+              ))}
+            </Stack>
+          )}
+        </Stack>
 
         <Stack as="section" gap="4" mt="14" aria-labelledby="fallidas">
           <Flex justify="space-between" align="baseline" gap="4" wrap="wrap">

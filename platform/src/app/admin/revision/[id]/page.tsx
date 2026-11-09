@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import NextLink from "next/link";
 import { notFound } from "next/navigation";
 import { AdminHeader } from "@/components/admin/AdminHeader";
+import { PieceAnalysisPanel } from "@/components/admin/PieceAnalysis";
 import { ReviewForm } from "@/components/admin/ReviewForm";
 import { MAX_ATTEMPT, STATUS_LABEL, getReviewDetail, requireAdmin } from "@/lib/admin";
 
@@ -47,8 +48,12 @@ export default async function ReviewDetailPage({ params }: { params: Promise<{ i
               <Text>Ruta {piece.route}</Text>
             </>
           ) : null}
-          <Text aria-hidden>·</Text>
-          <Text>En revisión desde hace {piece.waiting}</Text>
+          {inReview ? (
+            <>
+              <Text aria-hidden>·</Text>
+              <Text>En revisión desde hace {piece.waiting}</Text>
+            </>
+          ) : null}
         </Flex>
 
         <SimpleGrid columns={{ base: 1, md: 3 }} gap="6" mb="10">
@@ -120,6 +125,8 @@ export default async function ReviewDetailPage({ params }: { params: Promise<{ i
             ) : null}
           </Stack>
         </SimpleGrid>
+
+        {piece.analysis ? <PieceAnalysisPanel analysis={piece.analysis} /> : null}
 
         <Heading as="h2" fontSize="xl" fontWeight="500" mb="3">
           Modelos del intento {piece.attempt}
