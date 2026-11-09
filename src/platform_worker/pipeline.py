@@ -16,11 +16,11 @@ Storage paths stored in ``piece_models`` are relative to their bucket (``models`
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import time
 import traceback
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -64,11 +64,11 @@ STATUS_FAILED = "failed"
 STATUS_QUEUED = "queued"  # returned when a piece without photos yet goes back to the queue
 
 # A piece can be claimed the instant it is inserted, before its ``piece_photos`` rows exist:
-# it goes back to ``queued`` up to ``MAX_CLAIMS_WITHOUT_PHOTOS - 1`` times (counter kept in
-# ``pieces.error``), and the next claim without photos marks it ``needs_photos``.
-MAX_CLAIMS_WITHOUT_PHOTOS = 3
-WAITING_PHOTOS_PREFIX = "Esperando las fotos"
-WAITING_PHOTOS_RE = re.compile(rf"^{WAITING_PHOTOS_PREFIX} \((\d+)/\d+\)")
+# while it is younger than ``PHOTOS_GRACE`` (from ``created_at``) it goes back to ``queued``;
+# after that it becomes ``needs_photos``. Time-based on purpose: ``claim_next_piece()``
+# clears ``error`` on every claim, so a counter kept in the row would never advance.
+PHOTOS_GRACE = timedelta(minutes=10)
+WAITING_PHOTOS_MESSAGE = "Esperando las fotos de la pieza."
 NO_PHOTOS_ERROR = (
     "No se recibieron fotos de la pieza. Vuelve a subir al menos una foto para continuar."
 )
@@ -333,24 +333,32 @@ def _fail(db: Any, piece_id: str, message: str) -> str:
     return STATUS_FAILED
 
 
-def _claims_without_photos(piece_row: dict[str, Any]) -> int:
-    match = WAITING_PHOTOS_RE.match(piece_row.get("error") or "")
-    return int(match.group(1)) if match else 0
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _created_at(piece_row: dict[str, Any]) -> datetime | None:
+    raw = piece_row.get("created_at")
+    if isinstance(raw, datetime):
+        value = raw
+    else:
+        try:
+            value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _wait_for_photos(db: Any, piece_row: dict[str, Any]) -> str:
-    """Back to ``queued`` (photos still uploading) or, after the last try, ``needs_photos``."""
+    """Back to ``queued`` while the piece is younger than ``PHOTOS_GRACE`` (photos still
+    uploading), else ``needs_photos``. A row without a readable ``created_at`` is never
+    re-queued, so the wait is always bounded."""
     piece_id = str(piece_row["id"])
-    claims = _claims_without_photos(piece_row) + 1
-    if claims >= MAX_CLAIMS_WITHOUT_PHOTOS:
+    created = _created_at(piece_row)
+    if created is None or _utcnow() - created >= PHOTOS_GRACE:
         db.update_piece(piece_id, status=STATUS_NEEDS_PHOTOS, error=NO_PHOTOS_ERROR)
         return STATUS_NEEDS_PHOTOS
-    db.update_piece(
-        piece_id,
-        status=STATUS_QUEUED,
-        claimed_at=None,
-        error=f"{WAITING_PHOTOS_PREFIX} ({claims}/{MAX_CLAIMS_WITHOUT_PHOTOS})",
-    )
+    db.update_piece(piece_id, status=STATUS_QUEUED, claimed_at=None, error=WAITING_PHOTOS_MESSAGE)
     return STATUS_QUEUED
 
 

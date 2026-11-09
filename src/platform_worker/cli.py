@@ -28,8 +28,10 @@ from platform_worker.storage import Storage
 DEFAULT_WORKDIR = Path("runs/platform")
 STALE_MINUTES = 30
 REQUEUE_EVERY_CYCLES = 10
-# ``piece <id>`` only re-runs pieces that have no result waiting for review or the client.
-RETRYABLE_STATUSES = frozenset({"queued", "failed", "generating"})
+# ``piece <id>`` only re-runs pieces that have no result waiting for review or the client;
+# ``generating`` (maybe another worker is on it) needs ``--force``.
+RETRYABLE_STATUSES = frozenset({"queued", "failed"})
+FORCE_STATUSES = frozenset({"generating"})
 CONFIG_EXIT_CODE = 2
 
 app = typer.Typer(
@@ -182,6 +184,10 @@ def piece(
     piece_id: Annotated[str, typer.Argument(help="Id de la pieza.")],
     provider: ProviderOpt = None,
     workdir: WorkdirOpt = DEFAULT_WORKDIR,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Reprocesa también una pieza en generación (huérfana)."),
+    ] = False,
 ) -> None:
     """Procesa una pieza concreta (reintento manual), sin pasar por la cola."""
     ctx = build_context(provider)
@@ -189,10 +195,17 @@ def piece(
     if row is None:
         err_console.print(f"[red]No existe la pieza {piece_id}.[/red]")
         raise typer.Exit(1)
-    if row.get("status") not in RETRYABLE_STATUSES:
+    status = row.get("status")
+    if status in FORCE_STATUSES and not force:
         err_console.print(
-            f"[red]La pieza {piece_id} está en estado «{row.get('status')}»: solo se "
-            "reprocesan piezas en cola, fallidas o en generación.[/red]"
+            f"[red]La pieza {piece_id} está en generación: puede que otro worker la esté "
+            "procesando. Usa --force si sabes que está huérfana.[/red]"
+        )
+        raise typer.Exit(1)
+    if status not in RETRYABLE_STATUSES | FORCE_STATUSES:
+        err_console.print(
+            f"[red]La pieza {piece_id} está en estado «{status}»: solo se reprocesan "
+            "piezas en cola o fallidas (y en generación con --force).[/red]"
         )
         raise typer.Exit(1)
     ctx["db"].update_piece(

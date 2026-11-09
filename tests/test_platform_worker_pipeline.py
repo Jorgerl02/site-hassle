@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -51,10 +52,13 @@ def _isolated_worker_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 # ---------------------------------------------------------------- in-memory backends
 
 
+def _now_iso(delta: timedelta = timedelta(0)) -> str:
+    return (datetime.now(UTC) + delta).isoformat()
+
+
 class FakeDB:
     def __init__(self, pieces: list[dict[str, Any]] | None = None, photos=None) -> None:
         self.pieces = {p["id"]: dict(p) for p in pieces or []}
-        self.queue = [p["id"] for p in pieces or []]
         self.photos = photos or {}
         self.models: list[dict[str, Any]] = []
         self.updates: list[tuple[str, dict[str, Any]]] = []
@@ -62,10 +66,12 @@ class FakeDB:
         self.deleted: list[tuple[str, int]] = []
 
     def claim_next(self):
-        if not self.queue:
+        # Same as claim_next_piece() in SQL: oldest queued → generating, claimed_at, error null.
+        queued = [p for p in self.pieces.values() if p.get("status", "queued") == "queued"]
+        if not queued:
             return None
-        piece = self.pieces[self.queue.pop(0)]
-        piece["status"] = "generating"
+        piece = min(queued, key=lambda p: p.get("created_at") or "")
+        piece.update(status="generating", claimed_at=_now_iso(), error=None)
         return dict(piece)
 
     def requeue_stale(self, minutes: int = 30) -> int:
@@ -254,6 +260,7 @@ def setup(tmp_path: Path, photo: Path | None = None, **row_overrides):
         "notes": "",
         "status": "queued",
         "attempt": 1,
+        "created_at": _now_iso(),
     }
     row.update(row_overrides)
     photo = photo or good_photo(tmp_path / "src" / "1.jpg")
@@ -391,7 +398,7 @@ def test_run_requeues_stale_pieces_first(tmp_path: Path) -> None:
 
 def test_run_once_processes_one_piece(tmp_path: Path) -> None:
     db, storage, _ = setup(tmp_path)
-    db.queue = [PIECE_ID]  # setup() already claimed it; put it back
+    db.pieces[PIECE_ID]["status"] = "queued"  # setup() already claimed it; put it back
     ctx = {"db": db, "storage": storage, "provider": None, "blender_bin": None}
     assert cli.run_loop(ctx, once=True, poll_seconds=0, workdir=tmp_path / "runs") == 1
     assert db.pieces[PIECE_ID]["status"] == "review"
@@ -440,29 +447,46 @@ def test_load_settings_follows_harness_redirection(tmp_path: Path, monkeypatch) 
 # ---------------------------------------------------------------- fix round 1
 
 
-def test_piece_without_photos_goes_back_to_queue_then_needs_photos(tmp_path: Path) -> None:
-    db, storage, row = setup(tmp_path)
+def _claim_without_photos(tmp_path: Path, created_ago: timedelta):
+    db, storage, _ = setup(tmp_path, created_at=_now_iso(-created_ago))
+    db.pieces[PIECE_ID]["status"] = "queued"  # setup() claimed it; go through claim_next
     db.photos = {}  # claimed before its piece_photos rows exist
-    assert run(db, storage, row, tmp_path) == "queued"
+    return db, storage
+
+
+def test_recent_piece_without_photos_goes_back_to_queue(tmp_path: Path) -> None:
+    db, storage = _claim_without_photos(tmp_path, timedelta(minutes=1))
+    for _ in range(5):  # never a counter: it stays re-queued while inside the grace period
+        row = db.claim_next()
+        assert row["error"] is None  # claim_next clears error, like the SQL
+        assert run(db, storage, row, tmp_path) == "queued"
     piece = db.pieces[PIECE_ID]
     assert piece["status"] == "queued" and piece["claimed_at"] is None
-    assert piece["error"] == "Esperando las fotos (1/3)"
+    assert piece["error"] == pipeline.WAITING_PHOTOS_MESSAGE
 
-    assert run(db, storage, dict(piece), tmp_path) == "queued"
-    assert db.pieces[PIECE_ID]["error"] == "Esperando las fotos (2/3)"
 
-    assert run(db, storage, dict(db.pieces[PIECE_ID]), tmp_path) == "needs_photos"
+def test_old_piece_without_photos_needs_photos(tmp_path: Path) -> None:
+    db, storage = _claim_without_photos(tmp_path, timedelta(minutes=11))
+    assert run(db, storage, db.claim_next(), tmp_path) == "needs_photos"
+    assert db.pieces[PIECE_ID]["status"] == "needs_photos"
     assert db.pieces[PIECE_ID]["error"] == pipeline.NO_PHOTOS_ERROR
-    assert db.models == []
+    assert db.claim_next() is None and db.models == []
+
+
+def test_piece_without_created_at_is_not_requeued(tmp_path: Path) -> None:
+    db, storage = _claim_without_photos(tmp_path, timedelta(0))
+    db.pieces[PIECE_ID]["created_at"] = None
+    assert run(db, storage, db.claim_next(), tmp_path) == "needs_photos"
 
 
 def test_photos_arriving_after_a_requeue_reach_review(tmp_path: Path) -> None:
-    db, storage, row = setup(tmp_path)
-    photos = db.photos
-    db.photos = {}
-    assert run(db, storage, row, tmp_path) == "queued"
+    db, storage = _claim_without_photos(tmp_path, timedelta(minutes=1))
+    photos = {
+        PIECE_ID: [{"piece_id": PIECE_ID, "storage_path": f"u1/{PIECE_ID}/1.jpg", "position": 1}]
+    }
+    assert run(db, storage, db.claim_next(), tmp_path) == "queued"
     db.photos = photos
-    assert run(db, storage, dict(db.pieces[PIECE_ID]), tmp_path) == "review"
+    assert run(db, storage, db.claim_next(), tmp_path) == "review"
     assert db.pieces[PIECE_ID]["error"] is None
 
 
@@ -548,7 +572,7 @@ def test_run_exits_2_without_blender(tmp_path: Path, monkeypatch, blender) -> No
     assert "BLENDER_BIN" in result.output
 
 
-@pytest.mark.parametrize("status", ["review", "ready", "approved"])
+@pytest.mark.parametrize("status", ["review", "ready", "approved", "generating"])
 def test_piece_command_refuses_finished_attempts(tmp_path: Path, monkeypatch, status) -> None:
     blender = tmp_path / "blender"
     blender.write_text("#!/bin/sh\n")
@@ -558,8 +582,22 @@ def test_piece_command_refuses_finished_attempts(tmp_path: Path, monkeypatch, st
     monkeypatch.setattr(cli, "WorkerDB", lambda url, key: db)
     result = CliRunner().invoke(cli.app, ["piece", PIECE_ID])
     assert result.exit_code == 1
-    assert f"«{status}»" in result.output
+    assert (f"«{status}»" if status != "generating" else "--force") in result.output
     assert db.updates == []
+
+
+def test_piece_command_force_reprocesses_generating(tmp_path: Path, monkeypatch) -> None:
+    blender = tmp_path / "blender"
+    blender.write_text("#!/bin/sh\n")
+    blender.chmod(0o755)
+    _cli_env(monkeypatch, tmp_path, str(blender))
+    db = FakeDB([{"id": PIECE_ID, "status": "generating", "attempt": 1}])
+    monkeypatch.setattr(cli, "WorkerDB", lambda url, key: db)
+    seen: list[str] = []
+    monkeypatch.setattr(cli, "_process", lambda ctx, row, workdir: seen.append(row["id"]))
+    result = CliRunner().invoke(cli.app, ["piece", PIECE_ID, "--force"])
+    assert result.exit_code == 0, result.output
+    assert seen == [PIECE_ID] and db.updates[0][1]["status"] == "generating"
 
 
 def test_exif_rotated_photo_is_upright(tmp_path: Path) -> None:
