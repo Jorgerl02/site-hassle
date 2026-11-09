@@ -11,6 +11,25 @@ export const SIGNED_URL_SECONDS = 60 * 60;
 /** Scale error above which a candidate is flagged (the promise is ±3 % per axis). */
 export const SCALE_ERROR_LIMIT = 0.03;
 
+/** `pieces.attempt` is limited to 1..3 by the schema. */
+export const MAX_ATTEMPT = 3;
+
+export const NOT_DELIVERABLE_MESSAGE = "Este candidato no tiene archivos descargables";
+
+/**
+ * A candidate can be shown to the customer only if the paid download will work:
+ * preview, GLB and USDZ present and no generation error.
+ */
+export function isDeliverable(row: {
+  preview_path: string | null;
+  glb_path: string | null;
+  usdz_path: string | null;
+  meta: Json | null;
+}): boolean {
+  const meta = asMeta(row.meta);
+  return Boolean(row.preview_path && row.glb_path && row.usdz_path) && !meta.error;
+}
+
 /** Render views shown per candidate, in display order. */
 export const RENDER_VIEWS = ["front", "left", "back", "three_quarter"] as const;
 export type RenderView = (typeof RENDER_VIEWS)[number];
@@ -148,6 +167,7 @@ interface ModelRow {
   candidate: number;
   preview_path: string | null;
   glb_path: string | null;
+  usdz_path: string | null;
   render_paths: Json | null;
   meta: Json | null;
   max_error: number | null;
@@ -253,6 +273,8 @@ export interface CandidateView {
   contactUrl: string | null;
   modelUrl: string | null;
   error: string | null;
+  /** Preview, GLB and USDZ present and no error: may be shown to the customer. */
+  deliverable: boolean;
 }
 
 export interface ReviewDetail {
@@ -293,26 +315,35 @@ function axisErrors(meta: ModelMeta): AxisError[] {
 export async function getReviewDetail(pieceId: string): Promise<ReviewDetail | null> {
   if (!isUuid(pieceId)) return null;
   const db = adminDb();
-  const { data: pieceData } = await db
+  const { data: pieceData, error: pieceError } = await db
     .from("pieces")
     .select("id, name, kind, width_cm, height_cm, depth_cm, rectilinear, notes, status, attempt, route, review_note, updated_at, user_id")
     .eq("id", pieceId)
     .maybeSingle();
+  if (pieceError) throw new Error(`No se pudo leer la pieza: ${pieceError.message}`);
   if (!pieceData) return null;
   const piece = pieceData as PieceRow;
 
-  const [{ data: photoData }, { data: modelData }, { data: profile }] = await Promise.all([
+  const [photoRes, modelRes, profileRes] = await Promise.all([
     db.from("piece_photos").select("storage_path, position").eq("piece_id", piece.id).order("position"),
     db
       .from("piece_models")
-      .select("id, attempt, provider, candidate, preview_path, glb_path, render_paths, meta, max_error, cost_usd, selected")
+      .select("id, attempt, provider, candidate, preview_path, glb_path, usdz_path, render_paths, meta, max_error, cost_usd, selected")
       .eq("piece_id", piece.id)
       .eq("attempt", piece.attempt)
       .order("candidate"),
     db.from("profiles").select("email").eq("id", piece.user_id).maybeSingle(),
   ]);
-  const photos = (photoData ?? []) as { storage_path: string; position: number }[];
-  const models = (modelData ?? []) as ModelRow[];
+  for (const [label, res] of [
+    ["las fotos", photoRes],
+    ["los modelos", modelRes],
+    ["el perfil", profileRes],
+  ] as const) {
+    if (res.error) throw new Error(`No se pudo leer ${label}: ${res.error.message}`);
+  }
+  const profile = profileRes.data;
+  const photos = (photoRes.data ?? []) as { storage_path: string; position: number }[];
+  const models = (modelRes.data ?? []) as ModelRow[];
 
   const renderPaths = models.flatMap((m) => Object.values(asRenderPaths(m.render_paths)).filter(Boolean) as string[]);
   // A candidate without a preview falls back to its signed full GLB.
@@ -350,6 +381,7 @@ export async function getReviewDetail(pieceId: string): Promise<ReviewDetail | n
       contactUrl: paths.contact ? (renderUrls.get(paths.contact) ?? null) : null,
       modelUrl,
       error: typeof meta.error === "string" ? meta.error : null,
+      deliverable: isDeliverable(m),
     };
   });
 

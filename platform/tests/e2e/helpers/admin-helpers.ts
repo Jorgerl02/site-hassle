@@ -44,9 +44,14 @@ export async function deleteTestUser(db: SupabaseClient, user: TestUser | undefi
  * is verified by the app's own `/auth/callback` (token_hash flow).
  */
 export async function signIn(page: Page, db: SupabaseClient, email: string): Promise<void> {
-  const { data, error } = await db.auth.admin.generateLink({ type: "magiclink", email });
-  if (error || !data.properties?.hashed_token) throw new Error(`generateLink: ${error?.message}`);
-  await page.goto(`/auth/callback?token_hash=${data.properties.hashed_token}&type=magiclink`);
+  // Auth limits token verifications per IP; other suites hit the same project, so retry with a fresh link.
+  for (let attempt = 1; ; attempt++) {
+    const { data, error } = await db.auth.admin.generateLink({ type: "magiclink", email });
+    if (error || !data.properties?.hashed_token) throw new Error(`generateLink: ${error?.message}`);
+    await page.goto(`/auth/callback?token_hash=${data.properties.hashed_token}&type=magiclink`);
+    if (/\/panel$/.test(page.url()) || attempt === 4) break;
+    await page.waitForTimeout(10_000 * attempt); // 429 over_request_rate_limit on /verify
+  }
   await expect(page).toHaveURL(/\/panel$/);
 }
 
@@ -68,7 +73,12 @@ export interface SeededPiece {
  * A piece in `review` with one photo and two candidates, laid out like the worker:
  * candidate 1 selected at `{piece}/{attempt}/…`, candidate 2 at `{piece}/{attempt}/cand_2/…`.
  */
-export async function seedReviewPiece(db: SupabaseClient, user: TestUser, name: string): Promise<SeededPiece> {
+export async function seedReviewPiece(
+  db: SupabaseClient,
+  user: TestUser,
+  name: string,
+  options: { withoutUsdz?: number } = {},
+): Promise<SeededPiece> {
   const id = randomUUID();
   const { error: pieceError } = await db.from("pieces").insert({
     id,
@@ -117,7 +127,7 @@ export async function seedReviewPiece(db: SupabaseClient, user: TestUser, name: 
       candidate,
       preview_path: preview,
       glb_path: `${prefix}/model_web.glb`,
-      usdz_path: `${prefix}/model.usdz`,
+      usdz_path: options.withoutUsdz === candidate ? null : `${prefix}/model.usdz`,
       render_paths: renderPaths,
       meta: { provider: "tripo", candidate, post: { errors, errors_before_fit: errors, fit_box_applied: false } },
       max_error: Math.max(...Object.values(errors).map(Math.abs)),

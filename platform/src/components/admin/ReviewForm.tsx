@@ -17,7 +17,7 @@ const initialState: ReviewActionResult = { ok: true };
 /** Candidate picker plus the three review decisions. */
 export function ReviewForm({ pieceId, candidates, canRegenerate }: ReviewFormProps) {
   const [state, formAction, pending] = useActionState(submitReview, initialState);
-  const initial = candidates.find((c) => c.selected) ?? candidates.find((c) => c.modelUrl && !c.error);
+  const initial = candidates.find((c) => c.selected && c.deliverable) ?? candidates.find((c) => c.deliverable);
   const [modelId, setModelId] = useState(initial?.id ?? "");
 
   return (

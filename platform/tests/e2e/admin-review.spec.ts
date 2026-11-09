@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Browser, type BrowserContextOptions, type Page } from "@playwright/test";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   cleanupPiece,
@@ -12,19 +12,35 @@ import {
 } from "./helpers/admin-helpers";
 
 // Hosted Supabase and Auth rate limits: one browser project, tests in order.
-test.describe.configure({ mode: "serial" });
+test.describe.configure({ mode: "serial", timeout: 120_000 });
 
 let db: SupabaseClient;
 let admin: TestUser;
 let customer: TestUser;
 const pieces: SeededPiece[] = [];
+let adminState: BrowserContextOptions["storageState"];
+let baseURL: string | undefined;
 
-test.beforeAll(async ({}, testInfo) => {
+/**
+ * One magic-link sign-in for the admin, reused by every test: repeated
+ * verifications for the same user in a few seconds get refused by Auth.
+ */
+async function adminPage(browser: Browser): Promise<Page> {
+  const context = await browser.newContext({ storageState: adminState, baseURL, locale: "es-ES" });
+  return context.newPage();
+}
+
+test.beforeAll(async ({ browser }, testInfo) => {
   // The review queue is a desktop tool; one project is enough (and spares Auth rate limits).
   test.skip(testInfo.project.name !== "desktop", "Solo en escritorio");
   db = serviceClient();
   admin = await createTestUser(db, "admin", true);
   customer = await createTestUser(db, "cliente");
+  baseURL = testInfo.project.use.baseURL;
+  const context = await browser.newContext({ baseURL });
+  await signIn(await context.newPage(), db, admin.email);
+  adminState = await context.storageState();
+  await context.close();
 });
 
 test.afterAll(async () => {
@@ -41,10 +57,10 @@ test("signed-out and non-admin users get a 404", async ({ page }) => {
   expect((await page.goto(`/admin/revision/${crypto.randomUUID()}`))?.status()).toBe(404);
 });
 
-test("admin shows the second candidate to the customer", async ({ page }) => {
+test("admin shows the second candidate to the customer", async ({ browser }) => {
   const piece = await seedReviewPiece(db, customer, `test_ Sillón revisión ${Date.now()}`);
   pieces.push(piece);
-  await signIn(page, db, admin.email);
+  const page = await adminPage(browser);
 
   const response = await page.goto("/admin/revision");
   expect(response?.status()).toBe(200);
@@ -88,10 +104,30 @@ test("admin shows the second candidate to the customer", async ({ page }) => {
   expect(selected[0].glb_path).toBe(`${piece.id}/1/cand_2/model_web.glb`);
 });
 
-test("reject needs a reason the customer will read", async ({ page }) => {
+test("a candidate without USDZ cannot be shown to the customer", async ({ browser }) => {
+  const piece = await seedReviewPiece(db, customer, `test_ Sillón sin USDZ ${Date.now()}`, { withoutUsdz: 2 });
+  pieces.push(piece);
+  const page = await adminPage(browser);
+  await page.goto(`/admin/revision/${piece.id}`);
+
+  const candidates = page.getByTestId("candidate");
+  await expect(candidates.nth(1)).toContainText("Sin archivos descargables");
+  await expect(page.getByLabel(/Candidato 1/)).toBeChecked();
+
+  await page.getByLabel(/Candidato 2/).check();
+  await page.getByRole("button", { name: "Mostrar al cliente" }).click();
+  await expect(page.getByTestId("review-error")).toHaveText("Este candidato no tiene archivos descargables");
+
+  const { data: row } = await db.from("pieces").select("status").eq("id", piece.id).single();
+  expect(row?.status).toBe("review");
+  const { data: models } = await db.from("piece_models").select("id").eq("piece_id", piece.id).eq("selected", true);
+  expect((models ?? []).map((m) => m.id)).toEqual([piece.modelIds[0]]);
+});
+
+test("reject needs a reason the customer will read", async ({ browser }) => {
   const piece = await seedReviewPiece(db, customer, `test_ Sillón rechazo ${Date.now()}`);
   pieces.push(piece);
-  await signIn(page, db, admin.email);
+  const page = await adminPage(browser);
   await page.goto(`/admin/revision/${piece.id}`);
 
   await page.getByRole("button", { name: "Rechazar" }).click();
@@ -104,10 +140,10 @@ test("reject needs a reason the customer will read", async ({ page }) => {
   expect(row).toEqual({ status: "rejected", reject_reason: "Las fotos no muestran el respaldo." });
 });
 
-test("regenerate sends the piece back to the queue with the next attempt", async ({ page }) => {
+test("regenerate sends the piece back to the queue with the next attempt", async ({ browser }) => {
   const piece = await seedReviewPiece(db, customer, `test_ Sillón regenerar ${Date.now()}`);
   pieces.push(piece);
-  await signIn(page, db, admin.email);
+  const page = await adminPage(browser);
   await page.goto(`/admin/revision/${piece.id}`);
 
   await page.getByLabel("Nota o motivo").fill("Patas demasiado gruesas.");

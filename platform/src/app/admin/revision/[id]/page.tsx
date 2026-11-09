@@ -4,15 +4,13 @@ import NextLink from "next/link";
 import { notFound } from "next/navigation";
 import { AdminHeader } from "@/components/admin/AdminHeader";
 import { ReviewForm } from "@/components/admin/ReviewForm";
-import { getReviewDetail, requireAdmin } from "@/lib/admin";
+import { MAX_ATTEMPT, getReviewDetail, requireAdmin } from "@/lib/admin";
 import { STATUS_LABEL } from "@/lib/piece-status";
 
 export const metadata: Metadata = {
   title: "Revisar pieza",
   robots: { index: false, follow: false },
 };
-
-const MAX_ATTEMPT = 3;
 
 const RECTILINEAR_LABEL = { true: "Sí", false: "No", null: "No sabe" } as const;
 

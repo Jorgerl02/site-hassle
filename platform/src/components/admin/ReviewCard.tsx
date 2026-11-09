@@ -42,6 +42,7 @@ export function ReviewCard({ candidate, name, checked, disabled, onSelect }: Rev
           {candidate.provider}
         </Text>
         {candidate.selected ? <Badge colorPalette="clay">Elegido por el worker</Badge> : null}
+        {candidate.deliverable ? null : <Badge colorPalette="red">Sin archivos descargables</Badge>}
         </label>
       </Flex>
 
