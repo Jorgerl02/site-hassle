@@ -1,0 +1,3 @@
+# Supabase CLI local state (linked project, versions, pooler URL)
+.temp/
+.branches/
