@@ -6,6 +6,7 @@ autouse fixture in conftest removes ``BLENDER_BIN``); it skips when unset.
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 from pathlib import Path
@@ -20,6 +21,9 @@ from harness.post.parametric_spec import (
     BOX_SIDE_EDGE,
     BOX_TOP_CROP,
     KINDS,
+    PEDESTAL_COLUMN_STRIP,
+    PEDESTAL_RIM_STRIP,
+    PEDESTAL_TOP_ROW,
     Box,
     Spec,
     bounding_box,
@@ -72,7 +76,9 @@ def test_table_120x75x60_top_and_four_legs(piece: Piece) -> None:
     assert boxes["leg_br"] == Box("leg_br", (5.0, 5.0, 71.0), (52.5, 22.5, 35.5))
 
 
-@pytest.mark.parametrize("kind", ["table", "panel_table", "shelf", "sideboard", "slab", "box"])
+@pytest.mark.parametrize(
+    "kind", ["table", "panel_table", "shelf", "sideboard", "slab", "box", "pedestal"]
+)
 @pytest.mark.parametrize("dims", [(120, 75, 60), (80, 180, 35), (200, 3, 90), (45, 45, 45)])
 def test_union_bbox_matches_piece_dims(tmp_path: Path, kind: str, dims) -> None:
     w, h, d = dims
@@ -868,3 +874,207 @@ def test_base_words_do_not_override_proportions(tmp_path: Path) -> None:
     assert classify_with_params(p25) == ("shelf", {})
     slab = make_piece(tmp_path, 200, 3, 90, "Tablero sobre patas")
     assert classify(slab) == "slab"
+
+
+# ---------------------------------------------------------------- pedestal
+
+FIXTURE_PEDESTAL = Path(__file__).parent / "fixtures" / "platform" / "travertine_pedestal.png"
+SEGMENTS = bpy_parametric.CYLINDER_SEGMENTS
+TRIS_PER_CYLINDER = 2 * SEGMENTS + 2 * (SEGMENTS - 2)  # side quads + two fan-split n-gons
+
+PEDESTAL_CASES = [
+    None,
+    {"top_shape": "oval"},
+    {"base_shape": "taper", "foot_plate": True},
+    {"base_diameter_ratio": 0.15, "top_thickness_cm": 1.5},
+    {"base_diameter_ratio": 0.95, "foot_plate": True, "top_shape": "oval"},
+]
+
+
+def _geometry_bbox_cm(boxes: list[Box]):
+    verts, _, _ = bpy_parametric.build_geometry([b.to_dict() for b in boxes])
+    mins, maxs = bpy_parametric.bounds(verts)
+    return tuple(v * 100 for v in mins), tuple(v * 100 for v in maxs)
+
+
+@pytest.mark.parametrize("params", PEDESTAL_CASES)
+@pytest.mark.parametrize(
+    "dims", [(60, 45, 60), (90, 75, 60), (40, 55, 40), (120, 74, 80), (200, 3, 90), (20, 20, 20)]
+)
+def test_pedestal_bbox_exact(tmp_path: Path, params, dims) -> None:
+    """Round (w == d) and oval (w != d) tops: spec bbox AND built mesh bbox == the dims."""
+    w, h, d = dims
+    boxes = build_spec(make_piece(tmp_path, w, h, d), "pedestal", params)
+    expected = ((-w / 2, -d / 2, 0.0), (w / 2, d / 2, h))
+    mins, maxs = bounding_box(boxes)
+    assert (mins, maxs) == (pytest.approx(expected[0]), pytest.approx(expected[1]))
+    gmins, gmaxs = _geometry_bbox_cm(boxes)
+    assert gmins == pytest.approx(expected[0], abs=1e-9)
+    assert gmaxs == pytest.approx(expected[1], abs=1e-9)
+    assert all(b.shape == "cylinder" for b in boxes)
+    assert all(s > 0 for b in boxes for s in b.size_cm)
+
+
+def test_pedestal_defaults_travertine_60x45x60(tmp_path: Path) -> None:
+    boxes = {b.name: b for b in build_spec(make_piece(tmp_path, 60, 45, 60), "pedestal")}
+    assert set(boxes) == {"top", "base"}
+    top, base = boxes["top"], boxes["base"]
+    assert top.size_cm == pytest.approx((60.0, 60.0, 1.8))  # 4 % of the height
+    assert top.pos_cm == pytest.approx((0.0, 0.0, 44.1))
+    assert base.size_cm == pytest.approx((27.0, 27.0, 43.2))  # 0.45 x min(w, d)
+    assert base.pos_cm == pytest.approx((0.0, 0.0, 21.6))  # floor → underside of the top
+    assert base.taper == 1.0
+    # very low piece: the default thickness never drops under 1.5 cm
+    low = build_spec(make_piece(tmp_path, 50, 20, 50), "pedestal")
+    assert low[0].size_cm[2] == pytest.approx(1.5)
+
+
+def test_pedestal_oval_taper_foot(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 90, 75, 60)
+    params = {"top_shape": "oval", "base_shape": "taper", "foot_plate": True, "top_thickness_cm": 3}
+    boxes = {b.name: b for b in build_spec(piece, "pedestal", params)}
+    assert boxes["top"].size_cm == pytest.approx((90.0, 60.0, 3.0))  # ellipse 90 x 60
+    assert boxes["base"].size_cm[:2] == pytest.approx((27.0, 27.0))  # 0.45 x 60
+    assert boxes["base"].taper == pytest.approx(0.9)
+    foot = boxes["foot"]
+    assert foot.size_cm == pytest.approx((29.7, 29.7, 2.0))  # 1.1 x the column, at the floor
+    assert foot.pos_cm[2] == pytest.approx(1.0)
+    base_z0 = boxes["base"].pos_cm[2] - boxes["base"].size_cm[2] / 2
+    assert base_z0 == pytest.approx(2.0)  # the column stands on the plate
+    # widest column: the plate is clamped to the narrow side of the top
+    wide = build_spec(piece, "pedestal", {"base_diameter_ratio": 0.95, "foot_plate": True})
+    assert next(b for b in wide if b.name == "foot").size_cm[0] == pytest.approx(60.0)
+    # taper: the column is narrower at the floor, its top ring keeps the full diameter
+    verts, _, _ = bpy_parametric.build_geometry([boxes["base"].to_dict()])
+    bottom = [v for v in verts if v[2] == pytest.approx(base_z0 / 100)]
+    top_ring = [v for v in verts if v[2] > base_z0 / 100 + 1e-6]
+    assert max(v[0] for v in bottom) == pytest.approx(0.27 / 2 * 0.9)
+    assert max(v[0] for v in top_ring) == pytest.approx(0.27 / 2)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"legs": 4},
+        {"top_shape": "square"},
+        {"base_shape": "cone"},
+        {"foot_plate": "yes"},
+        {"base_diameter_ratio": 0.1},
+        {"base_diameter_ratio": 0.96},
+        {"top_thickness_cm": 1.0},
+    ],
+)
+def test_pedestal_rejects_bad_params(piece: Piece, params) -> None:
+    with pytest.raises(ValueError, match="pedestal"):
+        build_spec(piece, "pedestal", params)
+
+
+@pytest.mark.parametrize("ratio", [0.15, 0.95])
+def test_pedestal_base_ratio_bounds_accepted(tmp_path: Path, ratio: float) -> None:
+    boxes = build_spec(make_piece(tmp_path, 60, 45, 40), "pedestal", {"base_diameter_ratio": ratio})
+    assert boxes[1].size_cm[0] == pytest.approx(ratio * 40)
+
+
+def test_pedestal_mesh_counts_and_seamless_wrap(tmp_path: Path) -> None:
+    spec = make_spec(make_piece(tmp_path, 60, 45, 60), "pedestal")
+    verts, faces, uvs, smooth = bpy_parametric.build_mesh([b.to_dict() for b in spec.boxes])
+    # per cylinder: SEGMENTS smooth side quads + 2 flat n-gon caps
+    assert len(faces) == 2 * (SEGMENTS + 2)
+    assert sum(smooth) == 2 * SEGMENTS
+    assert sum(len(f) - 2 for f in faces) == 2 * TRIS_PER_CYLINDER
+    assert all(0.0 <= c <= 1.0 for face in uvs for uv in face for c in uv)
+    # a side vertex has ONE uv in every quad that uses it: no seam to split around
+    seen: dict[int, tuple[float, float]] = {}
+    for face, face_uv, is_side in zip(faces, uvs, smooth, strict=True):
+        if not is_side:
+            continue
+        for i, uv in zip(face, face_uv, strict=True):
+            assert seen.setdefault(i, uv) == pytest.approx(uv)
+    assert bpy_parametric.wrap_u(0.0, 0.2, 0.6) == pytest.approx(
+        bpy_parametric.wrap_u(2 * math.pi, 0.2, 0.6)
+    )
+    # the three-quarter view's visible half shows the strip left → right, unmirrored
+    phase = bpy_parametric.WRAP_PHASE
+    assert bpy_parametric.wrap_u(phase + math.pi, 0.2, 0.6) == pytest.approx(0.2)
+    assert bpy_parametric.wrap_u(phase + 1.5 * math.pi, 0.2, 0.6) == pytest.approx(0.4)
+
+
+def test_pedestal_photo_hints(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 60, 45, 60)
+    regions = {"top_row": 0.1625, "side_band": [0.2627, 0.7282]}  # the travertine photo
+    spec = make_spec(piece, "pedestal", params={"foot_plate": True}, photo_regions=regions)
+    boxes = {b.name: b for b in spec.boxes}
+    split = 1 - 0.1625
+    top = boxes["top"]
+    assert top.cap_uv[0] == (0.0, 1.0)  # the photographed top surface, whole width ...
+    assert top.cap_uv[1] == pytest.approx((split, 1.0))  # ... and rows above the split
+    assert top.uv_v == pytest.approx((split - 0.06, split))  # rim: the rows just below it
+    assert top.uv_u == PEDESTAL_RIM_STRIP
+    centre, half = (0.2627 + 0.7282) / 2, (0.7282 - 0.2627) / 2 * PEDESTAL_COLUMN_STRIP
+    for name in ("base", "foot"):
+        assert boxes[name].uv_u == pytest.approx((centre - half, centre + half))
+    assert boxes["foot"].uv_v[0] == pytest.approx(0.04)  # floor shadow rows skipped
+    assert boxes["base"].uv_v[1] == pytest.approx(split - 0.06)  # column ends under the rim
+    assert boxes["base"].uv_v[0] == pytest.approx(boxes["foot"].uv_v[1])
+    # no regions: default top rows, column band from its straight front projection
+    plain = {b.name: b for b in make_spec(piece, "pedestal").boxes}
+    assert plain["top"].cap_uv[1] == pytest.approx((1 - PEDESTAL_TOP_ROW, 1.0))
+    half = 0.45 * 60 / 120 * PEDESTAL_COLUMN_STRIP
+    assert plain["base"].uv_u == pytest.approx((0.5 - half, 0.5 + half))
+    # hints never change the geometry
+    assert bounding_box(spec.boxes) == bounding_box(
+        build_spec(piece, "pedestal", {"foot_plate": True})
+    )
+
+
+def test_pedestal_spec_json_round_trip(tmp_path: Path) -> None:
+    piece = make_piece(tmp_path, 90, 75, 60)
+    spec = make_spec(piece, "pedestal", params={"top_shape": "oval", "base_shape": "taper"})
+    assert read_spec(write_spec(tmp_path / "spec.json", spec)) == spec
+    raw = spec.to_dict()["boxes"][1]
+    assert raw["shape"] == "cylinder" and raw["taper"] == pytest.approx(0.9)
+    with pytest.raises(ValueError, match="shape"):
+        Box.from_dict({**raw, "shape": "sphere"})
+    # plain boxes keep their old JSON (no new keys)
+    assert set(Box("b", (1, 1, 1), (0, 0, 0.5)).to_dict()) == {"name", "size_cm", "pos_cm"}
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("Mesa auxiliar de travertino con pie central", ("pedestal", {})),
+        ("Velador ovalado de mármol", ("pedestal", {"top_shape": "oval"})),
+        ("Mesa de centro sobre base cilíndrica", ("pedestal", {})),
+        ("Mesa auxiliar de travertino", ("panel_table", {})),  # unchanged without a cue
+        ("Mesa de comedor redonda con patas", ("table", {})),
+    ],
+)
+def test_classify_pedestal(tmp_path: Path, description: str, expected) -> None:
+    assert classify_with_params(make_piece(tmp_path, 60, 45, 60, description)) == expected
+    assert "pedestal" in KINDS
+
+
+def test_pedestal_real_blender_travertine(tmp_path: Path) -> None:
+    """Opt-in: the travertine side table (60 x 45 x 60 cm) through variant E with the real
+    photo cleaning, Blender build and control renders."""
+    value = os.environ.get("HARNESS_BLENDER_TEST_BIN", "").strip()
+    if not value or not Path(value).is_file():
+        pytest.skip("Blender real no solicitado (HARNESS_BLENDER_TEST_BIN)")
+    import trimesh
+
+    from harness.eval.render import render_views
+
+    piece = make_piece(tmp_path, 60, 45, 60, "Mesa auxiliar de travertino con pie central")
+    piece = piece.model_copy(update={"images": [FIXTURE_PEDESTAL]})
+    variant = ParametricVariant(blender_bin=Path(value), overrides_path=None)
+    result = variant.run(piece, tmp_path / "E")
+    cand = result.candidates[0]
+    assert cand.meta["kind"] == "pedestal" and cand.meta["n_boxes"] == 2
+    mesh = trimesh.load(cand.glb_path, force="mesh", process=False)
+    # glTF is +Y up: (width, height, depth) = (X, Y, Z)
+    assert tuple(mesh.extents) == pytest.approx((0.60, 0.45, 0.60), abs=1e-4)
+    assert len(mesh.faces) == 2 * TRIS_PER_CYLINDER
+    assert mesh.visual.uv is not None
+    paths = render_views(cand.glb_path, tmp_path / "renders", size=256, blender_bin=Path(value))
+    with Image.open(paths[3]) as img:  # three_quarter: the piece is there, not a blank frame
+        assert img.convert("L").getextrema()[0] < 200

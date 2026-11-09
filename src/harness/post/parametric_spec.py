@@ -1,8 +1,10 @@
-"""Pure parametric description of rectilinear furniture as a list of boxes (variant E).
+"""Pure parametric description of furniture as a list of boxes (variant E).
 
 Coordinate frame (cm, Blender Z-up): X = width (centred on 0), Y = depth (centred on 0,
 the front face of the piece looks towards -Y), Z = height (floor at 0). ``Box.size_cm`` is
-``(x, y, z)`` = (width, depth, height) and ``Box.pos_cm`` is the box *centre*.
+``(x, y, z)`` = (width, depth, height) and ``Box.pos_cm`` is the box *centre*. A box with
+``shape="cylinder"`` is the elliptic cylinder inscribed in it (axis Z, ellipse axes = its X
+and Y sizes), so the union bbox of the boxes is still the bbox of the built geometry.
 
 The JSON written by :func:`write_spec` is read inside Blender by ``bpy_parametric.py``,
 which cannot import this package, so the format is plain JSON (see :meth:`Spec.to_dict`).
@@ -13,13 +15,13 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from harness.core.models import Piece
 
-Kind = Literal["table", "panel_table", "shelf", "sideboard", "slab", "box", "box_legs"]
+Kind = Literal["table", "panel_table", "shelf", "sideboard", "slab", "box", "box_legs", "pedestal"]
 KINDS: tuple[str, ...] = (
     "table",
     "panel_table",
@@ -28,7 +30,9 @@ KINDS: tuple[str, ...] = (
     "slab",
     "box",
     "box_legs",
+    "pedestal",
 )
+BOX_SHAPES: tuple[str, ...] = ("box", "cylinder")
 SPEC_VERSION = 1
 
 # Default construction dimensions (cm).
@@ -90,6 +94,45 @@ BOX_LEGS_PARAMS: tuple[str, ...] = (
 BOX_LEGS_WORDS: tuple[str, ...] = ("pata",)
 BOX_PLINTH_WORDS: tuple[str, ...] = ("zocalo",)
 
+# pedestal: a round / oval top on ONE central column (travertine side tables, "veladores").
+# The top is the ellipse inscribed in width x depth (a circle when they are equal: "round"
+# and "oval" build the same inscribed ellipse so the bbox stays exact; the shape is a label
+# recorded in the params), the column a circular cylinder centred under it, optionally
+# narrower at the floor ("taper") and standing on a thin foot plate.
+PEDESTAL_TOP_RATIO = 0.04  # default top thickness = 4 % of the height ...
+PEDESTAL_TOP_MIN = 1.5  # ... never thinner than this (cm)
+PEDESTAL_BASE_RATIO = 0.45  # column diameter / min(width, depth)
+PEDESTAL_BASE_RANGE = (0.15, 0.95)
+PEDESTAL_TAPER = 0.9  # "taper": bottom diameter = 90 % of the top diameter of the column
+PEDESTAL_FOOT_RATIO = 1.1  # foot plate diameter / column diameter
+PEDESTAL_FOOT_THICKNESS = 2.0  # cm, at most a quarter of the column height
+PEDESTAL_TOP_SHAPES: tuple[str, ...] = ("round", "oval")
+PEDESTAL_BASE_SHAPES: tuple[str, ...] = ("cylinder", "taper")
+PEDESTAL_PARAMS: tuple[str, ...] = (
+    "top_shape",
+    "top_thickness_cm",
+    "base_diameter_ratio",
+    "base_shape",
+    "foot_plate",
+)
+# Texture hints (see :func:`with_pedestal_regions`):
+PEDESTAL_TOP_ROW = 0.2  # photo rows (from the top) of the top surface when not detected
+PEDESTAL_RIM_STRIP = (0.2, 0.8)  # photo columns the rim wraps (its front in a 3/4 view)
+PEDESTAL_COLUMN_STRIP = 0.8  # the column wraps this central fraction of its photo band
+# Checked BEFORE the panel keywords: a "mesa auxiliar de travertino con pie central" is a
+# pedestal, not a panel table. "oval…" in the same text sets top_shape="oval".
+PEDESTAL_KEYWORDS: tuple[str, ...] = (
+    "pedestal",
+    "velador",
+    "pie central",
+    "base central",
+    "columna central",
+    "pie de columna",
+    "base cilindrica",
+    "pie cilindrico",
+)
+OVAL_WORDS: tuple[str, ...] = ("oval",)
+
 # Spanish keywords (accent-free, lowercase). The earliest match in the text wins, so
 # "mesa con tablero de travertino" is a table and "tablero para mesa" is a slab.
 KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -118,6 +161,16 @@ class Box:
     # Optional photo rows (Blender v, 0 = bottom) sampled by this box's vertical faces,
     # bottom→top of the box; None = straight projection over the whole piece height.
     uv_v: tuple[float, float] | None = None
+    # "cylinder": the elliptic cylinder inscribed in the box (see the module docstring).
+    shape: str = "box"
+    # cylinder only: bottom radii / top radii (1 = straight, < 1 = narrower at the floor).
+    taper: float = 1.0
+    # cylinder only: photo columns its side wraps around (mirrored, no seam); None = its
+    # own X extent in the straight front projection.
+    uv_u: tuple[float, float] | None = None
+    # cylinder only: photo region ((u0, u1), (v0, v1)) its top cap is projected onto
+    # (X → u, front → back = v0 → v1); None = the side's (uv_u, uv_v) strip.
+    cap_uv: tuple[tuple[float, float], tuple[float, float]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -127,6 +180,14 @@ class Box:
         }
         if self.uv_v is not None:
             out["uv_v"] = list(self.uv_v)
+        if self.shape != "box":
+            out["shape"] = self.shape
+        if self.taper != 1.0:
+            out["taper"] = self.taper
+        if self.uv_u is not None:
+            out["uv_u"] = list(self.uv_u)
+        if self.cap_uv is not None:
+            out["cap_uv"] = [list(self.cap_uv[0]), list(self.cap_uv[1])]
         return out
 
     @classmethod
@@ -135,12 +196,23 @@ class Box:
         pos = tuple(float(v) for v in data["pos_cm"])
         if len(size) != 3 or len(pos) != 3:
             raise ValueError(f"Box {data.get('name')!r}: size_cm y pos_cm deben tener 3 valores")
-        uv_v = data.get("uv_v")
+        shape = str(data.get("shape", "box"))
+        if shape not in BOX_SHAPES:
+            raise ValueError(f"Box {data.get('name')!r}: shape {shape!r} (válidos: {BOX_SHAPES})")
+
+        def pair(value: Any) -> tuple[float, float] | None:
+            return (float(value[0]), float(value[1])) if value is not None else None
+
+        cap = data.get("cap_uv")
         return cls(
             name=str(data["name"]),
             size_cm=size,  # type: ignore[arg-type]
             pos_cm=pos,  # type: ignore[arg-type]
-            uv_v=(float(uv_v[0]), float(uv_v[1])) if uv_v is not None else None,
+            uv_v=pair(data.get("uv_v")),
+            shape=shape,
+            taper=float(data.get("taper", 1.0)),
+            uv_u=pair(data.get("uv_u")),
+            cap_uv=(pair(cap[0]), pair(cap[1])) if cap is not None else None,  # type: ignore[arg-type]
         )
 
 
@@ -193,9 +265,24 @@ def is_panel_text(text: str) -> bool:
     return _has_word(norm, PANEL_AUX_WORD) and any(_has_word(norm, w) for w in PANEL_STONE_WORDS)
 
 
+def is_pedestal_text(text: str) -> bool:
+    """A single central support: "pedestal", "velador", "pie central", "base cilíndrica"…"""
+    norm = _normalise(text)
+    return any(_has_word(norm, w) for w in PEDESTAL_KEYWORDS)
+
+
+def pedestal_params_from_text(text: str) -> dict[str, Any]:
+    """``{"top_shape": "oval"}`` when the text says "oval…", else ``{}``."""
+    norm = _normalise(text)
+    return {"top_shape": "oval"} if any(_has_word(norm, w) for w in OVAL_WORDS) else {}
+
+
 def classify_text(text: str) -> str | None:
-    """``panel_table`` if :func:`is_panel_text`, else the kind whose keyword appears earliest
-    in ``text`` (whole-word prefix match), or None."""
+    """``pedestal`` if :func:`is_pedestal_text`, ``panel_table`` if :func:`is_panel_text`,
+    else the kind whose keyword appears earliest in ``text`` (whole-word prefix match), or
+    None."""
+    if is_pedestal_text(text):
+        return "pedestal"
     if is_panel_text(text):
         return "panel_table"
     norm = _normalise(text)
@@ -231,6 +318,8 @@ def classify_with_params(piece: Piece) -> tuple[Kind, dict[str, Any]]:
     texts = (piece.description or "", piece.name or "")
     for text in texts:
         kind = classify_text(text)
+        if kind == "pedestal":
+            return "pedestal", pedestal_params_from_text(" ".join(texts))
         if kind is not None:
             return kind, {}  # type: ignore[return-value]
     w, h, d = piece.width_cm, piece.height_cm, piece.depth_cm
@@ -425,18 +514,82 @@ def _box_legs(w: float, d: float, h: float, params: dict[str, Any] | None) -> li
     return boxes
 
 
+def pedestal_params(h: float, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolved pedestal parameters (defaults filled in, ``h`` = piece height in cm);
+    rejects unknown keys and out-of-range values."""
+    params = dict(params or {})
+    unknown = sorted(set(params) - set(PEDESTAL_PARAMS))
+    if unknown:
+        raise ValueError(f"pedestal: parámetros desconocidos {unknown}")
+    top_shape = params.get("top_shape", "round")
+    if top_shape not in PEDESTAL_TOP_SHAPES:
+        raise ValueError(f"pedestal: top_shape {top_shape!r} (válidos: {PEDESTAL_TOP_SHAPES})")
+    base_shape = params.get("base_shape", "cylinder")
+    if base_shape not in PEDESTAL_BASE_SHAPES:
+        raise ValueError(f"pedestal: base_shape {base_shape!r} (válidos: {PEDESTAL_BASE_SHAPES})")
+    foot = params.get("foot_plate", False)
+    if not isinstance(foot, bool):
+        raise ValueError(f"pedestal: foot_plate debe ser true/false ({foot!r})")
+    if "top_thickness_cm" in params:
+        top_t = float(params["top_thickness_cm"])
+        if top_t < PEDESTAL_TOP_MIN:
+            raise ValueError(f"pedestal: top_thickness_cm debe ser ≥ {PEDESTAL_TOP_MIN} ({top_t})")
+    else:
+        top_t = max(PEDESTAL_TOP_RATIO * h, PEDESTAL_TOP_MIN)
+    ratio = float(params.get("base_diameter_ratio", PEDESTAL_BASE_RATIO))
+    lo, hi = PEDESTAL_BASE_RANGE
+    if not lo <= ratio <= hi:
+        raise ValueError(f"pedestal: base_diameter_ratio debe estar en [{lo}, {hi}] ({ratio})")
+    return {
+        "top_shape": top_shape,
+        "top_thickness_cm": top_t,
+        "base_diameter_ratio": ratio,
+        "base_shape": base_shape,
+        "foot_plate": foot,
+    }
+
+
+def _pedestal(w: float, d: float, h: float, params: dict[str, Any] | None) -> list[Box]:
+    p = pedestal_params(h, params)
+    top_t = min(p["top_thickness_cm"], h / 2)
+    base_d = p["base_diameter_ratio"] * min(w, d)
+    column_h = h - top_t
+    foot_t = min(PEDESTAL_FOOT_THICKNESS, column_h / 4) if p["foot_plate"] else 0.0
+    column_h -= foot_t
+    taper = PEDESTAL_TAPER if p["base_shape"] == "taper" else 1.0
+    boxes = [
+        Box("top", (w, d, top_t), (0.0, 0.0, h - top_t / 2), shape="cylinder"),
+        Box(
+            "base",
+            (base_d, base_d, column_h),
+            (0.0, 0.0, foot_t + column_h / 2),
+            shape="cylinder",
+            taper=taper,
+        ),
+    ]
+    if foot_t > 0:
+        foot_d = min(PEDESTAL_FOOT_RATIO * base_d, min(w, d))
+        boxes.append(
+            Box("foot", (foot_d, foot_d, foot_t), (0.0, 0.0, foot_t / 2), shape="cylinder")
+        )
+    return boxes
+
+
 def build_spec(piece: Piece, kind: str, params: dict[str, Any] | None = None) -> list[Box]:
     """Boxes (cm) for ``piece`` built as ``kind``; their union bbox equals the piece's dims.
 
-    ``params`` only applies to ``panel_table`` (see :data:`PANEL_TABLE_PARAMS`) and
-    ``box_legs`` (see :data:`BOX_LEGS_PARAMS`); other kinds reject non-empty params."""
+    ``params`` only applies to ``panel_table`` (see :data:`PANEL_TABLE_PARAMS`),
+    ``box_legs`` (see :data:`BOX_LEGS_PARAMS`) and ``pedestal`` (see
+    :data:`PEDESTAL_PARAMS`); other kinds reject non-empty params."""
     w, h, d = float(piece.width_cm), float(piece.height_cm), float(piece.depth_cm)
-    if params and kind not in ("panel_table", "box_legs"):
+    if params and kind not in ("panel_table", "box_legs", "pedestal"):
         raise ValueError(f"El tipo {kind!r} no admite parámetros ({sorted(params)})")
     if kind == "panel_table":
         return _panel_table(w, d, h, params)
     if kind == "box_legs":
         return _box_legs(w, d, h, params)
+    if kind == "pedestal":
+        return _pedestal(w, d, h, params)
     if kind == "table":
         return _table(w, d, h)
     if kind == "shelf":
@@ -479,6 +632,58 @@ def with_photo_regions(boxes: list[Box], top_row: float | None) -> list[Box]:
     return out
 
 
+def with_pedestal_regions(
+    boxes: list[Box],
+    w: float,
+    top_row: float | None = None,
+    side_band: list[float] | tuple[float, float] | None = None,
+) -> list[Box]:
+    """pedestal: where each part samples the (cropped, filled) photo, a front / 3-4 view.
+
+    - ``top_row`` (fraction of rows from the top where the first ≥90 %-covered run ends;
+      in a 3/4 view that run is the top surface): the top cap is projected onto rows
+      ``[0, top_row]`` over the whole width (the photographed top surface), its rim wraps
+      the ``TOP_EDGE_ROWS`` rows just below them inside :data:`PEDESTAL_RIM_STRIP`.
+      Missing / out of range → :data:`PEDESTAL_TOP_ROW`.
+    - ``side_band`` (widest solid run of columns = the column seen face-on, when it holds
+      the photo's centre) or, without it, the column's straight front projection
+      ``0.5 ± base_d / 2w``: the column (and foot plate) wrap its central
+      :data:`PEDESTAL_COLUMN_STRIP` fraction, their height scaled onto the rows between
+      ``SUPPORT_V_FLOOR`` and the rim, so the grain runs on all the way round.
+    """
+    if top_row is None or not 0.0 < top_row < 0.5:
+        top_row = PEDESTAL_TOP_ROW
+    split = 1.0 - top_row  # Blender v where the top surface ends (v = 0 at the bottom)
+    edge = min(TOP_EDGE_ROWS, split / 2)
+    rim_v = (split - edge, split)
+    base = next((b for b in boxes if b.name == "base"), None)
+    band: tuple[float, float] | None = None
+    if side_band is not None and float(side_band[0]) < 0.5 < float(side_band[1]):
+        band = (float(side_band[0]), float(side_band[1]))
+    elif base is not None and w > 0:
+        half = min(base.size_cm[0] / (2 * w), 0.5)
+        band = (0.5 - half, 0.5 + half)
+    col_u = None
+    if band is not None:
+        centre, half = (band[0] + band[1]) / 2, (band[1] - band[0]) / 2 * PEDESTAL_COLUMN_STRIP
+        col_u = (centre - half, centre + half)
+    top = next((b for b in boxes if b.name == "top"), None)
+    top_z = top.pos_cm[2] - top.size_cm[2] / 2 if top is not None else 0.0
+    lo, hi = min(SUPPORT_V_FLOOR, rim_v[0]), rim_v[0]
+    out = []
+    for b in boxes:
+        if b.name == "top":
+            out.append(
+                replace(b, uv_v=rim_v, uv_u=PEDESTAL_RIM_STRIP, cap_uv=((0.0, 1.0), (split, 1.0)))
+            )
+            continue
+        z0 = b.pos_cm[2] - b.size_cm[2] / 2
+        z1 = b.pos_cm[2] + b.size_cm[2] / 2
+        uv_v = (lo + (hi - lo) * z0 / top_z, lo + (hi - lo) * z1 / top_z) if top_z > 0 else None
+        out.append(replace(b, uv_v=uv_v, uv_u=col_u))
+    return out
+
+
 def bounding_box(boxes: list[Box]) -> tuple[tuple[float, ...], tuple[float, ...]]:
     """(min_xyz, max_xyz) of the union of ``boxes`` in cm."""
     mins = tuple(min(b.pos_cm[i] - b.size_cm[i] / 2 for b in boxes) for i in range(3))
@@ -501,7 +706,8 @@ def make_spec(
     photo_regions: dict[str, Any] | None = None,
 ) -> Spec:
     """``photo_regions`` (``{"top_row": f, "side_band": [u0, u1]}``, from the cleaned photo)
-    is only used by ``panel_table``: per-box ``uv_v`` and ``extra["side_band"]``.
+    is used by ``panel_table`` (per-box ``uv_v`` and ``extra["side_band"]``) and
+    ``pedestal`` (always hinted, see :func:`with_pedestal_regions`).
     ``box_legs`` hints its body (rows from the straight projection at its bottom up to
     ``1 - top_crop``) and sets ``extra["side_band"] = [0, side_edge]``, which its sides and
     top sample."""
@@ -513,6 +719,11 @@ def make_spec(
         boxes = with_photo_regions(boxes, photo_regions.get("top_row"))
         if photo_regions.get("side_band") is not None:
             extra["side_band"] = [float(v) for v in photo_regions["side_band"]]
+    if kind == "pedestal":
+        regions = photo_regions or {}
+        boxes = with_pedestal_regions(
+            boxes, float(piece.width_cm), regions.get("top_row"), regions.get("side_band")
+        )
     if kind == "box_legs":
         p = box_legs_params(params)
         h = float(piece.height_cm)
